@@ -1,0 +1,296 @@
+import os
+import json
+import re
+import math
+import time
+import binascii
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urljoin, urlparse, parse_qs
+from bs4 import BeautifulSoup
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.backends import default_backend
+from PIL import Image
+import io
+import asyncio
+from curl_cffi.requests import AsyncSession
+
+from config.settings import Settings
+from app.scrapers.base import BaseScraper
+from app.core.exceptions import ScraperError
+
+try:
+    from curl_cffi import requests as crequests
+except ImportError:
+    import requests as crequests
+
+logger = logging.getLogger("MechaApiScraper")
+
+class MechaApiScraper(BaseScraper):
+    BASE_URL = "https://mechacomic.jp"
+
+    def __init__(self, browser_service=None):
+        # 100% Stateless. No more self.session or self.available_sessions.
+        self.browser = browser_service
+
+    def _create_stateless_session(self):
+        """Creates a fresh, isolated HTTP session per request."""
+        session = crequests.Session(impersonate="chrome120")
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36',
+            'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3',
+        })
+        return session
+
+    def _load_available_accounts(self):
+        """Reads accounts from disk dynamically at task execution time."""
+        mecha_dir = Settings.SECRETS_DIR / "mecha"
+        mecha_dir.mkdir(parents=True, exist_ok=True)
+        
+        cookie_paths = list(mecha_dir.glob("*.json"))
+        if Settings.COOKIES_FILE.exists(): cookie_paths.append(Settings.COOKIES_FILE)
+        
+        accounts = []
+        for path in cookie_paths:
+            try:
+                with open(path, 'r') as f:
+                    cookies_data = json.load(f)
+                if any(c.get('name') == '_comic_session' for c in cookies_data):
+                    accounts.append({'cookies': cookies_data, 'name': path.name})
+            except Exception:
+                continue
+        return accounts
+
+    def _apply_session_cookies(self, session, cookie_list):
+        session.cookies.clear()
+        for c in cookie_list:
+            if c.get('name') and c.get('value'):
+                session.cookies.set(c['name'], c['value'], domain=c.get('domain', 'mechacomic.jp'), path=c.get('path', '/'))
+
+    def get_series_info(self, url: str):
+        # Local session just for this lookup
+        session = self._create_stateless_session()
+        
+        base_series_url = url.split('?')[0]
+        target_start_url = f"{base_series_url}?page=1"
+        
+        response = session.get(target_start_url)
+        if response.status_code != 200:
+            raise ScraperError(f"Series page returned {response.status_code}")
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        title = "Unknown Title"
+        og_t = soup.find("meta", property="og:title")
+        if og_t: title = og_t["content"].split("|")[0].split("-")[0].split("–")[0].strip()
+        
+        title = re.sub(r'【.*?】', '', title) 
+        title = re.sub(r'\s*([-|–]\s*(めちゃコミック|MechaComic)).*', '', title, flags=re.IGNORECASE).strip()
+        
+        image_url = None
+        img_tag = soup.select_one("div.p-bookInfo_jacket img.jacket_image_l")
+        if img_tag: image_url = img_tag.get('src')
+
+        max_page = 1
+        try:
+            count_el = soup.select_one("div.p-search_chapterNo span")
+            if count_el:
+                max_page = math.ceil(int(re.search(r'(\d+)', count_el.get_text()).group(1)) / 10)
+        except: pass
+
+        all_chapters = []
+        seen_ids = set()
+
+        def fetch_page(p_num):
+            res = session.get(f"{base_series_url}?page={p_num}")
+            p_soup = BeautifulSoup(res.text, 'html.parser')
+            page_items = []
+            
+            for item in p_soup.find_all('li', class_='p-chapterList_item'):
+                chk = item.find('input', {'name': 'chapter_ids[]'})
+                if not chk: continue
+                
+                cid = chk.get('value')
+                no_elem = item.find('dt', class_='p-chapterList_no')
+                num_text = no_elem.get_text().strip() if no_elem else f"Ch.{cid}"
+                name_elem = item.find('dd', class_='p-chapterList_name')
+                title_text = name_elem.get_text().strip() if name_elem else ""
+
+                is_locked = True
+                btn_area = item.find('div', class_='p-chapterList_btnArea')
+                if btn_area and ("無料" in btn_area.get_text() or "読む" in btn_area.get_text()): 
+                    is_locked = False
+
+                page_items.append({
+                    'id': cid, 'number_text': num_text, 'title_text': title_text,
+                    'title': f"{num_text} {title_text}", 'url': f"{self.BASE_URL}/chapters/{cid}",
+                    'is_locked': is_locked
+                })
+            return page_items
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(fetch_page, p) for p in range(1, max_page + 1)]
+            for f in as_completed(futures):
+                for item in f.result():
+                    if item['id'] not in seen_ids:
+                        seen_ids.add(item['id'])
+                        all_chapters.append(item)
+
+        all_chapters.sort(key=lambda x: int(re.search(r'\d+', x['number_text']).group()) if re.search(r'\d+', x['number_text']) else 999)
+        return title, len(all_chapters), all_chapters, image_url, base_series_url.split('/')[-1]
+
+    def scrape_chapter(self, task, output_dir):
+        real_id = task.episode_id
+        accounts = self._load_available_accounts()
+        
+        # Local session dedicated entirely to this specific task
+        session = self._create_stateless_session()
+
+        selectors = [
+            ".p-buyConfirm-currentChapter input.js-bt_buy_and_download",
+            ".p-buyConfirm-currentChapter input.c-btn-read-end",
+            ".p-buyConfirm-currentChapter input.c-btn-free",
+            "input.js-bt_buy_and_download", "button.js-bt_buy_and_download",
+            "input.c-btn-read-end", "input.c-btn-free", "input.c-btn-buy",
+            "button.btn-purchase", "div.p-bookInfo_btn-read"
+        ]
+
+        for acc in accounts:
+            logger.info(f"[API] 🔄 Trying Account: {acc['name']} for Chapter {task.chapter_str}")
+            self._apply_session_cookies(session, acc['cookies'])
+            
+            viewer_url = self._check_chapter_access(session, real_id)
+            
+            if not viewer_url and self.browser:
+                logger.info(f"   🛡️ Request blocked. Passing link to Playwright sandbox...")
+                new_cookies, viewer_url = self.browser.run_isolated_handshake(task.url, acc['cookies'], selectors)
+                if viewer_url and new_cookies: 
+                    self._apply_session_cookies(session, new_cookies)
+
+            if viewer_url:
+                logger.info(f"   ✅ Access Granted via Account: {acc['name']}")
+                return self._execute_extraction(session, viewer_url, real_id, output_dir, task)
+
+        # Guest Fallback
+        logger.info(f"[API] 👤 No account access. Attempting Guest Handshake...")
+        session.cookies.clear()
+        guest_viewer_url = self._check_chapter_access(session, real_id)
+        
+        if not guest_viewer_url and self.browser:
+            new_cookies, guest_viewer_url = self.browser.run_isolated_handshake(task.url, [], selectors)
+            if guest_viewer_url and new_cookies: 
+                self._apply_session_cookies(session, new_cookies)
+
+        if guest_viewer_url:
+            return self._execute_extraction(session, guest_viewer_url, real_id, output_dir, task)
+
+        raise ScraperError("Manifest not found. Chapter is either locked or server rejected handshake.")
+
+    def _check_chapter_access(self, session, real_id):
+        try:
+            res = session.get(f"{self.BASE_URL}/chapters/{real_id}", timeout=15)
+            if res.status_code == 200 and 'contents_vertical' in res.text:
+                match = re.search(r'\"(https?://mechacomic\.jp/viewer\?.*?contents_vertical=.*?)\"', res.text)
+                if match: return match.group(1).replace('\\/', '/')
+
+            res = session.get(f"{self.BASE_URL}/chapters/{real_id}/download?commit=read", allow_redirects=True)
+            if "contents_vertical" in res.url: return res.url
+        except Exception: pass
+        return None
+
+    def _execute_extraction(self, session, viewer_url, real_id, output_dir, task):
+        logger.info(f"[API] 🏗️  Starting Extraction from: {viewer_url[:60]}...")
+        
+        qs = parse_qs(urlparse(viewer_url).query)
+        contents_vertical_url = qs['contents_vertical'][0]
+        directory_url = qs['directory'][0]
+        version = qs.get('ver', [''])[0]
+
+        headers = {"Referer": viewer_url, "Origin": "https://mechacomic.jp", "Accept": "application/json, text/plain, */*"}
+
+        manifest_res = session.get(contents_vertical_url, headers=headers)
+        manifest = manifest_res.json()
+        
+        key_res = session.get(f"{self.BASE_URL}/viewer_cryptokey/chapter/{real_id}", headers=headers)
+        key = binascii.unhexlify(key_res.text.strip())
+
+        img_tasks = []
+        for pg in manifest.get('pages', []):
+            formats = manifest.get('images', {}).get(pg['image'], [])
+            if not formats: continue
+            
+            target = next((f for f in formats if f['format'] == 'png'), None) or formats[0]
+            img_tasks.append({'src': target['src'], 'pg': pg['pageIndex'], 'filename': f"page_{pg['pageIndex']:03d}.png", 'pg_data': pg})
+
+        # --- NEW ASYNC BATCH DOWNLOAD LOGIC ---
+        import asyncio
+        from curl_cffi.requests import AsyncSession
+
+        async def download_all_images():
+            # Create a lightweight async session
+            async with AsyncSession(impersonate="chrome120") as async_session:
+                # Copy cookies from our authenticated sync session
+                for cookie in session.cookies.jar:
+                    async_session.cookies.set(cookie.name, cookie.value, domain=cookie.domain, path=cookie.path)
+
+                # Build download tasks
+                cors = [
+                    self._async_dl_decrypt(async_session, t, directory_url, version, key, output_dir, headers) 
+                    for t in img_tasks
+                ]
+                
+                # Execute all downloads concurrently without threads
+                results = await asyncio.gather(*cors, return_exceptions=True)
+                
+                # Map results back to img_tasks
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        logger.error(f"[API] Async Download failed for page {i}: {result}")
+                    else:
+                        img_tasks[i]['actual_w'] = result['w']
+                        img_tasks[i]['actual_h'] = result['h']
+
+        # Run the async download block
+        asyncio.run(download_all_images())
+        # --------------------------------------
+
+        math_data = []
+        current_y = 0
+        scale = max([t.get('actual_w', 0) for t in img_tasks] + [780]) / manifest.get('viewportSize', {}).get('width', 480)
+
+        for t in img_tasks:
+            pg = t['pg_data']
+            box_h = int(pg['size']['height'] * scale)
+            y_pos = current_y + int(pg['coord']['y'] * scale)
+            math_data.append({'file': t['filename'], 'y': y_pos, 'width': t.get('actual_w', int(pg['size']['width'] * scale)), 'height': t.get('actual_h', box_h)})
+            current_y = y_pos + box_h + int(manifest.get('gapBetweenImages', 0) * scale)
+
+        with open(os.path.join(output_dir, "math.json"), "w") as f:
+            json.dump(math_data, f, indent=2)
+
+        return output_dir
+
+    async def _async_dl_decrypt(self, async_session, t, base_url, ver, key, out_dir, headers):
+        """Asynchronous helper to download and decrypt a single page."""
+        url = f"{base_url.rstrip('/')}/{t['src']}?ver={ver}"
+        
+        # Async network request (does not block CPU)
+        res = await async_session.get(url, timeout=20, headers=headers)
+        if res.status_code != 200:
+            raise Exception(f"Failed to download {url}: Status {res.status_code}")
+        
+        iv, encrypted_data = res.content[:16], res.content[16:]
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+        decryptor = cipher.decryptor()
+        padded = decryptor.update(encrypted_data) + decryptor.finalize()
+        
+        plaintext = padding.PKCS7(128).unpadder().update(padded) + padding.PKCS7(128).unpadder().finalize()
+        
+        # Small sync block for disk I/O and image reading (fast enough to keep in-line)
+        with Image.open(io.BytesIO(plaintext)) as img: 
+            w, h = img.size
+        with open(os.path.join(out_dir, t['filename']), 'wb') as f: 
+            f.write(plaintext)
+            
+        return {'w': w, 'h': h}

@@ -1,0 +1,220 @@
+import discord, asyncio, math, logging
+from discord.ui import View, Button, Modal, TextInput
+from app.models.chapter import ChapterTask, TaskStatus
+
+logger = logging.getLogger("Dashboard")
+ICONS = {"load": "🔄", "tick": "✅", "wait": "⬜"}
+COLORS = {"mecha": 0xe67e22, "smartoon": 0x2ecc71, "jumptoon": 0x9b59b6, "piccoma": 0xffd600}
+
+class UniversalDashboard(View):
+    def __init__(self, bot, ctx_data, service_type):
+        super().__init__(timeout=120) # 2-Minute Timeout (Security Rule)
+        self.bot, self.url, self.title, self.all_chapters = bot, ctx_data['url'], ctx_data['title'], ctx_data['chapters']
+        self.image_url, self.req_id, self.series_id, self.user = ctx_data['image_url'], ctx_data['req_id'], ctx_data['series_id'], ctx_data['user']
+        self.service_type, self.color = service_type, COLORS.get(service_type, 0x2b2d31)
+        
+        # 🟢 NOTIFY BROWSER: New Active Dashboard (ONLY FOR MECHA)
+        if self.service_type == "mecha":
+            browser = self.bot.task_queue.scraper_registry.browser
+            browser.inc_session()
+
+        self.page, self.per_page = 1, 10
+        self.max_page = math.ceil(len(self.all_chapters) / self.per_page) if self.all_chapters else 1
+        self.selected_indices, self.active_tasks = set(), []
+        
+        self.phases = {"analyze": "waiting", "purchase": "waiting", "download": "waiting"}
+        self.final_link, self.interaction, self.sub_status, self.processing_mode, self._last_hash = None, None, None, False, 0
+
+    async def on_timeout(self):
+        """Cleanup on inactivity."""
+        logger.info(f"⏳ Dashboard timed out for R-ID: {self.req_id}")
+        if self.service_type == "mecha":
+            browser = self.bot.task_queue.scraper_registry.browser
+            browser.dec_session()
+        # Optional: Edit message to show 'Session Expired'
+        if self.interaction:
+            try:
+                await self.interaction.edit_original_response(content="❌ **Session Expired** (Inactive for 120s)", view=None)
+            except: pass
+
+    async def on_error(self, interaction, error, item):
+        logger.error(f"Dashboard Error: {error}", exc_info=True)
+        if self.service_type == "mecha":
+            browser = self.bot.task_queue.scraper_registry.browser
+            browser.dec_session()
+        await interaction.response.send_message("❌ A critical error occurred.", ephemeral=True)
+
+    def build_live_embed(self):
+        # STEP 5: Success State (Green Color)
+        color = 0x2ecc71 if self.phases["download"] == "done" else self.color
+        embed = discord.Embed(color=color)
+        embed.description = f"## {self.title}\n"
+        
+        if self.processing_mode:
+            # 1. ANALYZE
+            if self.phases["analyze"] == "done":
+                embed.description += f"{ICONS['tick']} Analyzed.\n"
+            else:
+                icon = ICONS["load"] if self.phases["analyze"] == "loading" else ICONS["wait"]
+                stat = f"Analyzing... ({self.sub_status})" if self.sub_status else "Analyzing..."
+                embed.description += f"{icon} {stat}\n"
+            
+            # 2. PURCHASE
+            if self.phases["analyze"] == "done":
+                if self.phases["purchase"] == "done":
+                    txt = "Purchased."
+                    embed.description += f"{ICONS['tick']} {txt}\n"
+                else:
+                    icon = ICONS["load"] if self.phases["purchase"] == "loading" else ICONS["wait"]
+                    count_str = f" [{getattr(self, 'purchase_count', 0)}]" if getattr(self, 'purchase_count', 0) > 0 else ""
+                    embed.description += f"{icon} Auto-Purchasing{count_str}...\n"
+                    
+                    # LIVE FEEDBACK FROM BATCH UNLOCKER
+                    unlocker = self.bot.task_queue.scraper_registry.unlocker
+                    active_info = []
+                    for i, stats in unlocker.worker_stats.items():
+                        if stats.get("view") == self and stats.get("task"):
+                            t = stats["task"]
+                            active_info.append(f"-> `Ch.{t.id:02d}`: {stats.get('progress', 0)}% | {t.purchase_status}")
+                    
+                    if active_info:
+                        embed.description += "\n".join(active_info) + "\n"
+            
+            # 3. DOWNLOAD (Processing)
+            if self.phases["purchase"] == "done":
+                if self.phases["download"] == "loading":
+                    embed.description += f"{ICONS['load']} Processing [{len(self.active_tasks)}] chapters...\n"
+                    comp = len([t for t in self.active_tasks if t.status == TaskStatus.COMPLETED])
+                    if comp: embed.description += f"-> **{comp}** chapters completed.\n"
+                    
+                    # Show live statuses for the current task
+                    for t in self.active_tasks:
+                        if t.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+                            icon = ICONS["load"]
+                            # Explicit icons for active stages
+                            status_text = t.status.value
+                            embed.description += f"-> `Ch.{t.id:02d}`: {icon} {status_text}...\n"
+                            break
+                elif self.phases["download"] == "done":
+                    embed.description += f"{ICONS['tick']} Download Completed."
+
+            if self.final_link: embed.description += f"\n\n📂 **Destination:** [Open Google Drive]({self.final_link})"
+        else:
+            embed.description += f"**Total:** {len(self.all_chapters)}\n──────────────────────────\n### Chapter List\n"
+            start = (self.page-1)*self.per_page
+            for i, ch in enumerate(self.all_chapters[start:start+self.per_page]):
+                idx, raw_t = start + i, ch.get('title','Ch')
+                clean_t = raw_t.replace(' ', ' - ', 1)[:35]
+                line = f"`{idx+1:02d}` | {clean_t}"
+                embed.description += f"**{line}**\n" if idx in self.selected_indices else f"{line}\n"
+            embed.description += f"\n**Page:** {self.page}/{self.max_page} | **Selected:** {len(self.selected_indices)}\n──────────────────────────\n-# R-ID: {self.req_id} | S-ID: {self.series_id}"
+
+        if self.image_url: embed.set_thumbnail(url=self.image_url)
+        return embed
+
+    @discord.ui.button(label="Start Extraction", style=discord.ButtonStyle.success, row=1)
+    async def start(self, interaction: discord.Interaction, button: Button):
+        from app.core.logger import req_id_context
+        req_id_context.set(self.req_id)
+        
+        if not self.selected_indices: return await interaction.response.send_message("❌ Select chapters.", ephemeral=True)
+        self.processing_mode, self.interaction = True, interaction
+        for child in self.children: child.disabled = True
+        
+        # STEP 1: Handshake
+        self.phases["analyze"] = "loading"
+        self.sub_status = "Identifying Client"
+        self.purchase_count = 0 
+        await interaction.response.edit_message(embed=self.build_live_embed(), view=None)
+        
+        asyncio.create_task(self.monitor_tasks())
+        from app.services.batch_controller import BatchController
+        controller = BatchController(self.bot) # Instantiate BatchController once
+        tasks = await controller.prepare_batch(interaction, sorted(list(self.selected_indices)), self.all_chapters, self.title, self.url, view_ref=self, series_id=self.series_id)
+        
+        # If prepare_batch returns an empty list, it means all items were cached/handled
+        if not tasks:
+            self.phases.update({"analyze": "done", "purchase": "done", "download": "done"})
+            # This will trigger the final UI refresh with the green bar and link
+            self.trigger_refresh()
+            return
+            
+        # Standard path if there are downloads
+        self.phases.update({"analyze":"done","purchase":"done","download":"loading"})
+        self.active_tasks, self._last_hash = [], 0
+        self.trigger_refresh() # Explicitly trigger refresh after phase transition
+        
+        # Deduplicate and track tasks
+        actual_tasks = []
+        for t in tasks:
+            t.is_smartoon = True # Force API Engine for all services (High Speed)
+            t.series_id_key = self.series_id
+            # 🎫 Add task and get the 'Actual' (potentially shared) task object back
+            actual_task = await self.bot.task_queue.add_task(t)
+            actual_tasks.append(actual_task)
+
+        self.active_tasks = actual_tasks
+
+    def trigger_refresh(self):
+        from app.services.ui_manager import UIManager
+        UIManager().request_update(self.req_id, self)
+
+    async def monitor_tasks(self):
+        while self.phases["download"] != "done":
+            if self.active_tasks and all(t.status in [TaskStatus.COMPLETED, TaskStatus.FAILED] for t in self.active_tasks): 
+                self.phases["download"] = "done"
+            self.trigger_refresh()
+            await asyncio.sleep(2)
+
+    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary, row=0)
+    async def prev(self, i, b): 
+        if self.page > 1: self.page -= 1; await i.response.edit_message(embed=self.build_live_embed(), view=self)
+    
+    @discord.ui.button(label="Page", style=discord.ButtonStyle.secondary, row=0)
+    async def jump(self, i, b): await i.response.send_modal(UniversalJumpModal(self))
+
+    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary, row=0)
+    async def next(self, i, b): 
+        if self.page < self.max_page: self.page += 1; await i.response.edit_message(embed=self.build_live_embed(), view=self)
+
+    @discord.ui.button(label="Select Range", style=discord.ButtonStyle.primary, row=1)
+    async def range_select(self, i, b): await i.response.send_modal(UniversalRangeModal(self))
+
+    @discord.ui.button(label="Clear", style=discord.ButtonStyle.danger, row=1)
+    async def clear(self, i, b): self.selected_indices.clear(); await i.response.edit_message(embed=self.build_live_embed(), view=self)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1)
+    async def cancel(self, interaction: discord.Interaction, button: Button):
+        """User manually cancels the dashboard."""
+        logger.info(f"🚫 User cancelled dashboard for R-ID: {self.req_id}")
+        if self.service_type == "mecha":
+            browser = self.bot.task_queue.scraper_registry.browser
+            browser.dec_session()
+        self.stop() # Stops the view timeout/listener
+        await interaction.response.edit_message(content="❌ **Dashboard Closed** (Manual Cancel)", embed=None, view=None)
+
+class UniversalJumpModal(Modal, title="Jump to Page"):
+    pg = TextInput(label="Page Number", placeholder="e.g. 5")
+    def __init__(self, view): super().__init__(); self.view = view
+    async def on_submit(self, i: discord.Interaction):
+        try:
+            p = int(self.pg.value)
+            if 1 <= p <= self.view.max_page: self.view.page = p; await i.response.edit_message(embed=self.view.build_live_embed(), view=self.view)
+        except: pass
+
+class UniversalRangeModal(Modal, title="Select Range"):
+    rng = TextInput(label="Range (e.g. 1-10, 15)", placeholder="1-5")
+    def __init__(self, view): super().__init__(); self.view = view
+    async def on_submit(self, i: discord.Interaction):
+        try:
+            parts = self.rng.value.replace(" ", "").split(",")
+            for p in parts:
+                if "-" in p:
+                    s, e = map(int, p.split("-"))
+                    for k in range(s, e+1):
+                        if 1 <= k <= len(self.view.all_chapters): self.view.selected_indices.add(k-1)
+                elif p.isdigit():
+                    k = int(p); 
+                    if 1 <= k <= len(self.view.all_chapters): self.view.selected_indices.add(k-1)
+            await i.response.edit_message(embed=self.view.build_live_embed(), view=self.view)
+        except: pass

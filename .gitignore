@@ -1,0 +1,21 @@
+# Custom exclusions
+verzue_architecture.mmd
+logs/
+downloads/
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# Secrets
+.env
+config/secrets.py
+
+# VS Code
+.vscode/
