@@ -149,6 +149,80 @@ class MechaApiScraper(BaseScraper):
         all_chapters.sort(key=lambda x: int(re.search(r'\d+', x['number_text']).group()) if re.search(r'\d+', x['number_text']) else 999)
         return title, len(all_chapters), all_chapters, image_url, base_series_url.split('/')[-1]
 
+    def fast_purchase(self, task):
+        """Phase 3 Fast Path: High-Speed API Purchase (Bypasses Selenium)"""
+        real_id = task.episode_id
+        accounts = self._load_available_accounts()
+        session = self._create_stateless_session()
+
+        for acc in accounts:
+            logger.info(f"[API Fast-Path] ⚡ Attempting purchase with account: {acc['name']}")
+            self._apply_session_cookies(session, acc['cookies'])
+            
+            target_url = f"{self.BASE_URL}/chapters/{real_id}"
+            
+            # 1. Fetch the chapter page to grab the CSRF token
+            res = session.get(target_url, timeout=10)
+            if res.status_code != 200: continue
+            
+            # Check if it's already unlocked
+            if 'contents_vertical' in res.text or 'viewer' in res.url:
+                logger.info(f"[API Fast-Path] ✅ Chapter {real_id} is already unlocked.")
+                return True, acc['cookies']
+
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(res.text, 'html.parser')
+            
+            # 2. Find the purchase form using the classes you provided
+            buy_btn = soup.select_one("input.js-bt_buy_and_download, input.c-btn-buy, button.btn-purchase")
+            if not buy_btn: 
+                logger.debug(f"[API Fast-Path] No buy button found for Ch.{real_id}")
+                continue
+            
+            form = buy_btn.find_parent("form")
+            if not form: continue
+
+            # Extract the exact action URL (e.g., /chapters/3715030/buy_and_download)
+            action_url = urljoin(self.BASE_URL, form.get("action", f"/chapters/{real_id}/buy_and_download"))
+
+            # 3. Extract the exact payload (CSRF token)
+            payload = {}
+            for hidden in form.find_all("input", type="hidden"):
+                if hidden.get("name"):
+                    payload[hidden.get("name")] = hidden.get("value", "")
+            
+            # Add the button's payload just in case Rails checks for the commit
+            if buy_btn.get("name"):
+                payload[buy_btn.get("name")] = buy_btn.get("value", "")
+            else:
+                payload["commit"] = buy_btn.get("value", "購入する")
+
+            # 4. Execute the high-speed POST request
+            headers = {
+                "Referer": target_url,
+                "Origin": self.BASE_URL,
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            
+            logger.info(f"[API Fast-Path] 📤 Submitting CSRF payload to {action_url}")
+            post_res = session.post(action_url, data=payload, headers=headers, allow_redirects=True, timeout=15)
+            
+            # 5. Verify success
+            if post_res.status_code in [200, 302] and ('contents_vertical' in post_res.text or 'viewer' in post_res.url):
+                logger.info(f"[API Fast-Path] 🟢 Purchase successful for Ch.{real_id}!")
+                # Extract refreshed cookies to save back to disk
+                new_cookies = []
+                for cookie in session.cookies.jar:
+                    new_cookies.append({
+                        'name': cookie.name, 'value': cookie.value,
+                        'domain': cookie.domain, 'path': cookie.path
+                    })
+                return True, new_cookies
+            else:
+                logger.warning(f"[API Fast-Path] ❌ Purchase rejected. Status: {post_res.status_code}")
+                
+        return False, None
+
     def scrape_chapter(self, task, output_dir):
         real_id = task.episode_id
         accounts = self._load_available_accounts()

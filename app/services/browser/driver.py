@@ -19,10 +19,10 @@ class BrowserService:
         self.driver = None
         self.default_headless = headless if headless is not None else Settings.HEADLESS
         self.active_sessions = 0 # TRACKS ACTIVE DASHBOARDS
-        self.tab_handles = [] # [kakao_tab, mecha_tab, jumptoon_tab]
+        self.tab_handles = [] 
         
-        # 🛡️ RAM Shield: Prevents multiple threads from using the browser simultaneously
-        self.handshake_lock = threading.Lock() 
+        # 🛡️ Thread Safety: Reentrant lock for managing driver access across threads
+        self._lock = threading.RLock() 
 
     def inc_session(self):
         self.active_sessions += 1
@@ -36,85 +36,110 @@ class BrowserService:
             self.stop()
 
     def start(self, headless: bool = None):
-        if self.driver:
+        with self._lock:
+            if self.driver:
+                try:
+                    self.driver.current_url
+                    return 
+                except: self.driver = None
+
+            is_headless = headless if headless is not None else self.default_headless
+            opts = Options()
+            opts.page_load_strategy = 'eager'
+            if is_headless: opts.add_argument("--headless=new")
+
+            try: ua = UserAgent(browsers=['chrome']).random
+            except: ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            
+            opts.add_argument(f"user-agent={ua}")
+            opts.add_argument(f"--user-data-dir={Settings.BROWSER_PROFILE_DIR}") # PERSISTENT IDENTITY
+            opts.add_argument("--profile-directory=Default") # Use the default profile
+            opts.add_argument("--disable-gpu")
+            opts.add_argument("--no-sandbox")
+            opts.add_argument("--disable-blink-features=AutomationControlled")
+            opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+            
+            if Settings.BINARY_LOCATION: opts.binary_location = Settings.BINARY_LOCATION
+            
+            # Use explicit location if provided, otherwise use webdriver_manager
+            if Settings.DRIVER_LOCATION:
+                service = ChromeService(executable_path=Settings.DRIVER_LOCATION)
+            else:
+                driver_path = ChromeDriverManager().install()
+                service = ChromeService(executable_path=driver_path)
+
             try:
-                self.driver.current_url
-                return 
-            except: self.driver = None
-
-        is_headless = headless if headless is not None else self.default_headless
-        opts = Options()
-        opts.page_load_strategy = 'eager'
-        if is_headless: opts.add_argument("--headless=new")
-
-        try: ua = UserAgent(browsers=['chrome']).random
-        except: ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        
-        opts.add_argument(f"user-agent={ua}")
-        opts.add_argument(f"--user-data-dir={Settings.BROWSER_PROFILE_DIR}") # PERSISTENT IDENTITY
-        opts.add_argument("--profile-directory=Default") # Use the default profile
-        opts.add_argument("--disable-gpu")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-blink-features=AutomationControlled")
-        opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-        
-        if Settings.BINARY_LOCATION: opts.binary_location = Settings.BINARY_LOCATION
-        
-        # Use explicit location if provided, otherwise use webdriver_manager to bypass the blocked selenium-manager
-        if Settings.DRIVER_LOCATION:
-            service = ChromeService(executable_path=Settings.DRIVER_LOCATION)
-        else:
-            driver_path = ChromeDriverManager().install()
-            service = ChromeService(executable_path=driver_path)
-
-        try:
-            self.driver = webdriver.Chrome(service=service, options=opts)
-            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-            self.driver.set_window_size(1920, 1080)
-            
-            # INITIALIZE 3 TABS (Sequential tracking)
-            self.tab_handles = [self.driver.current_window_handle]
-            for _ in range(2):
-                old_handles = set(self.driver.window_handles)
-                self.driver.execute_script("window.open('about:blank', '_blank');")
-                new_tab = list(set(self.driver.window_handles) - old_handles)[0]
-                self.tab_handles.append(new_tab)
-            
-            logger.info(f"🌐 Browser Started with {len(self.tab_handles)} tabs (PID: {self.driver.service.process.pid})")
-        except Exception as e:
-            logger.error(f"Browser Init Failed: {e}")
-            raise e
+                self.driver = webdriver.Chrome(service=service, options=opts)
+                self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+                self.driver.set_window_size(1920, 1080)
+                
+                # INITIALIZE 1 SINGLE TAB
+                self.tab_handles = [self.driver.current_window_handle]
+                
+                logger.info(f"🌐 Browser Started with 1 active tab (PID: {self.driver.service.process.pid})")
+            except Exception as e:
+                logger.error(f"Browser Init Failed: {e}")
+                raise e
 
     def stop(self):
-        if self.driver:
-            try: self.driver.quit()
-            except: pass
-            self.driver = None
-            self.tab_handles = []
+        with self._lock:
+            if self.driver:
+                try: self.driver.quit()
+                except: pass
+                self.driver = None
+                self.tab_handles = []
+
+    def ensure_tab(self, index: int):
+        """Dynamically creates tabs up to the requested index (max 3 total)."""
+        with self._lock:
+            if not self.driver: return False
+            
+            while len(self.tab_handles) <= index and len(self.tab_handles) < 3:
+                old_handles = set(self.driver.window_handles)
+                self.driver.execute_script("window.open('about:blank', '_blank');")
+                
+                new_handles = list(set(self.driver.window_handles) - old_handles)
+                if new_handles:
+                    self.tab_handles.append(new_handles[0])
+                    logger.info(f"📄 Created new tab on-demand. Total open tabs: {len(self.tab_handles)}")
+                else:
+                    break 
+                    
+            return index < len(self.tab_handles)
 
     def switch_to_tab(self, index: int):
-        """Switches the driver focus to a specific tab index (0=Kakao, 1=Mecha, 2=Jumptoon)"""
-        if not self.driver or index >= len(self.tab_handles): return False
-        try:
-            self.driver.switch_to.window(self.tab_handles[index])
-            return True
-        except Exception as e:
-            logger.error(f"Failed to switch to tab {index}: {e}")
-            return False
+        with self._lock:
+            if not self.driver or index >= len(self.tab_handles): return False
+            try:
+                self.driver.switch_to.window(self.tab_handles[index])
+                return True
+            except Exception as e:
+                logger.error(f"Failed to switch to tab {index}: {e}")
+                return False
+
+    def run_on_tab(self, index: int, callback):
+        """Thread-safe execution of a callback on a specific tab."""
+        with self._lock:
+            if not self.ensure_tab(index): return None
+            if not self.switch_to_tab(index): return None
+            return callback(self.driver)
 
     def warmup(self):
-        if not self.driver: self.start()
+        with self._lock:
+            if not self.driver: self.start()
 
     def enable_mobile(self, enabled=True):
-        if not self.driver: return
-        if enabled:
-            self.driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 3, "mobile": True})
-            self.driver.execute_cdp_cmd("Emulation.setTouchEmulationEnabled", {"enabled": True})
-        else:
-            self.driver.execute_cdp_cmd("Emulation.clearDeviceMetricsOverride", {})
-            self.driver.execute_cdp_cmd("Emulation.setTouchEmulationEnabled", {"enabled": False})
+        with self._lock:
+            if not self.driver: return
+            if enabled:
+                self.driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 3, "mobile": True})
+                self.driver.execute_cdp_cmd("Emulation.setTouchEmulationEnabled", {"enabled": True})
+            else:
+                self.driver.execute_cdp_cmd("Emulation.clearDeviceMetricsOverride", {})
+                self.driver.execute_cdp_cmd("Emulation.setTouchEmulationEnabled", {"enabled": False})
 
     def fetch_blob(self, uri):
+        # NOT LOCKED: Assumes caller handles context.
         if not uri or not uri.startswith("blob:"): return None
         script = "var uri=arguments[0];var callback=arguments[1];var xhr=new XMLHttpRequest();xhr.responseType='blob';xhr.onload=function(){var reader=new FileReader();reader.onloadend=function(){callback(reader.result.split(',')[1]);};reader.readAsDataURL(xhr.response);};xhr.open('GET',uri);xhr.send();"
         try:
@@ -123,20 +148,20 @@ class BrowserService:
         except: return None
 
     # =========================================================
-    # NEW METHOD: ISOLATED HANDSHAKE (ZERO-RAM SPIKE)
+    # ISOLATED HANDSHAKE (Thread-Safe)
     # =========================================================
     def run_isolated_handshake(self, url: str, cookie_list: list, selectors: list):
-        """
-        購入処理やCloudflare回避のためだけにブラウザを同期的に実行します。
-        Lock機能により、複数タスクが同時にブラウザを操作してRAMが枯渇するのを防ぎます。
-        """
-        with self.handshake_lock:
+        with self._lock:
             logger.info(f"🛡️ [Handshake] Acquiring Browser Lock for {url}")
             if not self.driver:
                 self.start()
 
             try:
-                # 1. めちゃコミック専用タブ（インデックス1）に切り替え
+                # 1. Ensure tab 1 exists and switch to it
+                if not self.ensure_tab(1):
+                    logger.error("Failed to ensure tab 1 for handshake")
+                    return None, None
+                
                 self.switch_to_tab(1)
                 
                 # 2. クッキーを設定するために軽量なページを開く
@@ -155,7 +180,7 @@ class BrowserService:
 
                 # 3. 目的のチャプターURLに移動
                 self.driver.get(url)
-                time.sleep(3) # 読み込み・Cloudflare通過待機
+                time.sleep(3) 
 
                 # 4. 「無料で読む」や「購入」ボタンを探してクリック
                 clicked = False
@@ -166,7 +191,7 @@ class BrowserService:
                             label = btns[0].get_attribute("value") or btns[0].text
                             logger.info(f"   👆 [Handshake] Clicking button: '{label}'")
                             self.driver.execute_script("arguments[0].click();", btns[0])
-                            time.sleep(3) # リダイレクト・購入処理の完了待機
+                            time.sleep(3) 
                             clicked = True
                             break
                     except: pass
