@@ -112,10 +112,19 @@ class MechaApiScraper(BaseScraper):
                 if not chk: continue
                 
                 cid = chk.get('value')
+                # 1. チャプター番号の取得（不要なアイコン・統計データを削除）
                 no_elem = item.find('dt', class_='p-chapterList_no')
-                num_text = no_elem.get_text().strip() if no_elem else f"Ch.{cid}"
+                num_text = f"Ch.{cid}"
+                if no_elem:
+                    # 邪魔な「6.8万」や「131」が入っているdivタグを丸ごと削除
+                    icons = no_elem.find('div', class_='p-chapterList_icons')
+                    if icons:
+                        icons.decompose()
+                    num_text = no_elem.get_text(strip=True)
+
+                # 2. タイトルの取得（純粋なテキストのみ取得）
                 name_elem = item.find('dd', class_='p-chapterList_name')
-                title_text = name_elem.get_text().strip() if name_elem else ""
+                title_text = name_elem.get_text(strip=True) if name_elem else ""
 
                 is_locked = True
                 btn_area = item.find('div', class_='p-chapterList_btnArea')

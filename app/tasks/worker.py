@@ -98,6 +98,7 @@ class TaskWorker:
 if __name__ == "__main__":
     from app.core.logger import setup_logging
     import json
+    import psutil
     
     # Setup logger for the worker terminal
     setup_logging("WorkerMain")
@@ -127,11 +128,23 @@ if __name__ == "__main__":
         worker = TaskWorker(registry, uploader)
         queue_name = "verzue:task_queue" 
         
+        MIN_RAM_MB = 600  # Set your safety limit (e.g., 600 MB free)
+        logger.info(f"💾 RAM Manager active. Minimum required: {MIN_RAM_MB}MB")
+        
         logger.info(f"🎧 Listening to Redis queue '{queue_name}' for tasks...")
         
         # 2. Continuous Polling Loop
         while True:
             try:
+                # Check actual system memory available
+                mem = psutil.virtual_memory()
+                available_ram_mb = mem.available / (1024 * 1024)
+                
+                if available_ram_mb < MIN_RAM_MB:
+                    logger.warning(f"⚠️ Low Memory ({available_ram_mb:.0f}MB free). Waiting 10s before checking queue...")
+                    await asyncio.sleep(10)
+                    continue # Skips the rest of the loop and checks again 
+
                 result = await redis.client.blpop(queue_name, timeout=1)
                 if not result:
                     continue 
