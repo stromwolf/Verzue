@@ -177,8 +177,19 @@ class JumptoonApiScraper(BaseScraper):
         
     def scrape_chapter(self, task, output_dir):
         logger.info(f"[Jumptoon] 🕷️  EXTRACTING: {task.title}")
-        self._load_cookies()
+        import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
         
+        # 🟢 1. ROBUST DOWNLOAD SESSION
+        dl_session = requests.Session()
+        retry_strategy = Retry(total=5, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
+        dl_session.mount("https://", HTTPAdapter(max_retries=retry_strategy))
+        
+        # Sync cookies from curl_cffi
+        for k, v in self.session.cookies.items():
+            dl_session.cookies.set(k, v, domain='.jumptoon.com')
+
         # 1. Fetch raw source
         res = self.session.get(task.url, timeout=20)
         
@@ -243,24 +254,19 @@ class JumptoonApiScraper(BaseScraper):
         total = len(image_data)
         logger.info(f"[Jumptoon] ✅ Success! Filtered out dummies. Mapped {total} REAL pages.")
 
+        # 🟢 2. PACED PARALLEL DOWNLOAD
         task.status = TaskStatus.DOWNLOADING
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = [executor.submit(self._download_image, item['url'], item['file'], output_dir) 
-                      for item in image_data]
-            for f in as_completed(futures):
-                f.result()
+        def download_worker(item):
+            time.sleep(0.3) # Avoid hitting WAF limit
+            self._download_image_robust(dl_session, item['url'], item['file'], output_dir)
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            list(executor.map(download_worker, image_data))
                 
         return output_dir
 
-    def _download_image(self, url, filename, out_dir):
-        for attempt in range(3):
-            try:
-                res = self.session.get(url, timeout=30)
-                if res.status_code == 200:
-                    with open(os.path.join(out_dir, filename), 'wb') as f:
-                        f.write(res.content)
-                    return
-                time.sleep(1)
-            except:
-                if attempt == 2: raise
-                time.sleep(2)
+    def _download_image_robust(self, dl_session, url, filename, out_dir):
+        res = dl_session.get(url, timeout=30)
+        res.raise_for_status()
+        with open(os.path.join(out_dir, filename), 'wb') as f:
+            f.write(res.content)

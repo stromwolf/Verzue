@@ -229,6 +229,17 @@ class KakaoApiScraper(BaseScraper):
         logger.info("-------------------------------------------")
 
 
+    def _get_robust_session(self):
+        import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        session = requests.Session()
+        retry = Retry(total=5, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
+        session.mount("https://", HTTPAdapter(max_retries=retry))
+        for k, v in self.session.cookies.items():
+            session.cookies.set(k, v, domain='.kakao.com')
+        return session
+
     def _scrape_webtoon_chapter(self, task, output_dir):
         """
         Binary-Exact Handshake for Kakao Webtoon.
@@ -295,15 +306,9 @@ class KakaoApiScraper(BaseScraper):
             logger.info(f"   ✅ Handshake Success! Mapped {total} pages.")
 
             task.status = TaskStatus.DOWNLOADING
-            completed = 0
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = [executor.submit(self._download_image, u, i+1, output_dir) 
-                          for i, u in enumerate(image_urls)]
-                for future in as_completed(futures):
-                    future.result()
-                    completed += 1
-                    if completed % 10 == 0 or completed == total:
-                        logger.info(f"   ⬇️ Progress: {completed}/{total}")
+            dl_session = self._get_robust_session()
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                executor.map(lambda x: self._download_image_robust(dl_session, x[1], x[0]+1, output_dir), enumerate(image_urls))
 
         except Exception as e:
             logger.error(f"[Kakao-Webtoon] Scrape failed: {e}")
@@ -331,15 +336,14 @@ class KakaoApiScraper(BaseScraper):
         try:
              files = data['data']['viewerInfo']['viewerData']['imageDownloadData']['files']
              urls = [f['secureUrl'] for f in files]
-             with ThreadPoolExecutor(max_workers=10) as exe:
-                 [exe.submit(self._download_image, u, i+1, output_dir) for i,u in enumerate(urls)]
+             dl_session = self._get_robust_session()
+             with ThreadPoolExecutor(max_workers=5) as exe:
+                 exe.map(lambda x: self._download_image_robust(dl_session, x[1], x[0]+1, output_dir), enumerate(urls))
         except: raise ScraperError("Failed to get images from KakaoPage")
 
-    def _download_image(self, url, idx, out_dir):
-        res = self.session.get(url, timeout=20)
+    def _download_image_robust(self, dl_session, url, idx, out_dir):
+        time.sleep(0.3)
+        res = dl_session.get(url, timeout=30)
         if res.status_code == 200:
-            fname = f"page_{idx:03d}.webp"
-            with open(f"{out_dir}/{fname}", "wb") as f:
+            with open(f"{out_dir}/page_{idx:03d}.webp", "wb") as f:
                 f.write(res.content)
-        else:
-            raise Exception(f"CDN {res.status_code}")

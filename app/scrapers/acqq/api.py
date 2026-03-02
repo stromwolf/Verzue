@@ -93,7 +93,7 @@ class AcqqApiScraper(BaseScraper):
             
             # Clean Title
             raw_text = link.get_text(strip=True)
-            # Remove "道诡异仙" prefix if present
+            # Remove "道詭異仙" prefix if present
             clean_title = raw_text.split(title)[-1].strip() if title in raw_text else raw_text
             clean_title = clean_title.replace('：', '').strip()
 
@@ -124,41 +124,41 @@ class AcqqApiScraper(BaseScraper):
             image_urls = []
             
             # Strategy A: Mobile often puts images in simple <img> tags with lazy-load attributes
-            # Look for: <ul class="comic-pic-list"> ... <img src="...">
             soup = BeautifulSoup(html, 'html.parser')
             imgs = soup.select(".comic-pic-list img, #comic-pic-list img, .comic-contain img")
             
             for img in imgs:
-                # Tencent mobile puts the real URL in data-src usually
                 src = img.get('src') or img.get('data-src')
                 if src and 'http' in src and '.gif' not in src:
                     image_urls.append(src)
 
-            # Strategy B: Javascript Data (If Strategy A fails)
+            # Strategy B: Javascript Data
             if not image_urls:
-                # Look for 'var DATA = {...}' or 'var _v = {...}'
                 json_match = re.search(r'var\s+(?:DATA|_v)\s*=\s*({.*?});', html, re.DOTALL)
                 if json_match:
                     try:
                         data = json.loads(json_match.group(1))
-                        # Mobile structure might be data['picture'] -> [{'url':...}]
                         if 'picture' in data:
                             image_urls = [p.get('url') for p in data['picture']]
                     except: pass
 
             if not image_urls:
-                # Debugging info
-                logger.error(f"HTML Preview: {html[:200]}")
                 raise ScraperError("No images found. Chapter might be locked.")
 
             logger.info(f"✅ Extracted {len(image_urls)} images.")
-            
+
+            import requests
+            from requests.adapters import HTTPAdapter
+            from urllib3.util.retry import Retry
+
+            dl_session = requests.Session()
+            retry = Retry(total=5, backoff_factor=1.5, status_forcelist=[429, 503])
+            dl_session.mount("https://", HTTPAdapter(max_retries=retry))
+            dl_session.headers.update({'Referer': 'https://m.ac.qq.com/'})
+
             task.status = TaskStatus.DOWNLOADING
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = [executor.submit(self._download_image, url, idx + 1, output_dir) 
-                          for idx, url in enumerate(image_urls)]
-                for f in as_completed(futures):
-                    f.result()
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                list(executor.map(lambda x: self._download_image_robust(dl_session, x[1], x[0]+1, output_dir), enumerate(image_urls)))
 
             return output_dir
 
@@ -166,13 +166,9 @@ class AcqqApiScraper(BaseScraper):
             logger.error(f"Scrape failed: {e}")
             raise ScraperError(str(e))
 
-    def _download_image(self, url, idx, out_dir):
-        for _ in range(3):
-            try:
-                res = self.session.get(url, timeout=20)
-                if res.status_code == 200:
-                    with open(os.path.join(out_dir, f"page_{idx:03d}.jpg"), "wb") as f:
-                        f.write(res.content)
-                    return
-            except: time.sleep(1)
-        logger.warning(f"Failed to download image {idx}")
+    def _download_image_robust(self, dl_session, url, idx, out_dir):
+        time.sleep(0.4)
+        res = dl_session.get(url, timeout=30)
+        if res.status_code == 200:
+            with open(os.path.join(output_dir, f"page_{idx:03d}.jpg"), "wb") as f:
+                f.write(res.content)

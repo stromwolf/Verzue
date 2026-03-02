@@ -215,41 +215,41 @@ class PiccomaApiScraper(BaseScraper):
         if not valid_images:
             raise ScraperError("No images found. Chapter requires purchase.")
 
-        logger.info(f"   Mapped {len(valid_images)} pages. Scrambled: {is_scrambled}")
+        import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+
+        dl_session = requests.Session()
+        retry = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500])
+        dl_session.mount("https://", HTTPAdapter(max_retries=retry))
+
+        logger.info(f"   Mapped {len(valid_images)} pages.")
         task.status = TaskStatus.DOWNLOADING
-        completed = 0
-
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [
-                executor.submit(self._download_and_unscramble, img, i+1, output_dir, is_scrambled)
-                for i, img in enumerate(valid_images)
-            ]
-            for future in as_completed(futures):
-                future.result()
-                completed += 1
-                if completed % 10 == 0 or completed == len(valid_images):
-                    logger.info(f"   ⬇️ Progress: {completed}/{len(valid_images)}")
-
-    def _download_and_unscramble(self, img_data, idx, out_dir, is_scrambled):
-        url = img_data['path']
-        if not url.startswith('http'):
-            url = 'https:' + url
         
-        res = self.session.get(url, timeout=20)
-        if res.status_code != 200:
-            raise Exception(f"Failed to download image: HTTP {res.status_code}")
+        def process_piccoma(args):
+            img_data, i = args
+            time.sleep(0.5)
+            self._download_and_unscramble_robust(dl_session, img_data, i+1, output_dir, is_scrambled)
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            list(executor.map(process_piccoma, [(img, i) for i, img in enumerate(valid_images)]))
             
-        fname = f"page_{idx:03d}.png"
-        out_path = f"{out_dir}/{fname}"
+        return output_dir
+
+    def _download_and_unscramble_robust(self, dl_session, img_data, idx, out_dir, is_scrambled):
+        url = img_data['path']
+        if not url.startswith('http'): url = 'https:' + url
         
+        res = dl_session.get(url, timeout=30)
+        res.raise_for_status()
+            
+        out_path = f"{out_dir}/page_{idx:03d}.png"
         if is_scrambled:
             seed = get_seed(url)
             unscrambled_bytes = self._unscramble_image(res.content, seed)
-            with open(out_path, "wb") as f:
-                f.write(unscrambled_bytes)
+            with open(out_path, "wb") as f: f.write(unscrambled_bytes)
         else:
-            with open(out_path, "wb") as f:
-                f.write(res.content)
+            with open(out_path, "wb") as f: f.write(res.content)
 
     def _unscramble_image(self, image_bytes, seed):
         img = Image.open(BytesIO(image_bytes))
