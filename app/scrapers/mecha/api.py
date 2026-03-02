@@ -396,7 +396,7 @@ class MechaApiScraper(BaseScraper):
             raise Exception("Manifest returned 0 pages. Rate limited by server or chapter is empty.")
 
         def download_and_decrypt(t):
-            time.sleep(0.5) # 連続ダウンロード時のブロック回避
+            time.sleep(0.3) # 🟢 PACING: 0.3s prevents IP blocks during bulk runs
             image_url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
             
             for attempt in range(4):
@@ -425,8 +425,8 @@ class MechaApiScraper(BaseScraper):
                         raise Exception(f"Failed after 3 retries: {e}")
                     time.sleep(2) # 失敗した場合は2秒待機して再試行
 
-        # 🟢 3. 大量リクエスト時のブロックを防ぐため、1話ごとの並列数を 8 から 4 に削減
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        # 🟢 3. PACED IMAGE DOWNLOADER (Native Requests)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             future_to_task = {executor.submit(download_and_decrypt, t): t for t in img_tasks}
             for future in concurrent.futures.as_completed(future_to_task):
                 current_task = future_to_task[future]

@@ -90,8 +90,20 @@ class TaskWorker:
             await asyncio.to_thread(self.uploader.rename_file, task.pre_created_folder_id, task.final_folder_name)
 
     def _clean_dirs(self, r, f):
-        if r.exists(): shutil.rmtree(r)
-        if f.exists(): shutil.rmtree(f)
+        """Robust cleanup with retry to avoid WinError 32."""
+        for path in [r, f]:
+            if not path.exists(): continue
+            for attempt in range(3):
+                try:
+                    shutil.rmtree(path)
+                    break
+                except PermissionError:
+                    # Wait for system to release file handles (Common on Windows)
+                    logger.warning(f"⚠️ Directory locked ({path}), retrying cleanup in 1s... (Attempt {attempt+1})")
+                    time.sleep(1)
+                except Exception as e:
+                    logger.warning(f"Could not clean {path}: {e}")
+                    break
 
 
 # --- EXECUTION BLOCK (No indentation at the start of this line) ---

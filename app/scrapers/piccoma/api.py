@@ -228,10 +228,10 @@ class PiccomaApiScraper(BaseScraper):
         
         def process_piccoma(args):
             img_data, i = args
-            time.sleep(0.5)
+            time.sleep(0.3) # 🟢 Standardized pacing
             self._download_and_unscramble_robust(dl_session, img_data, i+1, output_dir, is_scrambled)
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             list(executor.map(process_piccoma, [(img, i) for i, img in enumerate(valid_images)]))
             
         return output_dir

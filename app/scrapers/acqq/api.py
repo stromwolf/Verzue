@@ -167,7 +167,7 @@ class AcqqApiScraper(BaseScraper):
             raise ScraperError(str(e))
 
     def _download_image_robust(self, dl_session, url, idx, out_dir):
-        time.sleep(0.4)
+        time.sleep(0.3) # 🟢 Standardized pacing
         res = dl_session.get(url, timeout=30)
         if res.status_code == 200:
             with open(os.path.join(output_dir, f"page_{idx:03d}.jpg"), "wb") as f:
