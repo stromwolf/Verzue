@@ -75,7 +75,7 @@ class KuaikanApiScraper(BaseScraper):
                         ch_title = ch.get('title', str(idx+1))
                         all_chapters.append({
                             'id': cid,
-                            'number_text': str(idx+1),
+                            'number_text': str(idx+1).zfill(2),
                             'title': ch_title, # No more "Ch.1 - -" prefix
                             'url': f"https://www.kuaikanmanhua.com/web/comic/{cid}/",
                             'is_locked': ch.get('is_free', True) is False
@@ -109,7 +109,7 @@ class KuaikanApiScraper(BaseScraper):
                 all_chapters.reverse()
 
         for idx, ch in enumerate(all_chapters):
-            ch['number_text'] = str(idx+1)
+            ch['number_text'] = str(idx+1).zfill(2)
             ch['title'] = ch.get('title_raw', str(idx+1))
 
         return title, len(all_chapters), all_chapters, image_url, series_id
@@ -125,14 +125,11 @@ class KuaikanApiScraper(BaseScraper):
         retry = Retry(total=5, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
         dl_session.mount("https://", HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry))
         
-        # 🟢 FIX: Use chapter URL as Referer and add browser-grade headers
+        # 🟢 1. Update headers for Browser Identity and Referer
         dl_session.headers.update({
             'Referer': task.url,
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Connection': 'keep-alive',
             'Sec-Fetch-Dest': 'image',
             'Sec-Fetch-Mode': 'no-cors',
             'Sec-Fetch-Site': 'cross-site'
@@ -144,18 +141,23 @@ class KuaikanApiScraper(BaseScraper):
         if "login" in res.url or "pay" in res.url:
             raise ScraperError("Chapter is locked. Check Kuaikan cookies.")
         
-        # Extract image URLs from __NUXT__
+        # 🟢 2. Extract high-quality (w1280) image URLs directly from the HTML source
+        soup = BeautifulSoup(res.text, 'html.parser')
         image_urls = []
-        nuxt_match = re.search(r'window\.__NUXT__\s*=\s*(.+?)(?:;</script>|$)', res.text, re.DOTALL)
-        if nuxt_match:
-            img_block = re.search(r'comic_images\s*:\s*\[(.*?)\]', nuxt_match.group(1))
-            if img_block:
-                image_urls = [u.replace('\\u002F', '/').replace('\\/', '/') for u in re.findall(r'url\s*:\s*["\'](https?://[^"\']+)["\']', img_block.group(1))]
+        
+        img_container = soup.find("div", class_="imgList")
+        if img_container:
+            found_imgs = img_container.find_all("img", src=True)
+            for img in found_imgs:
+                src = img["src"]
+                # Prioritize high quality w1280 URLs found in your provided HTML
+                if any(cdn in src for cdn in ['kkmh.com', 'v3mh.com']) and "avatar" not in src:
+                    if src not in image_urls:
+                        image_urls.append(src)
 
+        # Final regex fallback targeting the high quality pattern
         if not image_urls:
-            # Last resort regex fallback
-            image_urls = list(dict.fromkeys(re.findall(r'https?://[^\s"\'\\]+?\.(?:jpg|jpeg|webp|png)(?:\?[^\s"\'\\]+)?', res.text)))
-            image_urls = [u for u in image_urls if any(cdn in u for cdn in ['kkmh.com', 'v3mh.com']) and 'avatar' not in u]
+            image_urls = list(dict.fromkeys(re.findall(r'https?://[^\s"\'\\]+?\.webp-t\.w1280\.jpg\.h\?[^\s"\'\\]+', res.text)))
 
         if not image_urls: raise ScraperError(f"No images found for {task.chapter_str}.")
 
