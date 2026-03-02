@@ -328,45 +328,42 @@ class MechaApiScraper(BaseScraper):
         from cryptography.hazmat.backends import default_backend
         import concurrent.futures
 
+        # 🟢 THE SECRET SAUCE: The Server-Side Trigger
+        # We MUST hit this endpoint first to tell MechaComic to generate the real key.
+        download_trigger_url = f"{self.BASE_URL}/chapters/{real_id}/download?commit=read"
+        logger.info(f"   [API] Triggering server-side read session...")
+        session.get(download_trigger_url, allow_redirects=False)
+
         qs = parse_qs(urlparse(viewer_url).query)
         contents_vertical_url = qs['contents_vertical'][0]
         directory_url = qs['directory'][0]
         version = qs.get('ver', [''])[0]
 
-        # 🟢 1. Build a raw Cookie string to bypass curl_cffi's buggy cookie jar
-        cookie_string = "; ".join([f"{k}={v}" for k, v in session.cookies.items()])
-        
-        # 🟢 2. Use the exact headers that real browsers use for Ajax requests
-        headers = {
-            "Referer": viewer_url, 
-            "Origin": "https://mechacomic.jp", 
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "X-Requested-With": "XMLHttpRequest",
-            "Cookie": cookie_string
-        }
-
         # Fetch Manifest
-        manifest_res = session.get(contents_vertical_url, headers=headers)
+        manifest_res = session.get(contents_vertical_url)
         if manifest_res.status_code != 200:
             raise Exception(f"Failed to fetch manifest. Status: {manifest_res.status_code}")
         manifest = manifest_res.json()
         
-        # 🟢 3. Fetch Key using the strict headers
+        # Fetch Real Cryptokey
         cryptokey_path = qs.get('cryptokey', [f"/viewer_cryptokey/chapter/{real_id}"])[0]
         key_url = urljoin(self.BASE_URL, cryptokey_path)
         
-        key_res = session.get(key_url, headers=headers)
+        key_res = session.get(key_url)
         if key_res.status_code != 200:
             raise Exception(f"Failed to fetch cryptokey. Status: {key_res.status_code}")
         
         key_text = key_res.text.strip()
         if len(key_text) != 32:
             raise Exception(f"Server returned invalid cryptokey length: {len(key_text)}")
-        key = binascii.unhexlify(key_text)
-        
-        # 🟢 DEBUG: If it's still the dummy key, log a massive warning
+            
+        # 🟢 Verify we successfully got past the dummy key!
         if key_text.startswith("e74da3e8"):
-            logger.error("🚨 CRITICAL: Server is STILL returning the Dummy Key! Cloudflare/WAF is blocking the key request.")
+            logger.error("🚨 CRITICAL: Server STILL returned the Dummy Key!")
+        else:
+            logger.info(f"   🔑 Acquired REAL Cryptokey: {key_text[:8]}...")
+            
+        key = binascii.unhexlify(key_text)
 
         # Build Image Tasks
         img_tasks = []
@@ -380,39 +377,16 @@ class MechaApiScraper(BaseScraper):
         def download_and_decrypt(t):
             url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
             
-            # 🟢 1. The Ultimate Stealth Headers
-            # These headers perfectly mimic Chrome 120 requesting an image file.
-            stealth_headers = {
-                "Referer": viewer_url,
-                "Origin": "https://mechacomic.jp",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-                "Accept-Encoding": "gzip, deflate, br, zstd",
-                "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-                "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-                "Sec-Ch-Ua-Mobile": "?0",
-                "Sec-Ch-Ua-Platform": '"Windows"',
-                "Sec-Fetch-Dest": "image",       # Crucial: Tells the server we want an image
-                "Sec-Fetch-Mode": "no-cors",     # Crucial for cross-origin image loads
-                "Sec-Fetch-Site": "cross-site",
-                "Cookie": cookie_string          # Maintain our forced authentication
-            }
-            
-            # 🟢 2. Use a completely fresh session for the download to prevent header pollution
-            from curl_cffi import requests as c_req
-            dl_session = c_req.Session(impersonate="chrome120")
-            
-            res = dl_session.get(url, headers=stealth_headers, timeout=30)
+            res = session.get(url, timeout=30)
             if res.status_code != 200:
                 raise Exception(f"HTTP {res.status_code}")
                 
             raw_bytes = res.content
             
-            # 🟢 3. Strict HTML Trap Detection
-            # If the response starts with HTML tags, we got caught by Kaspersky.
             if b"<!DOCTYPE html>" in raw_bytes[:100] or b"<html" in raw_bytes[:100]:
-                raise Exception("Caught by Kaspersky Firewall. Server returned HTML instead of image.")
+                raise Exception("Server returned HTML page instead of image blob.")
                 
+            # Bypass if image is unencrypted
             if raw_bytes.startswith(b'\x89PNG') or raw_bytes.startswith(b'\xff\xd8') or raw_bytes.startswith(b'RIFF'):
                 with open(os.path.join(output_dir, t['filename']), 'wb') as f:
                     f.write(raw_bytes)
