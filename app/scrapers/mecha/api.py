@@ -315,23 +315,55 @@ class MechaApiScraper(BaseScraper):
     def _execute_extraction(self, session, viewer_url, real_id, output_dir, task):
         logger.info(f"[API] 🏗️  Starting Extraction from: {viewer_url[:60]}...")
         
+        from urllib.parse import urlparse, parse_qs, urljoin
+        import binascii
+        import os
+        import io
+        import json
+        from PIL import Image
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from cryptography.hazmat.primitives import padding
+        from cryptography.hazmat.backends import default_backend
+        import concurrent.futures
+
         qs = parse_qs(urlparse(viewer_url).query)
         contents_vertical_url = qs['contents_vertical'][0]
         directory_url = qs['directory'][0]
         version = qs.get('ver', [''])[0]
 
-        headers = {"Referer": viewer_url, "Origin": "https://mechacomic.jp", "Accept": "application/json, text/plain, */*"}
+        # 🟢 1. FORCE THE COOKIES INTO A RAW HTTP HEADER
+        # This completely bypasses the buggy cookie jar
+        cookie_header = "; ".join([f"{k}={v}" for k, v in session.cookies.items()])
+        headers = {
+            "Referer": viewer_url, 
+            "Origin": "https://mechacomic.jp", 
+            "Accept": "application/json, text/plain, */*",
+            "Cookie": cookie_header,
+            "User-Agent": session.headers.get("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        }
 
+        # Fetch Manifest
         manifest_res = session.get(contents_vertical_url, headers=headers)
+        if manifest_res.status_code != 200:
+            raise Exception(f"Failed to fetch manifest. Status: {manifest_res.status_code}")
         manifest = manifest_res.json()
         
-        # 🟢 1. DYNAMIC CRYPTOKEY (Bypasses hardcoded URL issues)
+        # 🟢 2. FETCH REAL CRYPTOKEY WITH FORCED COOKIES
         cryptokey_path = qs.get('cryptokey', [f"/viewer_cryptokey/chapter/{real_id}"])[0]
         key_url = urljoin(self.BASE_URL, cryptokey_path)
         
         key_res = session.get(key_url, headers=headers)
-        key = binascii.unhexlify(key_res.text.strip())
+        if key_res.status_code != 200:
+            raise Exception(f"Failed to fetch cryptokey. Status: {key_res.status_code}")
+        
+        # If the key isn't a 32-character hex string, we got blocked.
+        key_text = key_res.text.strip()
+        if len(key_text) != 32:
+            raise Exception(f"Server returned invalid cryptokey: {key_text[:20]}...")
+            
+        key = binascii.unhexlify(key_text)
 
+        # Build Image Tasks
         img_tasks = []
         for pg in manifest.get('pages', []):
             formats = manifest.get('images', {}).get(pg['image'], [])
@@ -340,16 +372,19 @@ class MechaApiScraper(BaseScraper):
             target = next((f for f in formats if f['format'] == 'png'), None) or formats[0]
             img_tasks.append({'src': target['src'], 'pg': pg['pageIndex'], 'filename': f"page_{pg['pageIndex']:03d}.png", 'pg_data': pg})
 
-        # 🟢 2. SYNCHRONOUS THREAD POOL (Guarantees perfect cookie sync)
-        import concurrent.futures
-
+        # 🟢 3. SYNCHRONOUS THREAD POOL DOWNLOADER
         def download_and_decrypt(t):
             url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
             
-            # Use the exact same authenticated session
+            # Explicitly pass the forged headers
             res = session.get(url, timeout=20, headers=headers)
+            
             if res.status_code != 200:
                 raise Exception(f"Failed to download {url}: Status {res.status_code}")
+                
+            # HTML Safeguard: If the response is HTML, it's an error page, not an image!
+            if b"<!DOCTYPE html>" in res.content or b"<html" in res.content:
+                raise Exception("Server returned HTML page instead of encrypted image blob.")
             
             iv, encrypted_data = res.content[:16], res.content[16:]
             cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
@@ -360,7 +395,7 @@ class MechaApiScraper(BaseScraper):
             
             with Image.open(io.BytesIO(plaintext)) as img: 
                 w, h = img.size
-            with open(os.path.join(out_dir, t['filename']), 'wb') as f: 
+            with open(os.path.join(output_dir, t['filename']), 'wb') as f: 
                 f.write(plaintext)
                 
             return t['pg'], w, h
@@ -371,15 +406,14 @@ class MechaApiScraper(BaseScraper):
             for future in concurrent.futures.as_completed(futures):
                 try:
                     pg_idx, actual_w, actual_h = future.result()
-                    # Update dimensions for the math.json file
                     for t in img_tasks:
                         if t['pg'] == pg_idx:
                             t['actual_w'] = actual_w
                             t['actual_h'] = actual_h
                 except Exception as e:
-                    logger.error(f"[API] Sync Download failed: {e}")
+                    logger.error(f"[API] Sync Download failed for page {t.get('filename')}: {e}")
 
-        # 🟢 3. BUILD MATH JSON
+        # 🟢 4. BUILD MATH JSON
         math_data = []
         current_y = 0
         scale = max([t.get('actual_w', 0) for t in img_tasks] + [780]) / manifest.get('viewportSize', {}).get('width', 480)
@@ -395,4 +429,3 @@ class MechaApiScraper(BaseScraper):
             json.dump(math_data, f, indent=2)
 
         return output_dir
-
