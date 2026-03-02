@@ -14,12 +14,22 @@ class MechaCog(commands.Cog):
         self.bot = bot
         # 3. BOUNDED SEMAPHORE: Limits concurrent metadata/warmup phases to 3
         self.semaphore = asyncio.BoundedSemaphore(3)
+        self._seen_interactions = set()
 
     @app_commands.command(name="mecha", description="Download from MechaComic (JP)")
     async def mecha(self, interaction: discord.Interaction, url: str):
         """
         Phase 1: Intelligence (Validated & Throttled).
         """
+        # DEDUP GUARD: Ignore re-delivered stale interactions
+        if interaction.id in self._seen_interactions:
+            return
+        self._seen_interactions.add(interaction.id)
+        
+        # Cleanup old IDs (prevent memory leak)
+        if len(self._seen_interactions) > 100:
+            self._seen_interactions.clear()
+
         # 1. IMMEDIATE DEFER (3-Second Rule)
         try:
             await interaction.response.defer()

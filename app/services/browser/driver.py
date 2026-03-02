@@ -69,7 +69,6 @@ class BrowserService:
 
             try:
                 self.driver = webdriver.Chrome(service=service, options=opts)
-                self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
                 self.driver.set_window_size(1920, 1080)
                 
                 # INITIALIZE 1 SINGLE TAB
