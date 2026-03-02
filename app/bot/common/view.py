@@ -42,7 +42,11 @@ class UniversalDashboard(View):
         if self.service_type == "mecha":
             browser = self.bot.task_queue.scraper_registry.browser
             browser.dec_session()
-        await interaction.response.send_message("❌ A critical error occurred.", ephemeral=True)
+        
+        try:
+            await interaction.followup.send("❌ A critical error occurred.", ephemeral=True)
+        except Exception:
+            pass # If even followup fails, silently ignore
 
     def build_live_embed(self):
         # STEP 5: Success State (Green Color)
