@@ -380,14 +380,38 @@ class MechaApiScraper(BaseScraper):
         def download_and_decrypt(t):
             url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
             
-            res = session.get(url, headers=headers, timeout=30)
+            # 🟢 1. The Ultimate Stealth Headers
+            # These headers perfectly mimic Chrome 120 requesting an image file.
+            stealth_headers = {
+                "Referer": viewer_url,
+                "Origin": "https://mechacomic.jp",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br, zstd",
+                "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+                "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Sec-Fetch-Dest": "image",       # Crucial: Tells the server we want an image
+                "Sec-Fetch-Mode": "no-cors",     # Crucial for cross-origin image loads
+                "Sec-Fetch-Site": "cross-site",
+                "Cookie": cookie_string          # Maintain our forced authentication
+            }
+            
+            # 🟢 2. Use a completely fresh session for the download to prevent header pollution
+            from curl_cffi import requests as c_req
+            dl_session = c_req.Session(impersonate="chrome120")
+            
+            res = dl_session.get(url, headers=stealth_headers, timeout=30)
             if res.status_code != 200:
                 raise Exception(f"HTTP {res.status_code}")
                 
             raw_bytes = res.content
             
+            # 🟢 3. Strict HTML Trap Detection
+            # If the response starts with HTML tags, we got caught by Kaspersky.
             if b"<!DOCTYPE html>" in raw_bytes[:100] or b"<html" in raw_bytes[:100]:
-                raise Exception("Server returned HTML page instead of image blob.")
+                raise Exception("Caught by Kaspersky Firewall. Server returned HTML instead of image.")
                 
             if raw_bytes.startswith(b'\x89PNG') or raw_bytes.startswith(b'\xff\xd8') or raw_bytes.startswith(b'RIFF'):
                 with open(os.path.join(output_dir, t['filename']), 'wb') as f:
