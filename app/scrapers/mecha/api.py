@@ -322,7 +322,6 @@ class MechaApiScraper(BaseScraper):
         import os
         import io
         import json
-        import requests
         from PIL import Image
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
         from cryptography.hazmat.primitives import padding
@@ -334,41 +333,40 @@ class MechaApiScraper(BaseScraper):
         directory_url = qs['directory'][0]
         version = qs.get('ver', [''])[0]
 
-        # ==========================================
-        # FIX 1 & 2: USE STANDARD REQUESTS & AJAX HEADERS
-        # ==========================================
-        req_session = requests.Session()
-        for k, v in session.cookies.items():
-            req_session.cookies.set(k, v, domain=".mechacomic.jp")
-            req_session.cookies.set(k, v, domain="mechacomic.jp")
-
+        # 🟢 1. Build a raw Cookie string to bypass curl_cffi's buggy cookie jar
+        cookie_string = "; ".join([f"{k}={v}" for k, v in session.cookies.items()])
+        
+        # 🟢 2. Use the exact headers that real browsers use for Ajax requests
         headers = {
             "Referer": viewer_url, 
             "Origin": "https://mechacomic.jp", 
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "X-Requested-With": "XMLHttpRequest" # CRITICAL FOR FAKE KEY AVOIDANCE
+            "X-Requested-With": "XMLHttpRequest",
+            "Cookie": cookie_string
         }
-        req_session.headers.update(headers)
 
         # Fetch Manifest
-        manifest_res = req_session.get(contents_vertical_url)
+        manifest_res = session.get(contents_vertical_url, headers=headers)
         if manifest_res.status_code != 200:
             raise Exception(f"Failed to fetch manifest. Status: {manifest_res.status_code}")
         manifest = manifest_res.json()
         
-        # Fetch Key
+        # 🟢 3. Fetch Key using the strict headers
         cryptokey_path = qs.get('cryptokey', [f"/viewer_cryptokey/chapter/{real_id}"])[0]
         key_url = urljoin(self.BASE_URL, cryptokey_path)
         
-        key_res = req_session.get(key_url)
+        key_res = session.get(key_url, headers=headers)
         if key_res.status_code != 200:
             raise Exception(f"Failed to fetch cryptokey. Status: {key_res.status_code}")
         
         key_text = key_res.text.strip()
         if len(key_text) != 32:
-            raise Exception(f"Server returned invalid cryptokey: {key_text[:20]}...")
-            
+            raise Exception(f"Server returned invalid cryptokey length: {len(key_text)}")
         key = binascii.unhexlify(key_text)
+        
+        # 🟢 DEBUG: If it's still the dummy key, log a massive warning
+        if key_text.startswith("e74da3e8"):
+            logger.error("🚨 CRITICAL: Server is STILL returning the Dummy Key! Cloudflare/WAF is blocking the key request.")
 
         # Build Image Tasks
         img_tasks = []
@@ -378,33 +376,42 @@ class MechaApiScraper(BaseScraper):
             target = next((f for f in formats if f['format'] == 'png'), None) or formats[0]
             img_tasks.append({'src': target['src'], 'pg': pg['pageIndex'], 'filename': f"page_{pg['pageIndex']:03d}.png", 'pg_data': pg})
 
-        # ==========================================
-        # FIX 3: STREAMING DOWNLOAD TO PREVENT CORRUPTION
-        # ==========================================
+        # Download & Decrypt Function
         def download_and_decrypt(t):
             url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
             
-            # Stream the request to ensure the entire binary blob is caught
-            res = req_session.get(url, timeout=30, stream=True)
-            res.raise_for_status()
-            
-            raw_bytes = res.content
-            if b"<!DOCTYPE html>" in raw_bytes or b"<html" in raw_bytes:
-                raise Exception("Server returned HTML page instead of encrypted image blob.")
-            
-            iv, encrypted_data = raw_bytes[:16], raw_bytes[16:]
-            cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-            decryptor = cipher.decryptor()
-            padded = decryptor.update(encrypted_data) + decryptor.finalize()
-            
-            plaintext = padding.PKCS7(128).unpadder().update(padded) + padding.PKCS7(128).unpadder().finalize()
-            
-            with Image.open(io.BytesIO(plaintext)) as img: 
-                w, h = img.size
-            with open(os.path.join(output_dir, t['filename']), 'wb') as f: 
-                f.write(plaintext)
+            res = session.get(url, headers=headers, timeout=30)
+            if res.status_code != 200:
+                raise Exception(f"HTTP {res.status_code}")
                 
-            return t['pg'], w, h
+            raw_bytes = res.content
+            
+            if b"<!DOCTYPE html>" in raw_bytes[:100] or b"<html" in raw_bytes[:100]:
+                raise Exception("Server returned HTML page instead of image blob.")
+                
+            if raw_bytes.startswith(b'\x89PNG') or raw_bytes.startswith(b'\xff\xd8') or raw_bytes.startswith(b'RIFF'):
+                with open(os.path.join(output_dir, t['filename']), 'wb') as f:
+                    f.write(raw_bytes)
+                with Image.open(io.BytesIO(raw_bytes)) as img:
+                    return t['pg'], img.size[0], img.size[1]
+
+            if len(raw_bytes) < 32:
+                raise Exception(f"Payload too small: {len(raw_bytes)} bytes")
+                
+            try:
+                iv, encrypted_data = raw_bytes[:16], raw_bytes[16:]
+                cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+                decryptor = cipher.decryptor()
+                padded = decryptor.update(encrypted_data) + decryptor.finalize()
+                
+                plaintext = padding.PKCS7(128).unpadder().update(padded) + padding.PKCS7(128).unpadder().finalize()
+                
+                with open(os.path.join(output_dir, t['filename']), 'wb') as f: 
+                    f.write(plaintext)
+                with Image.open(io.BytesIO(plaintext)) as img: 
+                    return t['pg'], img.size[0], img.size[1]
+            except Exception as e:
+                raise Exception(f"Padding Error | Key: {key.hex()[:8]}... | IV: {iv.hex()} | File Len: {len(raw_bytes)}")
 
         # Execute downloads concurrently
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
