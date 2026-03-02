@@ -317,54 +317,58 @@ class MechaApiScraper(BaseScraper):
     def _execute_extraction(self, session, viewer_url, real_id, output_dir, task):
         logger.info(f"[API] 🏗️  Starting Extraction from: {viewer_url[:60]}...")
         
-        from urllib.parse import urlparse, parse_qs, urljoin
+        import requests
         import binascii
         import os
         import io
         import json
+        import time
+        from urllib.parse import urlparse, parse_qs, urljoin
         from PIL import Image
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
         from cryptography.hazmat.primitives import padding
         from cryptography.hazmat.backends import default_backend
         import concurrent.futures
-        import requests # 🟢 IMPORT NATIVE REQUESTS FOR SAFE BINARY DOWNLOAD
 
-        # 1. Trigger server-side read session
-        download_trigger_url = f"{self.BASE_URL}/chapters/{real_id}/download?commit=read"
-        logger.info(f"   [API] Triggering server-side read session...")
-        session.get(download_trigger_url, allow_redirects=False)
+        # 🟢 Create a pure, native requests session exactly like manga_scraper.py
+        req_session = requests.Session()
+        req_session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        })
+
+        # Transfer cookies safely to the native requests session
+        for k, v in session.cookies.items():
+            req_session.cookies.set(k, v, domain='.mechacomic.jp')
+            req_session.cookies.set(k, v, domain='mechacomic.jp')
 
         qs = parse_qs(urlparse(viewer_url).query)
         contents_vertical_url = qs['contents_vertical'][0]
         directory_url = qs['directory'][0]
         version = qs.get('ver', [''])[0]
 
-        # 2. Fetch Manifest
-        manifest_res = session.get(contents_vertical_url)
-        if manifest_res.status_code != 200:
-            raise Exception(f"Failed to fetch manifest. Status: {manifest_res.status_code}")
+        # 🟢 The Trigger logic from manga_scraper.py
+        download_url = f"{self.BASE_URL}/chapters/{real_id}/download?commit=read"
+        logger.info("   [API] Triggering server-side read session...")
+        req_session.get(download_url, allow_redirects=False)
+
+        manifest_res = req_session.get(contents_vertical_url)
+        manifest_res.raise_for_status()
         manifest = manifest_res.json()
         
-        # 3. Fetch Real Cryptokey
         cryptokey_path = qs.get('cryptokey', [f"/viewer_cryptokey/chapter/{real_id}"])[0]
         key_url = urljoin(self.BASE_URL, cryptokey_path)
         
-        key_res = session.get(key_url)
-        if key_res.status_code != 200:
-            raise Exception(f"Failed to fetch cryptokey. Status: {key_res.status_code}")
-        
+        key_res = req_session.get(key_url)
+        key_res.raise_for_status()
         key_text = key_res.text.strip()
-        if len(key_text) != 32:
-            raise Exception(f"Server returned invalid cryptokey length: {len(key_text)}")
-            
-        if key_text.startswith("e74da3e8"):
-            logger.error("🚨 CRITICAL: Server STILL returned the Dummy Key!")
-        else:
-            logger.info(f"   🔑 Acquired REAL Cryptokey: {key_text[:8]}...")
-            
+        logger.info(f"   🔑 Acquired Cryptokey: {key_text[:8]}...")
         key = binascii.unhexlify(key_text)
 
-        # Build Image Tasks
         img_tasks = []
         for pg in manifest.get('pages', []):
             formats = manifest.get('images', {}).get(pg['image'], [])
@@ -372,58 +376,39 @@ class MechaApiScraper(BaseScraper):
             target = next((f for f in formats if f['format'] == 'png'), None) or formats[0]
             img_tasks.append({'src': target['src'], 'pg': pg['pageIndex'], 'filename': f"page_{pg['pageIndex']:03d}.png", 'pg_data': pg})
 
-        # 🟢 4. Prepare pure 'requests' session to prevent curl_cffi binary corruption
-        dl_session = requests.Session()
-        
-        # Manually extract cookies and inject them to bypass domain drops
-        cookie_string = "; ".join([f"{k}={v}" for k, v in session.cookies.items()])
-        dl_session.headers.update({
-            "Referer": viewer_url,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Cookie": cookie_string
-        })
-
-        # Download & Decrypt Function
+        # 🟢 Download exactly like manga_scraper.py
         def download_and_decrypt(t):
-            url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
+            time.sleep(0.1)
+            image_url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
             
-            # 🟢 Use the native dl_session (requests)
-            res = dl_session.get(url, timeout=30)
-            if res.status_code != 200:
-                raise Exception(f"HTTP {res.status_code}")
-                
-            raw_bytes = res.content
-            
-            if b"<!DOCTYPE html>" in raw_bytes[:100] or b"<html" in raw_bytes[:100]:
-                raise Exception("Server returned HTML page instead of image blob.")
-                
-            # Bypass if image is unencrypted
-            if raw_bytes.startswith(b'\x89PNG') or raw_bytes.startswith(b'\xff\xd8') or raw_bytes.startswith(b'RIFF'):
-                with open(os.path.join(output_dir, t['filename']), 'wb') as f:
-                    f.write(raw_bytes)
-                with Image.open(io.BytesIO(raw_bytes)) as img:
-                    return t['pg'], img.size[0], img.size[1]
+            for attempt in range(4):
+                try:
+                    img_res = req_session.get(image_url, timeout=30)
+                    img_res.raise_for_status()
+                    encrypted_data = img_res.content
+                    
+                    # Decrypt exactly like manga_scraper.py _decrypt_images
+                    iv = encrypted_data[:16]
+                    ciphertext = encrypted_data[16:]
+                    
+                    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+                    decryptor = cipher.decryptor()
+                    padded_plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+                    
+                    unpadder = padding.PKCS7(128).unpadder()
+                    plaintext = unpadder.update(padded_plaintext) + unpadder.finalize()
+                    
+                    with open(os.path.join(output_dir, t['filename']), 'wb') as f:
+                        f.write(plaintext)
+                    
+                    with Image.open(io.BytesIO(plaintext)) as img:
+                        return t['pg'], img.size[0], img.size[1]
+                except Exception as e:
+                    if attempt == 3:
+                        raise Exception(f"Failed after 3 retries: {e}")
+                    time.sleep(1)
 
-            if len(raw_bytes) < 32:
-                raise Exception(f"Payload too small: {len(raw_bytes)} bytes")
-                
-            try:
-                iv, encrypted_data = raw_bytes[:16], raw_bytes[16:]
-                cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-                decryptor = cipher.decryptor()
-                padded = decryptor.update(encrypted_data) + decryptor.finalize()
-                
-                plaintext = padding.PKCS7(128).unpadder().update(padded) + padding.PKCS7(128).unpadder().finalize()
-                
-                with open(os.path.join(output_dir, t['filename']), 'wb') as f: 
-                    f.write(plaintext)
-                with Image.open(io.BytesIO(plaintext)) as img: 
-                    return t['pg'], img.size[0], img.size[1]
-            except Exception as e:
-                raise Exception(f"Padding Error | Key: {key.hex()[:8]}... | IV: {iv.hex()} | File Len: {len(raw_bytes)}")
-
-        # Execute downloads concurrently
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             future_to_task = {executor.submit(download_and_decrypt, t): t for t in img_tasks}
             for future in concurrent.futures.as_completed(future_to_task):
                 current_task = future_to_task[future]
@@ -434,7 +419,6 @@ class MechaApiScraper(BaseScraper):
                 except Exception as e:
                     logger.error(f"[API] Sync Download failed for page {current_task.get('filename')}: {e}")
 
-        # Build Math JSON
         math_data = []
         current_y = 0
         scale = max([t.get('actual_w', 0) for t in img_tasks] + [780]) / manifest.get('viewportSize', {}).get('width', 480)
