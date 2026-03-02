@@ -60,7 +60,12 @@ class AdminCog(commands.Cog):
             # 3. EXECUTE RESTART
             # This replaces the current process with a new one
             logger.info(f"Reboot: Process re-executing by {ctx.author}")
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            
+            # 🟢 FIX: Wrap paths in quotes to prevent Windows from splitting them at spaces
+            args = [sys.executable] + sys.argv
+            quoted_args = [f'"{arg}"' if ' ' in arg else arg for arg in args]
+            
+            os.execv(sys.executable, quoted_args)
             
         except Exception as e:
             logger.error(f"Restart Failed: {e}")
