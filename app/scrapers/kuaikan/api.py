@@ -126,10 +126,26 @@ class KuaikanApiScraper(BaseScraper):
         if data.get('code') != 200:
             raise ScraperError(f"Kuaikan API Error: {data.get('message')}")
 
+        # 1. Try to extract images from API data first
         image_urls = [img.get('url') for img in data.get('data', {}).get('comic_images', []) if img.get('url')]
         
+        # 🟢 SMART FALLBACK: If API is empty (due to no login), mine the HTML
         if not image_urls:
-            raise ScraperError("API returned 0 image URLs. This chapter might be VIP/Locked.")
+            logger.info(f"[Kuaikan] API returned empty, attempting HTML fallback for {task.chapter_str}...")
+            res = self.session.get(task.url, timeout=20)
+            
+            # Extract the Nuxt state from the HTML
+            nuxt_match = re.search(r'window\.__NUXT__\s*=\s*(.+?)(?:;</script>|$)', res.text, re.DOTALL)
+            if nuxt_match:
+                # Find the comic_images array within the Nuxt string
+                img_block = re.search(r'comic_images\s*:\s*\[(.*?)\]', nuxt_match.group(1))
+                if img_block:
+                    found_urls = re.findall(r'url\s*:\s*["\'](https?://[^"\']+)["\']', img_block.group(1))
+                    # Unescape the URLs
+                    image_urls = [u.replace('\\u002F', '/').replace('\\/', '/') for u in found_urls]
+
+        if not image_urls:
+            raise ScraperError(f"Failed to find images for {task.chapter_str}. Possibly VIP or access restricted.")
 
         image_data = [{'file': f"page_{idx+1:03d}.jpg", 'url': url} for idx, url in enumerate(image_urls)]
         
