@@ -84,8 +84,8 @@ class JumptoonApiScraper(BaseScraper):
             logger.info(f"[Jumptoon] ✅ Multi-Account Sync: {total_loaded} cookies active from {files_found} sources.")
 
     def get_series_info(self, url: str):
-        # Force the episodes path for data consistency
-        match = re.search(r'jumptoon\.com/series/(JT[A-Z0-9]+)', url)
+        # 🟢 FIX: Broadened regex to accept ANY alphanumeric series ID (JT, MD, etc.)
+        match = re.search(r'jumptoon\.com/series/([a-zA-Z0-9]+)', url)
         if not match: raise ScraperError("Invalid Jumptoon URL.")
         
         series_id = match.group(1)
