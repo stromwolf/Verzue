@@ -72,12 +72,11 @@ class KuaikanApiScraper(BaseScraper):
                     all_chapters = []
                     for idx, ch in enumerate(comics):
                         cid = str(ch.get('id'))
-                        # 🟢 FIX: Use raw title from Kuaikan, remove artificial "Ch." prefix
-                        raw_title = ch.get('title', f"Episode {idx+1}")
+                        ch_title = ch.get('title', str(idx+1))
                         all_chapters.append({
                             'id': cid,
                             'number_text': str(idx+1),
-                            'title': raw_title, 
+                            'title': ch_title, # No more "Ch.1 - -" prefix
                             'url': f"https://www.kuaikanmanhua.com/web/comic/{cid}/",
                             'is_locked': ch.get('is_free', True) is False
                         })
@@ -102,7 +101,7 @@ class KuaikanApiScraper(BaseScraper):
                     all_chapters.append({
                         'id': cid,
                         'url': f"https://www.kuaikanmanhua.com/web/comic/{cid}/",
-                        'title': ch_title, # 🟢 FIX: No prefix
+                        'title_raw': ch_title,
                         'is_locked': False 
                     })
             # Ensure chronological order (NUXT often lists newest first)
@@ -111,6 +110,7 @@ class KuaikanApiScraper(BaseScraper):
 
         for idx, ch in enumerate(all_chapters):
             ch['number_text'] = str(idx+1)
+            ch['title'] = ch.get('title_raw', str(idx+1))
 
         return title, len(all_chapters), all_chapters, image_url, series_id
 
@@ -124,7 +124,19 @@ class KuaikanApiScraper(BaseScraper):
         dl_session = requests.Session()
         retry = Retry(total=5, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
         dl_session.mount("https://", HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry))
-        dl_session.headers.update({'Referer': 'https://www.kuaikanmanhua.com/'})
+        
+        # 🟢 FIX: Use chapter URL as Referer and add browser-grade headers
+        dl_session.headers.update({
+            'Referer': task.url,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Connection': 'keep-alive',
+            'Sec-Fetch-Dest': 'image',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'cross-site'
+        })
         for k, v in self.session.cookies.items():
             dl_session.cookies.set(k, v, domain='.kuaikanmanhua.com')
 
