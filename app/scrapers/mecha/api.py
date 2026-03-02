@@ -73,14 +73,16 @@ class MechaApiScraper(BaseScraper):
         return accounts
 
     def _apply_session_cookies(self, session, cookie_list):
-        # 🟢 DIRECT HEADER BYPASS: Instead of relying on the cookie jar, 
-        # we jam the cookies directly into the session headers.
         session.cookies.clear()
         
-        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookie_list if c.get('name') and c.get('value')])
-        session.headers['Cookie'] = cookie_str
-        
-        logger.info(f"   🍪 Applied cookies via Direct Header Bypass.")
+        # Build a flat dictionary of cookies to bypass domain strictness
+        cookie_dict = {}
+        for c in cookie_list:
+            if c.get('name') and c.get('value'):
+                cookie_dict[c['name']] = c['value']
+                
+        session.cookies.update(cookie_dict)
+        logger.info(f"   🍪 Force-Injected {len(cookie_dict)} cookies (Flat Dictionary).")
 
     def get_series_info(self, url: str):
         # Local session just for this lookup
@@ -323,7 +325,11 @@ class MechaApiScraper(BaseScraper):
         manifest_res = session.get(contents_vertical_url, headers=headers)
         manifest = manifest_res.json()
         
-        key_res = session.get(f"{self.BASE_URL}/viewer_cryptokey/chapter/{real_id}", headers=headers)
+        # 🟢 1. DYNAMIC CRYPTOKEY (Bypasses hardcoded URL issues)
+        cryptokey_path = qs.get('cryptokey', [f"/viewer_cryptokey/chapter/{real_id}"])[0]
+        key_url = urljoin(self.BASE_URL, cryptokey_path)
+        
+        key_res = session.get(key_url, headers=headers)
         key = binascii.unhexlify(key_res.text.strip())
 
         img_tasks = []
@@ -334,44 +340,46 @@ class MechaApiScraper(BaseScraper):
             target = next((f for f in formats if f['format'] == 'png'), None) or formats[0]
             img_tasks.append({'src': target['src'], 'pg': pg['pageIndex'], 'filename': f"page_{pg['pageIndex']:03d}.png", 'pg_data': pg})
 
-        # --- NEW ASYNC BATCH DOWNLOAD LOGIC ---
-        import asyncio
-        from curl_cffi.requests import AsyncSession
+        # 🟢 2. SYNCHRONOUS THREAD POOL (Guarantees perfect cookie sync)
+        import concurrent.futures
 
-        async def download_all_images():
-            # Create a lightweight async session
-            async with AsyncSession(impersonate="chrome120") as async_session:
+        def download_and_decrypt(t):
+            url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
+            
+            # Use the exact same authenticated session
+            res = session.get(url, timeout=20, headers=headers)
+            if res.status_code != 200:
+                raise Exception(f"Failed to download {url}: Status {res.status_code}")
+            
+            iv, encrypted_data = res.content[:16], res.content[16:]
+            cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+            decryptor = cipher.decryptor()
+            padded = decryptor.update(encrypted_data) + decryptor.finalize()
+            
+            plaintext = padding.PKCS7(128).unpadder().update(padded) + padding.PKCS7(128).unpadder().finalize()
+            
+            with Image.open(io.BytesIO(plaintext)) as img: 
+                w, h = img.size
+            with open(os.path.join(out_dir, t['filename']), 'wb') as f: 
+                f.write(plaintext)
                 
-                # 🟢 CRITICAL FIX: Build a complete header payload
-                # This guarantees the async session gets the exact User-Agent, Accept, 
-                # AND the raw Cookie string we jammed into the headers earlier!
-                req_headers = headers.copy()
-                if 'Cookie' in session.headers:
-                    req_headers['Cookie'] = session.headers['Cookie']
-                if 'User-Agent' in session.headers:
-                    req_headers['User-Agent'] = session.headers['User-Agent']
+            return t['pg'], w, h
 
-                # Build download tasks using the fully loaded headers
-                cors = [
-                    self._async_dl_decrypt(async_session, t, directory_url, version, key, output_dir, req_headers) 
-                    for t in img_tasks
-                ]
-                
-                # Execute all downloads concurrently without threads
-                results = await asyncio.gather(*cors, return_exceptions=True)
-                
-                # Map results back to img_tasks
-                for i, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        logger.error(f"[API] Async Download failed for page {i}: {result}")
-                    else:
-                        img_tasks[i]['actual_w'] = result['w']
-                        img_tasks[i]['actual_h'] = result['h']
+        # Execute downloads concurrently
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(download_and_decrypt, t) for t in img_tasks]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    pg_idx, actual_w, actual_h = future.result()
+                    # Update dimensions for the math.json file
+                    for t in img_tasks:
+                        if t['pg'] == pg_idx:
+                            t['actual_w'] = actual_w
+                            t['actual_h'] = actual_h
+                except Exception as e:
+                    logger.error(f"[API] Sync Download failed: {e}")
 
-        # Run the async download block
-        asyncio.run(download_all_images())
-        # --------------------------------------
-
+        # 🟢 3. BUILD MATH JSON
         math_data = []
         current_y = 0
         scale = max([t.get('actual_w', 0) for t in img_tasks] + [780]) / manifest.get('viewportSize', {}).get('width', 480)
@@ -388,41 +396,3 @@ class MechaApiScraper(BaseScraper):
 
         return output_dir
 
-    async def _async_dl_decrypt(self, async_session, t, base_url, ver, key, out_dir, headers):
-        """Asynchronous helper to download and decrypt a single page."""
-        url = f"{base_url.rstrip('/')}/{t['src']}?ver={ver}"
-        
-        # Async network request
-        res = await async_session.get(url, timeout=20, headers=headers)
-        
-        # 🟢 CRITICAL DEBUGGING: Check what we actually downloaded
-        if res.status_code != 200:
-            raise Exception(f"Failed to download {url}: Status {res.status_code}")
-            
-        # Mecha encrypted blobs usually start with specific binary signatures.
-        # If the response contains HTML, we got blocked.
-        if b"<!DOCTYPE html>" in res.content or b"<html" in res.content:
-            logger.error(f"[API] Decryption aborted: Server returned an HTML webpage instead of an encrypted image.")
-            raise Exception("Server returned HTML instead of image data.")
-
-        try:
-            # The first 16 bytes are the Initialization Vector (IV), the rest is the encrypted image
-            iv, encrypted_data = res.content[:16], res.content[16:]
-            cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-            decryptor = cipher.decryptor()
-            padded = decryptor.update(encrypted_data) + decryptor.finalize()
-            
-            # Remove PKCS7 padding
-            plaintext = padding.PKCS7(128).unpadder().update(padded) + padding.PKCS7(128).unpadder().finalize()
-            
-            with Image.open(io.BytesIO(plaintext)) as img: 
-                w, h = img.size
-            with open(os.path.join(out_dir, t['filename']), 'wb') as f: 
-                f.write(plaintext)
-                
-            return {'w': w, 'h': h}
-            
-        except Exception as e:
-            # 🟢 LOG THE EXACT ERROR AND FILE SIZE
-            logger.error(f"[API] Decryption failed for {t['filename']}. Data length: {len(res.content)} bytes. Error: {str(e)}")
-            raise e
