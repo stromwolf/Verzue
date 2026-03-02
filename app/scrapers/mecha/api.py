@@ -400,18 +400,21 @@ class MechaApiScraper(BaseScraper):
                 
             return t['pg'], w, h
 
-        # Execute downloads concurrently
+        # 🟢 ここを修正：futureとタスク(t)をマッピングして変数の未定義エラーを防ぐ
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(download_and_decrypt, t) for t in img_tasks]
-            for future in concurrent.futures.as_completed(futures):
+            # 各futureがどのタスク(t)に対応しているかを辞書に記憶させる
+            future_to_task = {executor.submit(download_and_decrypt, t): t for t in img_tasks}
+            
+            for future in concurrent.futures.as_completed(future_to_task):
+                # ここで必ずタスク(t)を取得できる
+                current_task = future_to_task[future]
                 try:
                     pg_idx, actual_w, actual_h = future.result()
-                    for t in img_tasks:
-                        if t['pg'] == pg_idx:
-                            t['actual_w'] = actual_w
-                            t['actual_h'] = actual_h
+                    current_task['actual_w'] = actual_w
+                    current_task['actual_h'] = actual_h
                 except Exception as e:
-                    logger.error(f"[API] Sync Download failed for page {t.get('filename')}: {e}")
+                    # current_taskを使って安全にエラーログを出力
+                    logger.error(f"[API] Sync Download failed for page {current_task.get('filename')}: {e}")
 
         # 🟢 4. BUILD MATH JSON
         math_data = []
