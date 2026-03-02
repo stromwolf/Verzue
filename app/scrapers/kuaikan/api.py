@@ -103,11 +103,12 @@ class KuaikanApiScraper(BaseScraper):
         retry = Retry(total=5, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
         dl_session.mount("https://", HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry))
         
-        # 🟢 1. Set Browser headers with specific chapter Referer (Required for images)
+        # 🟢 1. Force the Root PC Domain as Referer
         dl_session.headers.update({
-            'Referer': task.url,
+            'Referer': 'https://www.kuaikanmanhua.com/', # Do not use task.url here to avoid mobile sub-domain blocks
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            'Connection': 'keep-alive',
             'Sec-Fetch-Dest': 'image',
             'Sec-Fetch-Mode': 'no-cors',
             'Sec-Fetch-Site': 'cross-site'
@@ -134,8 +135,8 @@ class KuaikanApiScraper(BaseScraper):
             logger.info(f"[Kuaikan] API empty. Extracting IIFE data from HTML for {task.chapter_str}...")
             res = self.session.get(task.url, timeout=20)
             
-            # Clean the escaped slashes in the HTML
-            clean_html = res.text.replace('\\u002F', '/')
+            # Clean escaped slashes, unicode ampersands, and HTML entity ampersands
+            clean_html = res.text.replace('\\u002F', '/').replace('\\u0026', '&').replace('&amp;', '&')
             
             # task.episode_id is the Kuaikan Comic ID (e.g., 829730)
             cid = task.episode_id
