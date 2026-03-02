@@ -318,6 +318,8 @@ class MechaApiScraper(BaseScraper):
         logger.info(f"[API] 🏗️  Starting Extraction from: {viewer_url[:60]}...")
         
         import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
         import binascii
         import os
         import io
@@ -330,10 +332,22 @@ class MechaApiScraper(BaseScraper):
         from cryptography.hazmat.backends import default_backend
         import concurrent.futures
 
-        # 🟢 Create a pure, native requests session exactly like manga_scraper.py
+        # 🟢 1. 大量アクセスに耐えられる強牢なセッションの構築 (自動リトライ付き)
         req_session = requests.Session()
+        
+        # サーバーが混雑・制限（429や500番台）を返した際、自動で間隔を空けて再試行する
+        retry_strategy = Retry(
+            total=5,
+            backoff_factor=1.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"]
+        )
+        adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry_strategy)
+        req_session.mount("https://", adapter)
+        req_session.mount("http://", adapter)
+        
         req_session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3',
             'Accept-Encoding': 'gzip, deflate, br',
@@ -341,7 +355,6 @@ class MechaApiScraper(BaseScraper):
             'Upgrade-Insecure-Requests': '1',
         })
 
-        # Transfer cookies safely to the native requests session
         for k, v in session.cookies.items():
             req_session.cookies.set(k, v, domain='.mechacomic.jp')
             req_session.cookies.set(k, v, domain='mechacomic.jp')
@@ -351,19 +364,21 @@ class MechaApiScraper(BaseScraper):
         directory_url = qs['directory'][0]
         version = qs.get('ver', [''])[0]
 
-        # 🟢 The Trigger logic from manga_scraper.py
+        # サーバー側で既読フラグを立てる（少しスリープを挟んで負担を減らす）
         download_url = f"{self.BASE_URL}/chapters/{real_id}/download?commit=read"
         logger.info("   [API] Triggering server-side read session...")
-        req_session.get(download_url, allow_redirects=False)
+        req_session.get(download_url, allow_redirects=False, timeout=15)
+        
+        time.sleep(1) # サーバーの同期を待つためのクッション
 
-        manifest_res = req_session.get(contents_vertical_url)
+        manifest_res = req_session.get(contents_vertical_url, timeout=15)
         manifest_res.raise_for_status()
         manifest = manifest_res.json()
         
         cryptokey_path = qs.get('cryptokey', [f"/viewer_cryptokey/chapter/{real_id}"])[0]
         key_url = urljoin(self.BASE_URL, cryptokey_path)
         
-        key_res = req_session.get(key_url)
+        key_res = req_session.get(key_url, timeout=15)
         key_res.raise_for_status()
         key_text = key_res.text.strip()
         logger.info(f"   🔑 Acquired Cryptokey: {key_text[:8]}...")
@@ -376,9 +391,12 @@ class MechaApiScraper(BaseScraper):
             target = next((f for f in formats if f['format'] == 'png'), None) or formats[0]
             img_tasks.append({'src': target['src'], 'pg': pg['pageIndex'], 'filename': f"page_{pg['pageIndex']:03d}.png", 'pg_data': pg})
 
-        # 🟢 Download exactly like manga_scraper.py
+        # 🟢 2. レート制限で空データが返された時のクラッシュ防止
+        if not img_tasks:
+            raise Exception("Manifest returned 0 pages. Rate limited by server or chapter is empty.")
+
         def download_and_decrypt(t):
-            time.sleep(0.1)
+            time.sleep(0.5) # 連続ダウンロード時のブロック回避
             image_url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
             
             for attempt in range(4):
@@ -387,7 +405,6 @@ class MechaApiScraper(BaseScraper):
                     img_res.raise_for_status()
                     encrypted_data = img_res.content
                     
-                    # Decrypt exactly like manga_scraper.py _decrypt_images
                     iv = encrypted_data[:16]
                     ciphertext = encrypted_data[16:]
                     
@@ -406,9 +423,10 @@ class MechaApiScraper(BaseScraper):
                 except Exception as e:
                     if attempt == 3:
                         raise Exception(f"Failed after 3 retries: {e}")
-                    time.sleep(1)
+                    time.sleep(2) # 失敗した場合は2秒待機して再試行
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        # 🟢 3. 大量リクエスト時のブロックを防ぐため、1話ごとの並列数を 8 から 4 に削減
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             future_to_task = {executor.submit(download_and_decrypt, t): t for t in img_tasks}
             for future in concurrent.futures.as_completed(future_to_task):
                 current_task = future_to_task[future]
@@ -421,7 +439,17 @@ class MechaApiScraper(BaseScraper):
 
         math_data = []
         current_y = 0
-        scale = max([t.get('actual_w', 0) for t in img_tasks] + [780]) / manifest.get('viewportSize', {}).get('width', 480)
+        
+        # 🟢 4. ゼロ除算 (ZeroDivisionError) を絶対に起こさないための厳格な計算
+        v_width = 480
+        if isinstance(manifest, dict):
+            v_data = manifest.get('viewportSize') or {}
+            v_width = v_data.get('width') or 480
+            
+        if v_width <= 0: # サーバーがダミーの 0 を返した場合のフォールバック
+            v_width = 480
+            
+        scale = max([t.get('actual_w', 0) for t in img_tasks] + [780]) / v_width
 
         for t in img_tasks:
             pg = t['pg_data']
