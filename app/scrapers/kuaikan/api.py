@@ -3,9 +3,10 @@ import re
 import json
 import time
 import logging
+import requests
 from concurrent.futures import ThreadPoolExecutor
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from config.settings import Settings
 from app.scrapers.base import BaseScraper
@@ -13,9 +14,9 @@ from app.core.exceptions import ScraperError
 from app.models.chapter import TaskStatus
 
 try:
-    from curl_cffi import requests
+    from curl_cffi import requests as crequests
 except ImportError:
-    import requests
+    import requests as crequests
 
 logger = logging.getLogger("KuaikanApiScraper")
 
@@ -24,7 +25,7 @@ class KuaikanApiScraper(BaseScraper):
 
     def __init__(self):
         # We use curl_cffi for the initial handshake to bypass potential WAF
-        self.session = requests.Session(impersonate="chrome120")
+        self.session = crequests.Session(impersonate="chrome120")
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
@@ -93,49 +94,55 @@ class KuaikanApiScraper(BaseScraper):
             raise ScraperError(f"Failed to fetch metadata from Kuaikan API: {e}")
 
     def scrape_chapter(self, task, output_dir):
-        logger.info(f"[Kuaikan] 🕷️ EXTRACTING: {task.title}")
-        import requests
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
+        logger.info(f"[Kuaikan] 🕷️ EXTRACTING: {task.title} (API Method)")
         
-        # 🟢 NATIVE ROBUST DOWNLOADER
         dl_session = requests.Session()
         retry = Retry(total=5, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
         dl_session.mount("https://", HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry))
         
-        # 🟢 1. Force the Root PC Domain as Referer (Fixes 403 Forbidden)
+        # 🟢 1. STANDARD BROWSER HEADERS
         dl_session.headers.update({
             'Referer': 'https://www.kuaikanmanhua.com/',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-            'Connection': 'keep-alive',
-            'Sec-Fetch-Dest': 'image',
-            'Sec-Fetch-Mode': 'no-cors',
-            'Sec-Fetch-Site': 'cross-site'
+            'Accept': 'application/json, text/plain, */*',
+            'Connection': 'keep-alive'
         })
+        
+        # Include cookies ONLY if they exist in your system (User requested no cookies for free ch, so this defaults to guest)
         for k, v in self.session.cookies.items():
             dl_session.cookies.set(k, v, domain='.kuaikanmanhua.com')
 
-        # 🟢 2. PURE API EXTRACTION (Zero HTML)
+        # 🟢 2. PURE API EXTRACTION (No HTML)
         api_url = f"https://api.kuaikanmanhua.com/v1/comics/{task.episode_id}"
-        api_res = self.session.get(api_url, timeout=15)
+        api_res = dl_session.get(api_url, timeout=15)
         
         if api_res.status_code != 200:
-            raise ScraperError(f"Kuaikan API failed (HTTP {api_res.status_code}). Check connection.")
+            raise ScraperError(f"Kuaikan API failed (HTTP {api_res.status_code}).")
             
         data = api_res.json()
         if data.get('code') != 200:
             raise ScraperError(f"Kuaikan API Error: {data.get('message')}")
 
-        # Directly grab the URLs from the JSON response
         image_urls = [img.get('url') for img in data.get('data', {}).get('comic_images', []) if img.get('url')]
-        
-        if not image_urls:
-            raise ScraperError("API returned 0 image URLs. You MUST add a valid logged-in Kuaikan cookie to use the API.")
 
+        if not image_urls:
+            # Note: If this triggers, it means Kuaikan's server-side API strictly blocks unauthenticated requests even for free chapters.
+            raise ScraperError(f"API returned 0 images for {task.chapter_str}. Kuaikan API may be blocking guest access.")
+
+        # 🟢 3. IMAGE DOWNLOAD HEADERS (Fixes 403 Forbidden)
+        dl_session.headers.update({
+            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            'Sec-Fetch-Dest': 'image',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'cross-site'
+        })
+
+        # 4. SAVE MANIFEST
         image_data = [{'file': f"page_{idx+1:03d}.jpg", 'url': url} for idx, url in enumerate(image_urls)]
-        
-        # 🟢 PACED PARALLEL DOWNLOAD
+        with open(os.path.join(output_dir, "math.json"), "w") as f:
+            json.dump(image_data, f)
+
+        # 5. PACED PARALLEL DOWNLOAD
         task.status = TaskStatus.DOWNLOADING
         def download_worker(item):
             time.sleep(0.2)
