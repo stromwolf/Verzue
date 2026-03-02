@@ -42,3 +42,7 @@ class GDriveClient:
     def get_service(self):
         if not self.service: self.authenticate()
         return self.service
+
+    def get_creds(self):
+        if not self.creds: self.authenticate()
+        return self.creds

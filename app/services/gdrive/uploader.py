@@ -1,7 +1,7 @@
 import logging
 import time
-from googleapiclient.http import MediaFileUpload
-from googleapiclient.errors import HttpError
+import requests
+from google.auth.transport.requests import AuthorizedSession
 from .client import GDriveClient
 
 logger = logging.getLogger("GDriveUploader")
@@ -10,6 +10,8 @@ class GDriveUploader:
     def __init__(self, client: GDriveClient):
         self.client = client
         self.service = client.get_service()
+        # Dedicated requests session for binary uploads (bypasses httplib2 SSL issues)
+        self._upload_session = AuthorizedSession(client.get_creds())
 
     def find_folder(self, name: str, parent_id: str):
         """Finds ONLY folders (Shared Drive Compatible)."""
@@ -106,38 +108,39 @@ class GDriveUploader:
                 time.sleep(1)
 
     def upload_file(self, file_path, file_name, parent_id):
-        """Uploads file with SSL-error protection and retries."""
-        from googleapiclient.http import MediaFileUpload
-        
-        # DEBUG Diagnostic
+        """Uploads file using requests transport (SSL-safe, bypasses httplib2)."""
         logger.debug(f"[DEBUG] Uploading {file_name} to parent {parent_id}")
-        
+
         for attempt in range(5):
             try:
+                # Step 1: Create file metadata via resumable upload initiation
                 metadata = {'name': file_name, 'parents': [parent_id]}
-                media = MediaFileUpload(str(file_path), mimetype='image/jpeg', resumable=True)
-                
-                # The .execute() call internally constructs the upload URL
-                request = self.service.files().create(
-                    body=metadata, 
-                    media_body=media, 
-                    fields='id',
-                    supportsAllDrives=True
+                init_resp = self._upload_session.post(
+                    "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true",
+                    json=metadata,
+                    headers={'Content-Type': 'application/json; charset=UTF-8',
+                             'X-Upload-Content-Type': 'image/jpeg'}
                 )
+                init_resp.raise_for_status()
+                upload_url = init_resp.headers['Location']
+
+                # Step 2: Upload the actual file bytes to the resumable URL
+                with open(file_path, 'rb') as f:
+                    file_data = f.read()
                 
-                # Log the URI for debugging protocol issues as requested
-                if hasattr(request, 'uri'):
-                    logger.debug(f"[DEBUG] Uploading to: {request.uri}")
-                
-                request.execute()
+                upload_resp = self._upload_session.put(
+                    upload_url,
+                    data=file_data,
+                    headers={'Content-Type': 'image/jpeg'}
+                )
+                upload_resp.raise_for_status()
                 logger.info(f"⬆️ Uploaded {file_name}")
                 return
+
             except Exception as e:
-                # Catch SSL and transient network errors
                 err_msg = str(e)
                 if "SSL" in err_msg or "version number" in err_msg or "Connection reset" in err_msg:
                     logger.warning(f"⚠️ SSL/Transient error during upload of {file_name} (Attempt {attempt+1}): {e}")
-                    # Progressive backoff
                     time.sleep(2 * (attempt + 1))
                     continue
                 
