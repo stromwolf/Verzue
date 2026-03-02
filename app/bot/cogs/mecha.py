@@ -20,7 +20,10 @@ class MechaCog(commands.Cog):
         """
         Phase 1: Intelligence (Validated & Throttled).
         """
-        # 1. STRICT VALIDATION (The Bouncer)
+        # 1. IMMEDIATE DEFER (3-Second Rule)
+        await interaction.response.defer()
+
+        # 2. STRICT VALIDATION (The Bouncer)
         if "mechacomic.jp" not in url:
             error_embed = discord.Embed(
                 title="⛔ Invalid Link",
@@ -32,10 +35,7 @@ class MechaCog(commands.Cog):
                 ),
                 color=0xe74c3c
             )
-            return await interaction.response.send_message(embed=error_embed, ephemeral=True)
-
-        # 2. IMMEDIATE DEFER (3-Second Rule)
-        await interaction.response.defer()
+            return await interaction.followup.send(embed=error_embed, ephemeral=True)
 
         # 3. SEMAPHORE GATEKEEPER (Max 3 Concurrent Processing)
         # If 3 users are already fetching metadata, the 4th waits here automatically.
@@ -51,13 +51,7 @@ class MechaCog(commands.Cog):
                 logger.info(f"🔗 URL: {url}")
                 logger.info("="*50)
 
-                # 5. SPECULATIVE WARMUP (Parallel Action)
-                # We fire this NOW so the browser is booting while we fetch API data.
-                browser = self.bot.task_queue.scraper_registry.browser
-                asyncio.create_task(asyncio.to_thread(browser.warmup))
-                logger.info("🔥 Browser Warmup Triggered (Background)")
-
-                # 6. API Metadata Fetch (Fast Thread)
+                # 5. API Metadata Fetch (Fast Thread)
                 scraper = self.bot.task_queue.scraper_registry.api_scraper
                 logger.info(f"🔍 Fetching metadata for: {url}")
                 
@@ -70,7 +64,7 @@ class MechaCog(commands.Cog):
                 image_url = data[3]
                 series_id = data[4]
 
-                # 7. Pack Context
+                # 6. Pack Context
                 ctx_data = {
                     'url': url,
                     'title': title,
@@ -81,12 +75,18 @@ class MechaCog(commands.Cog):
                     'user': interaction.user
                 }
 
-                # 8. Launch Dashboard
+                # 7. Launch Dashboard
                 view = UniversalDashboard(self.bot, ctx_data, "mecha")
                 view.interaction = interaction
                 
                 await interaction.followup.send(embed=view.build_live_embed(), view=view)
                 logger.info(f"✅ Dashboard active for '{title}'")
+
+                # 8. SPECULATIVE WARMUP (Parallel Action)
+                # We fire this NOW so the browser is booting while the user browsing chapters.
+                browser = self.bot.task_queue.scraper_registry.browser
+                asyncio.create_task(asyncio.to_thread(browser.warmup))
+                logger.info("🔥 Browser Warmup Triggered (Background)")
 
             except Exception as e:
                 logger.error(f"System Failure: {e}", exc_info=True)
