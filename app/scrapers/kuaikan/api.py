@@ -125,11 +125,12 @@ class KuaikanApiScraper(BaseScraper):
         retry = Retry(total=5, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
         dl_session.mount("https://", HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry))
         
-        # 🟢 1. Update headers for Browser Identity and Referer
+        # 🟢 1. Set Browser-Grade Headers with dynamic Referer
         dl_session.headers.update({
-            'Referer': task.url,
+            'Referer': task.url, # REQUIRED: Blocks 403 Forbidden
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            'Connection': 'keep-alive',
             'Sec-Fetch-Dest': 'image',
             'Sec-Fetch-Mode': 'no-cors',
             'Sec-Fetch-Site': 'cross-site'
@@ -141,25 +142,34 @@ class KuaikanApiScraper(BaseScraper):
         if "login" in res.url or "pay" in res.url:
             raise ScraperError("Chapter is locked. Check Kuaikan cookies.")
         
-        # 🟢 2. Extract high-quality (w1280) image URLs directly from the HTML source
+        # 🟢 2. Dynamic Image Extraction from the main image container
         soup = BeautifulSoup(res.text, 'html.parser')
         image_urls = []
         
-        img_container = soup.find("div", class_="imgList")
-        if img_container:
-            found_imgs = img_container.find_all("img", src=True)
-            for img in found_imgs:
+        # Kuaikan lists all chapter panels inside the "imgList" div
+        container = soup.find("div", class_="imgList")
+        if container:
+            # Grab every image source inside this specific container
+            for img in container.find_all("img", src=True):
                 src = img["src"]
-                # Prioritize high quality w1280 URLs found in your provided HTML
+                # Verify the URL is a comic panel from KKMH or V3MH CDNs
                 if any(cdn in src for cdn in ['kkmh.com', 'v3mh.com']) and "avatar" not in src:
                     if src not in image_urls:
                         image_urls.append(src)
 
-        # Final regex fallback targeting the high quality pattern
+        # 🟢 3. Fallback regex (General pattern, ignoring specific extensions)
         if not image_urls:
-            image_urls = list(dict.fromkeys(re.findall(r'https?://[^\s"\'\\]+?\.webp-t\.w1280\.jpg\.h\?[^\s"\'\\]+', res.text)))
+            # Finds any URL pointing to the KKMH/V3MH image CDNs regardless of extension
+            pattern = r'https?://(?:tn1|tn2|tn3)\.(?:kkmh|v3mh)\.com/image/[^\s"\'\\]+'
+            raw_found = re.findall(pattern, res.text)
+            for url in raw_found:
+                # Clean up any trailing characters or duplicates
+                clean_url = url.split('"')[0].split("'")[0].split('\\')[0]
+                if clean_url not in image_urls:
+                    image_urls.append(clean_url)
 
-        if not image_urls: raise ScraperError(f"No images found for {task.chapter_str}.")
+        if not image_urls:
+            raise ScraperError(f"Failed to extract image list for {task.chapter_str}.")
 
         image_data = [{'file': f"page_{idx+1:03d}.jpg", 'url': url} for idx, url in enumerate(image_urls)]
         
