@@ -150,14 +150,17 @@ class JumptoonApiScraper(BaseScraper):
                 return results
             except: return []
 
+        # 🟢 FIX: Use map() to enforce strict chronological page order
         with ThreadPoolExecutor(max_workers=5) as exe:
-            futures = [exe.submit(fetch_page, p) for p in range(1, max_page + 1)]
-            for f in as_completed(futures):
-                for item in f.result():
+            # exe.map guarantees the results are returned in the exact order of the input (Page 1, then Page 2, etc.)
+            for page_results in exe.map(fetch_page, range(1, max_page + 1)):
+                for item in page_results:
                     if item['id'] not in seen_ids:
-                        seen_ids.add(item['id']); all_chapters.append(item)
+                        seen_ids.add(item['id'])
+                        all_chapters.append(item)
 
-        all_chapters.sort(key=lambda x: int(x['id']))
+        # 🟢 FIX: Remove the flawed ID-based sort completely. 
+        # By enforcing page order above, the list is already in the exact visual order presented by the website!
         
         image_url = self._fetch_high_res_poster(title) or (soup.find("meta", property="og:image")["content"] if soup.find("meta", property="og:image") else None)
 
