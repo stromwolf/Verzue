@@ -34,6 +34,11 @@ def run_login(target_url, site_name, platform):
     
     options = uc.ChromeOptions()
     options.add_argument("--start-maximized")
+    
+    # 🟢 FORCE CHROME 120 USER AGENT
+    static_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    options.add_argument(f"--user-agent={static_ua}")
+    
     # PERSISTENT IDENTITY: Use the same profile folder as the main bot
     user_profile = str(Settings.BROWSER_PROFILE_DIR)
     

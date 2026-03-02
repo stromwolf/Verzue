@@ -37,9 +37,19 @@ class MechaApiScraper(BaseScraper):
     def _create_stateless_session(self):
         """Creates a fresh, isolated HTTP session per request."""
         session = crequests.Session(impersonate="chrome120")
+        
+        # 🟢 EXACT CHROME 120 HEADERS TO MATCH TLS FINGERPRINT
         session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36',
-            'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+            'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Upgrade-Insecure-Requests': '1'
         })
         return session
 
@@ -63,10 +73,14 @@ class MechaApiScraper(BaseScraper):
         return accounts
 
     def _apply_session_cookies(self, session, cookie_list):
+        # 🟢 DIRECT HEADER BYPASS: Instead of relying on the cookie jar, 
+        # we jam the cookies directly into the session headers.
         session.cookies.clear()
-        for c in cookie_list:
-            if c.get('name') and c.get('value'):
-                session.cookies.set(c['name'], c['value'], domain=c.get('domain', 'mechacomic.jp'), path=c.get('path', '/'))
+        
+        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookie_list if c.get('name') and c.get('value')])
+        session.headers['Cookie'] = cookie_str
+        
+        logger.info(f"   🍪 Applied cookies via Direct Header Bypass.")
 
     def get_series_info(self, url: str):
         # Local session just for this lookup
@@ -163,6 +177,7 @@ class MechaApiScraper(BaseScraper):
             
             # 1. Fetch the chapter page to grab the CSRF token
             res = session.get(target_url, timeout=10)
+            logger.info(f"[API Fast-Path] -> Landed on URL: {res.url}") 
             if res.status_code != 200: continue
             
             # Check if it's already unlocked
@@ -243,8 +258,20 @@ class MechaApiScraper(BaseScraper):
             logger.info(f"[API] 🔄 Trying Account: {acc['name']} for Chapter {task.chapter_str}")
             self._apply_session_cookies(session, acc['cookies'])
             
+            # 1. Try to access the chapter normally
             viewer_url = self._check_chapter_access(session, real_id)
             
+            # 🟢 2. AUTO-BUY FALLBACK: If denied, attempt an instant API purchase
+            if not viewer_url:
+                logger.info(f"   🔒 Access Denied. Attempting on-the-fly Fast Purchase for Ch.{real_id}...")
+                success, new_cookies = self.fast_purchase(task)
+                if success:
+                    # Refresh our session with the newly purchased state
+                    self._apply_session_cookies(session, new_cookies)
+                    # Try to grab the viewer URL again now that we own it
+                    viewer_url = self._check_chapter_access(session, real_id)
+
+            # 3. If STILL blocked, pass to the browser sandbox
             if not viewer_url and self.browser:
                 logger.info(f"   🛡️ Request blocked. Passing link to Playwright sandbox...")
                 new_cookies, viewer_url = self.browser.run_isolated_handshake(task.url, acc['cookies'], selectors)
@@ -273,6 +300,7 @@ class MechaApiScraper(BaseScraper):
     def _check_chapter_access(self, session, real_id):
         try:
             res = session.get(f"{self.BASE_URL}/chapters/{real_id}", timeout=15)
+            logger.info(f"   [API] Access Check -> Landed on: {res.url}") 
             if res.status_code == 200 and 'contents_vertical' in res.text:
                 match = re.search(r'\"(https?://mechacomic\.jp/viewer\?.*?contents_vertical=.*?)\"', res.text)
                 if match: return match.group(1).replace('\\/', '/')
@@ -313,13 +341,19 @@ class MechaApiScraper(BaseScraper):
         async def download_all_images():
             # Create a lightweight async session
             async with AsyncSession(impersonate="chrome120") as async_session:
-                # Copy cookies from our authenticated sync session
-                for cookie in session.cookies.jar:
-                    async_session.cookies.set(cookie.name, cookie.value, domain=cookie.domain, path=cookie.path)
+                
+                # 🟢 CRITICAL FIX: Build a complete header payload
+                # This guarantees the async session gets the exact User-Agent, Accept, 
+                # AND the raw Cookie string we jammed into the headers earlier!
+                req_headers = headers.copy()
+                if 'Cookie' in session.headers:
+                    req_headers['Cookie'] = session.headers['Cookie']
+                if 'User-Agent' in session.headers:
+                    req_headers['User-Agent'] = session.headers['User-Agent']
 
-                # Build download tasks
+                # Build download tasks using the fully loaded headers
                 cors = [
-                    self._async_dl_decrypt(async_session, t, directory_url, version, key, output_dir, headers) 
+                    self._async_dl_decrypt(async_session, t, directory_url, version, key, output_dir, req_headers) 
                     for t in img_tasks
                 ]
                 
@@ -358,22 +392,37 @@ class MechaApiScraper(BaseScraper):
         """Asynchronous helper to download and decrypt a single page."""
         url = f"{base_url.rstrip('/')}/{t['src']}?ver={ver}"
         
-        # Async network request (does not block CPU)
+        # Async network request
         res = await async_session.get(url, timeout=20, headers=headers)
+        
+        # 🟢 CRITICAL DEBUGGING: Check what we actually downloaded
         if res.status_code != 200:
             raise Exception(f"Failed to download {url}: Status {res.status_code}")
-        
-        iv, encrypted_data = res.content[:16], res.content[16:]
-        cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-        decryptor = cipher.decryptor()
-        padded = decryptor.update(encrypted_data) + decryptor.finalize()
-        
-        plaintext = padding.PKCS7(128).unpadder().update(padded) + padding.PKCS7(128).unpadder().finalize()
-        
-        # Small sync block for disk I/O and image reading (fast enough to keep in-line)
-        with Image.open(io.BytesIO(plaintext)) as img: 
-            w, h = img.size
-        with open(os.path.join(out_dir, t['filename']), 'wb') as f: 
-            f.write(plaintext)
             
-        return {'w': w, 'h': h}
+        # Mecha encrypted blobs usually start with specific binary signatures.
+        # If the response contains HTML, we got blocked.
+        if b"<!DOCTYPE html>" in res.content or b"<html" in res.content:
+            logger.error(f"[API] Decryption aborted: Server returned an HTML webpage instead of an encrypted image.")
+            raise Exception("Server returned HTML instead of image data.")
+
+        try:
+            # The first 16 bytes are the Initialization Vector (IV), the rest is the encrypted image
+            iv, encrypted_data = res.content[:16], res.content[16:]
+            cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+            decryptor = cipher.decryptor()
+            padded = decryptor.update(encrypted_data) + decryptor.finalize()
+            
+            # Remove PKCS7 padding
+            plaintext = padding.PKCS7(128).unpadder().update(padded) + padding.PKCS7(128).unpadder().finalize()
+            
+            with Image.open(io.BytesIO(plaintext)) as img: 
+                w, h = img.size
+            with open(os.path.join(out_dir, t['filename']), 'wb') as f: 
+                f.write(plaintext)
+                
+            return {'w': w, 'h': h}
+            
+        except Exception as e:
+            # 🟢 LOG THE EXACT ERROR AND FILE SIZE
+            logger.error(f"[API] Decryption failed for {t['filename']}. Data length: {len(res.content)} bytes. Error: {str(e)}")
+            raise e

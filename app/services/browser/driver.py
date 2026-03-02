@@ -7,7 +7,6 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
-from fake_useragent import UserAgent
 from webdriver_manager.chrome import ChromeDriverManager
 from config.settings import Settings
 from .utils import BrowserUtils
@@ -48,10 +47,10 @@ class BrowserService:
             opts.page_load_strategy = 'eager'
             if is_headless: opts.add_argument("--headless=new")
 
-            try: ua = UserAgent(browsers=['chrome']).random
-            except: ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            
-            opts.add_argument(f"user-agent={ua}")
+            # 🟢 FORCE CHROME 120 USER AGENT
+            STATIC_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            opts.add_argument(f"user-agent={STATIC_UA}")
+
             opts.add_argument(f"--user-data-dir={Settings.BROWSER_PROFILE_DIR}") # PERSISTENT IDENTITY
             opts.add_argument("--profile-directory=Default") # Use the default profile
             opts.add_argument("--disable-gpu")
