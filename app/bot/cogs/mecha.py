@@ -21,7 +21,12 @@ class MechaCog(commands.Cog):
         Phase 1: Intelligence (Validated & Throttled).
         """
         # 1. IMMEDIATE DEFER (3-Second Rule)
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except (discord.errors.HTTPException, discord.errors.NotFound):
+            # Interaction already acknowledged (re-delivered after restart, or double-invoke)
+            # Safe to continue — followup.send() will still work
+            pass
 
         # 2. STRICT VALIDATION (The Bouncer)
         if "mechacomic.jp" not in url:

@@ -15,7 +15,10 @@ class AcQqCog(commands.Cog):
 
     @app_commands.command(name="acqq", description="Download from Tencent Comics (ac.qq.com)")
     async def acqq(self, interaction: discord.Interaction, url: str):
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except (discord.errors.HTTPException, discord.errors.NotFound):
+            pass
         
         req_id = str(uuid.uuid4()).upper()
         token = req_id_context.set(req_id)

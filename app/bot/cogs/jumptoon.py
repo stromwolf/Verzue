@@ -21,7 +21,10 @@ class JumptoonCog(commands.Cog):
         Fetches metadata and launches the Universal Dashboard.
         """
         # 1. Immediate Defer (The 3-Second Rule)
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except (discord.errors.HTTPException, discord.errors.NotFound):
+            pass
         
         # 2. GENERATE AND SET REQUEST ID EARLY
         req_id = str(uuid.uuid4())[:8].upper()

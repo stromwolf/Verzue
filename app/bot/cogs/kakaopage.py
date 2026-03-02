@@ -16,7 +16,10 @@ class KakaoCog(commands.Cog):
     @app_commands.command(name="kakao", description="Download from Kakaopage or Kakao Webtoon")
     async def kakaopage(self, interaction: discord.Interaction, url: str):
         # 1. THE 3-SECOND RULE (First line)
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except (discord.errors.HTTPException, discord.errors.NotFound):
+            pass
         
         # 2. GENERATE AND SET REQUEST ID EARLY
         req_id = str(uuid.uuid4())[:8].upper()
