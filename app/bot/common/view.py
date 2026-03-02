@@ -4,7 +4,7 @@ from app.models.chapter import ChapterTask, TaskStatus
 
 logger = logging.getLogger("Dashboard")
 ICONS = {"load": "🔄", "tick": "✅", "wait": "⬜"}
-COLORS = {"mecha": 0xe67e22, "smartoon": 0x2ecc71, "jumptoon": 0x9b59b6, "piccoma": 0xffd600}
+COLORS = {"mecha": 0xe67e22, "smartoon": 0x2ecc71, "jumptoon": 0x9b59b6, "piccoma": 0xffd600, "kuaikan": 0xf1c40f}
 
 class UniversalDashboard(View):
     def __init__(self, bot, ctx_data, service_type):
