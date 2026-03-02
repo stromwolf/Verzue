@@ -126,23 +126,32 @@ class KuaikanApiScraper(BaseScraper):
         if data.get('code') != 200:
             raise ScraperError(f"Kuaikan API Error: {data.get('message')}")
 
-        # 1. Try to extract images from API data first
+        # 1. Try API first
         image_urls = [img.get('url') for img in data.get('data', {}).get('comic_images', []) if img.get('url')]
         
-        # 🟢 SMART FALLBACK: If API is empty (due to no login), mine the HTML
+        # 🟢 2. SMART FALLBACK: IIFE Regex Extraction
         if not image_urls:
-            logger.info(f"[Kuaikan] API returned empty, attempting HTML fallback for {task.chapter_str}...")
+            logger.info(f"[Kuaikan] API empty. Extracting IIFE data from HTML for {task.chapter_str}...")
             res = self.session.get(task.url, timeout=20)
             
-            # Extract the Nuxt state from the HTML
-            nuxt_match = re.search(r'window\.__NUXT__\s*=\s*(.+?)(?:;</script>|$)', res.text, re.DOTALL)
-            if nuxt_match:
-                # Find the comic_images array within the Nuxt string
-                img_block = re.search(r'comic_images\s*:\s*\[(.*?)\]', nuxt_match.group(1))
-                if img_block:
-                    found_urls = re.findall(r'url\s*:\s*["\'](https?://[^"\']+)["\']', img_block.group(1))
-                    # Unescape the URLs
-                    image_urls = [u.replace('\\u002F', '/').replace('\\/', '/') for u in found_urls]
+            # Clean the escaped slashes in the HTML
+            clean_html = res.text.replace('\\u002F', '/')
+            
+            # task.episode_id is the Kuaikan Comic ID (e.g., 829730)
+            cid = task.episode_id
+            
+            # Extract all URLs belonging to this specific chapter's directory (/image/c{cid}/)
+            # This perfectly filters out avatars, ads, and recommended comics!
+            pattern = rf'"(https?://[^"]+?\.kkmh\.com/image/c{cid}/[^"]+)"'
+            raw_urls = re.findall(pattern, clean_html)
+            
+            # Prioritize high-quality w1280 images. dict.fromkeys removes duplicates while preserving the exact reading order.
+            w1280_urls = [u for u in raw_urls if 'w1280' in u]
+            
+            if w1280_urls:
+                image_urls = list(dict.fromkeys(w1280_urls))
+            else:
+                image_urls = list(dict.fromkeys(raw_urls))
 
         if not image_urls:
             raise ScraperError(f"Failed to find images for {task.chapter_str}. Possibly VIP or access restricted.")
