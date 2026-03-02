@@ -93,14 +93,14 @@ class TaskWorker:
         """Robust cleanup with retry to avoid WinError 32."""
         for path in [r, f]:
             if not path.exists(): continue
-            for attempt in range(3):
+            for attempt in range(5):
                 try:
                     shutil.rmtree(path)
                     break
                 except PermissionError:
-                    # Wait for system to release file handles (Common on Windows)
-                    logger.warning(f"⚠️ Directory locked ({path}), retrying cleanup in 1s... (Attempt {attempt+1})")
-                    time.sleep(1)
+                    # Windowsがファイルハンドルを解放するまで待機
+                    logger.warning(f"⚠️ Directory locked ({path}), retrying cleanup in 2s... (Attempt {attempt+1})")
+                    time.sleep(2)
                 except Exception as e:
                     logger.warning(f"Could not clean {path}: {e}")
                     break

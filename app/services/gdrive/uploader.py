@@ -1,7 +1,9 @@
 import logging
 import time
-import requests
-from google.auth.transport.requests import AuthorizedSession
+import threading
+import io
+from googleapiclient.http import MediaIoBaseUpload
+from googleapiclient.errors import HttpError
 from .client import GDriveClient
 
 logger = logging.getLogger("GDriveUploader")
@@ -10,21 +12,22 @@ class GDriveUploader:
     def __init__(self, client: GDriveClient):
         self.client = client
         self.service = client.get_service()
-        # Dedicated requests session for binary uploads (bypasses httplib2 SSL issues)
-        self._upload_session = AuthorizedSession(client.get_creds())
+        # 🟢 CRITICAL: 並列アップロード時のSSL通信ソケット破損を防ぐスレッドロック
+        # Serializes API calls to prevent httplib2 socket corruption
+        self._api_lock = threading.Lock()
 
     def find_folder(self, name: str, parent_id: str):
         """Finds ONLY folders (Shared Drive Compatible)."""
         safe_name = name.replace("'", "\\'")
         query = f"mimeType='application/vnd.google-apps.folder' and name='{safe_name}' and '{parent_id}' in parents and trashed=false"
         try:
-            # CRITICAL FIX: Added supportsAllDrives and includeItemsFromAllDrives
-            results = self.service.files().list(
-                q=query, 
-                fields="files(id)",
-                supportsAllDrives=True,
-                includeItemsFromAllDrives=True
-            ).execute()
+            with self._api_lock:
+                results = self.service.files().list(
+                    q=query, 
+                    fields="files(id)", 
+                    supportsAllDrives=True, 
+                    includeItemsFromAllDrives=True
+                ).execute()
             files = results.get('files', [])
             return files[0]['id'] if files else None
         except Exception as e:
@@ -36,13 +39,13 @@ class GDriveUploader:
         safe_name = name.replace("'", "\\'")
         query = f"name='{safe_name}' and '{parent_id}' in parents and trashed=false"
         try:
-            # CRITICAL FIX: Added supportsAllDrives and includeItemsFromAllDrives
-            results = self.service.files().list(
-                q=query, 
-                fields="files(id)",
-                supportsAllDrives=True,
-                includeItemsFromAllDrives=True
-            ).execute()
+            with self._api_lock:
+                results = self.service.files().list(
+                    q=query, 
+                    fields="files(id)", 
+                    supportsAllDrives=True, 
+                    includeItemsFromAllDrives=True
+                ).execute()
             files = results.get('files', [])
             return files[0]['id'] if files else None
         except Exception as e:
@@ -50,24 +53,21 @@ class GDriveUploader:
             return None
 
     def list_all_items(self, parent_id):
-        """
-        Fetches ALL items in a folder in one go.
-        Returns a dictionary: { "File Name": "File ID" }
-        """
+        """Fetches ALL items in a folder in one go."""
         items_map = {}
         query = f"'{parent_id}' in parents and trashed = false"
         try:
             page_token = None
             while True:
-                # We fetch 1000 items at a time (Max Level Efficiency)
-                results = self.service.files().list(
-                    q=query,
-                    fields="nextPageToken, files(id, name)",
-                    pageSize=1000,
-                    includeItemsFromAllDrives=True,
-                    supportsAllDrives=True,
-                    pageToken=page_token
-                ).execute()
+                with self._api_lock:
+                    results = self.service.files().list(
+                        q=query, 
+                        fields="nextPageToken, files(id, name)", 
+                        pageSize=1000,
+                        includeItemsFromAllDrives=True, 
+                        supportsAllDrives=True, 
+                        pageToken=page_token
+                    ).execute()
                 
                 for f in results.get('files', []):
                     items_map[f['name']] = f['id']
@@ -85,20 +85,16 @@ class GDriveUploader:
         existing_id = self.find_folder(name, parent_id)
         if existing_id: return existing_id
 
-        metadata = {
-            'name': name,
-            'mimeType': 'application/vnd.google-apps.folder',
-            'parents': [parent_id]
-        }
+        metadata = {'name': name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}
         
         for attempt in range(3):
             try:
-                # CRITICAL FIX: Added supportsAllDrives=True
-                folder = self.service.files().create(
-                    body=metadata, 
-                    fields='id',
-                    supportsAllDrives=True 
-                ).execute()
+                with self._api_lock:
+                    folder = self.service.files().create(
+                        body=metadata, 
+                        fields='id', 
+                        supportsAllDrives=True
+                    ).execute()
                 logger.info(f"📁 Created folder: {name}")
                 return folder.get('id')
             except Exception as e:
@@ -108,42 +104,29 @@ class GDriveUploader:
                 time.sleep(1)
 
     def upload_file(self, file_path, file_name, parent_id):
-        """Uploads file using requests transport (SSL-safe, bypasses httplib2)."""
-        logger.debug(f"[DEBUG] Uploading {file_name} to parent {parent_id}")
-
+        """Uploads file with SSL-error protection and GUARANTEED file handle release."""
         for attempt in range(5):
             try:
-                # Step 1: Create file metadata via resumable upload initiation
                 metadata = {'name': file_name, 'parents': [parent_id]}
-                init_resp = self._upload_session.post(
-                    "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true",
-                    json=metadata,
-                    headers={'Content-Type': 'application/json; charset=UTF-8',
-                             'X-Upload-Content-Type': 'image/jpeg'}
-                )
-                init_resp.raise_for_status()
-                upload_url = init_resp.headers['Location']
-
-                # Step 2: Upload the actual file bytes to the resumable URL
+                # 🟢 CRITICAL: with open() を使うことで、アップロード成功/失敗に関わらず確実にWindowsのファイルロックを解除する
+                # Using MediaIoBaseUpload with a file stream ensures we control the handle lifecycle.
                 with open(file_path, 'rb') as f:
-                    file_data = f.read()
-                
-                upload_resp = self._upload_session.put(
-                    upload_url,
-                    data=file_data,
-                    headers={'Content-Type': 'image/jpeg'}
-                )
-                upload_resp.raise_for_status()
+                    media = MediaIoBaseUpload(f, mimetype='image/jpeg', resumable=True)
+                    with self._api_lock:
+                        self.service.files().create(
+                            body=metadata, 
+                            media_body=media, 
+                            fields='id', 
+                            supportsAllDrives=True
+                        ).execute()
                 logger.info(f"⬆️ Uploaded {file_name}")
                 return
-
             except Exception as e:
                 err_msg = str(e)
                 if "SSL" in err_msg or "version number" in err_msg or "Connection reset" in err_msg:
                     logger.warning(f"⚠️ SSL/Transient error during upload of {file_name} (Attempt {attempt+1}): {e}")
                     time.sleep(2 * (attempt + 1))
                     continue
-                
                 if attempt == 4:
                     logger.error(f"Upload failed for {file_name} after retries: {e}")
                 else:
@@ -153,18 +136,16 @@ class GDriveUploader:
     def create_shortcut(self, target_id, parent_id, name):
         """Creates shortcut with Shared Drive support."""
         metadata = {
-            'name': name,
-            'mimeType': 'application/vnd.google-apps.shortcut',
-            'parents': [parent_id],
-            'shortcutDetails': {'targetId': target_id}
+            'name': name, 'mimeType': 'application/vnd.google-apps.shortcut',
+            'parents': [parent_id], 'shortcutDetails': {'targetId': target_id}
         }
         try:
-            # CRITICAL FIX: Added supportsAllDrives=True
-            file = self.service.files().create(
-                body=metadata, 
-                fields='id',
-                supportsAllDrives=True
-            ).execute()
+            with self._api_lock:
+                file = self.service.files().create(
+                    body=metadata, 
+                    fields='id', 
+                    supportsAllDrives=True
+                ).execute()
             logger.info(f"🔗 Created Shortcut: {name}")
             return file.get('id')
         except Exception as e:
@@ -174,12 +155,12 @@ class GDriveUploader:
     def rename_file(self, file_id, new_name):
         """Renames file with Shared Drive support."""
         try:
-            # CRITICAL FIX: Added supportsAllDrives=True
-            self.service.files().update(
-                fileId=file_id, 
-                body={'name': new_name},
-                supportsAllDrives=True
-            ).execute()
+            with self._api_lock:
+                self.service.files().update(
+                    fileId=file_id, 
+                    body={'name': new_name}, 
+                    supportsAllDrives=True
+                ).execute()
             logger.info(f"✨ Renamed to: {new_name}")
         except Exception as e:
             logger.error(f"Rename failed for {file_id}: {e}")
@@ -187,12 +168,12 @@ class GDriveUploader:
     def get_share_link(self, file_id):
         """Fetches link with Shared Drive support."""
         try:
-            # CRITICAL FIX: Added supportsAllDrives=True
-            file = self.service.files().get(
-                fileId=file_id, 
-                fields='webViewLink',
-                supportsAllDrives=True
-            ).execute()
+            with self._api_lock:
+                file = self.service.files().get(
+                    fileId=file_id, 
+                    fields='webViewLink', 
+                    supportsAllDrives=True
+                ).execute()
             return file.get('webViewLink')
         except Exception as e:
             logger.error(f"Failed to get link for {file_id}: {e}")
@@ -202,10 +183,11 @@ class GDriveUploader:
         """Sets permissions with Shared Drive support."""
         try:
             permission = {'role': 'reader', 'type': 'anyone'}
-            self.service.permissions().create(
-                fileId=file_id,
-                body=permission,
-                supportsAllDrives=True
-            ).execute()
+            with self._api_lock:
+                self.service.permissions().create(
+                    fileId=file_id, 
+                    body=permission, 
+                    supportsAllDrives=True
+                ).execute()
         except Exception as e:
             logger.error(f"Permission error for {file_id}: {e}")
