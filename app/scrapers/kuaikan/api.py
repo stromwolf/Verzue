@@ -103,9 +103,9 @@ class KuaikanApiScraper(BaseScraper):
         retry = Retry(total=5, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
         dl_session.mount("https://", HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry))
         
-        # 🟢 1. Force the Root PC Domain as Referer
+        # 🟢 1. Force the Root PC Domain as Referer (Fixes 403 Forbidden)
         dl_session.headers.update({
-            'Referer': 'https://www.kuaikanmanhua.com/', # Do not use task.url here to avoid mobile sub-domain blocks
+            'Referer': 'https://www.kuaikanmanhua.com/',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
             'Connection': 'keep-alive',
@@ -116,46 +116,22 @@ class KuaikanApiScraper(BaseScraper):
         for k, v in self.session.cookies.items():
             dl_session.cookies.set(k, v, domain='.kuaikanmanhua.com')
 
-        # 🟢 2. API-ONLY EXTRACTION
+        # 🟢 2. PURE API EXTRACTION (Zero HTML)
         api_url = f"https://api.kuaikanmanhua.com/v1/comics/{task.episode_id}"
         api_res = self.session.get(api_url, timeout=15)
         
         if api_res.status_code != 200:
-            raise ScraperError(f"Kuaikan API failed (HTTP {api_res.status_code}). Check cookies/login.")
+            raise ScraperError(f"Kuaikan API failed (HTTP {api_res.status_code}). Check connection.")
             
         data = api_res.json()
         if data.get('code') != 200:
             raise ScraperError(f"Kuaikan API Error: {data.get('message')}")
 
-        # 1. Try API first
+        # Directly grab the URLs from the JSON response
         image_urls = [img.get('url') for img in data.get('data', {}).get('comic_images', []) if img.get('url')]
         
-        # 🟢 2. SMART FALLBACK: IIFE Regex Extraction
         if not image_urls:
-            logger.info(f"[Kuaikan] API empty. Extracting IIFE data from HTML for {task.chapter_str}...")
-            res = self.session.get(task.url, timeout=20)
-            
-            # Clean escaped slashes, unicode ampersands, and HTML entity ampersands
-            clean_html = res.text.replace('\\u002F', '/').replace('\\u0026', '&').replace('&amp;', '&')
-            
-            # task.episode_id is the Kuaikan Comic ID (e.g., 829730)
-            cid = task.episode_id
-            
-            # Extract all URLs belonging to this specific chapter's directory (/image/c{cid}/)
-            # This perfectly filters out avatars, ads, and recommended comics!
-            pattern = rf'"(https?://[^"]+?\.kkmh\.com/image/c{cid}/[^"]+)"'
-            raw_urls = re.findall(pattern, clean_html)
-            
-            # Prioritize high-quality w1280 images. dict.fromkeys removes duplicates while preserving the exact reading order.
-            w1280_urls = [u for u in raw_urls if 'w1280' in u]
-            
-            if w1280_urls:
-                image_urls = list(dict.fromkeys(w1280_urls))
-            else:
-                image_urls = list(dict.fromkeys(raw_urls))
-
-        if not image_urls:
-            raise ScraperError(f"Failed to find images for {task.chapter_str}. Possibly VIP or access restricted.")
+            raise ScraperError("API returned 0 image URLs. You MUST add a valid logged-in Kuaikan cookie to use the API.")
 
         image_data = [{'file': f"page_{idx+1:03d}.jpg", 'url': url} for idx, url in enumerate(image_urls)]
         
