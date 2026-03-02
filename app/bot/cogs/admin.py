@@ -41,13 +41,9 @@ class AdminCog(commands.Cog):
         
         try:
             # 1. SHUT DOWN BROWSER
-            # We access the browser via the shared registry
             logger.info("Reboot: Terminating Browser Engine (if any)...")
-            # The new BrowserService is ephemeral, so there's nothing to stop globally.
-            # This is a no-op now, but left for compatibility.
             browser = self.bot.task_queue.scraper_registry.browser
             if browser and hasattr(browser, 'stop'):
-                # Handle both sync and async stop methods for future compatibility
                 if asyncio.iscoroutinefunction(browser.stop):
                     await browser.stop()
                 else:
@@ -57,15 +53,22 @@ class AdminCog(commands.Cog):
             await msg.edit(content="👋 **Services stopped. Rebooting now...**")
             await asyncio.sleep(1) # Short pause for Discord to send the msg
 
-            # 3. EXECUTE RESTART
-            # This replaces the current process with a new one
+            # 3. EXECUTE RESTART & GRACEFUL SHUTDOWN
             logger.info(f"Reboot: Process re-executing by {ctx.author}")
             
-            # 🟢 FIX: Wrap paths in quotes to prevent Windows from splitting them at spaces
-            args = [sys.executable] + sys.argv
-            quoted_args = [f'"{arg}"' if ' ' in arg else arg for arg in args]
+            import subprocess
+            kwargs = {}
+            if os.name == 'nt': # If running on Windows
+                # 🟢 This forces Windows to open a brand new terminal window!
+                # Using CREATE_NEW_CONSOLE is standard for Windows subprocesses.
+                kwargs['creationflags'] = 0x00000010 # CREATE_NEW_CONSOLE
             
-            os.execv(sys.executable, quoted_args)
+            # Spawn the new bot in the fresh window
+            subprocess.Popen([sys.executable] + sys.argv, **kwargs)
+            
+            # 🟢 Cleanly disconnect this old bot from Discord so we don't get rate-limited
+            await self.bot.close()
+            sys.exit(0)
             
         except Exception as e:
             logger.error(f"Restart Failed: {e}")
