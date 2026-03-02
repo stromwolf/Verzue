@@ -327,9 +327,9 @@ class MechaApiScraper(BaseScraper):
         from cryptography.hazmat.primitives import padding
         from cryptography.hazmat.backends import default_backend
         import concurrent.futures
+        import requests # 🟢 IMPORT NATIVE REQUESTS FOR SAFE BINARY DOWNLOAD
 
-        # 🟢 THE SECRET SAUCE: The Server-Side Trigger
-        # We MUST hit this endpoint first to tell MechaComic to generate the real key.
+        # 1. Trigger server-side read session
         download_trigger_url = f"{self.BASE_URL}/chapters/{real_id}/download?commit=read"
         logger.info(f"   [API] Triggering server-side read session...")
         session.get(download_trigger_url, allow_redirects=False)
@@ -339,13 +339,13 @@ class MechaApiScraper(BaseScraper):
         directory_url = qs['directory'][0]
         version = qs.get('ver', [''])[0]
 
-        # Fetch Manifest
+        # 2. Fetch Manifest
         manifest_res = session.get(contents_vertical_url)
         if manifest_res.status_code != 200:
             raise Exception(f"Failed to fetch manifest. Status: {manifest_res.status_code}")
         manifest = manifest_res.json()
         
-        # Fetch Real Cryptokey
+        # 3. Fetch Real Cryptokey
         cryptokey_path = qs.get('cryptokey', [f"/viewer_cryptokey/chapter/{real_id}"])[0]
         key_url = urljoin(self.BASE_URL, cryptokey_path)
         
@@ -357,7 +357,6 @@ class MechaApiScraper(BaseScraper):
         if len(key_text) != 32:
             raise Exception(f"Server returned invalid cryptokey length: {len(key_text)}")
             
-        # 🟢 Verify we successfully got past the dummy key!
         if key_text.startswith("e74da3e8"):
             logger.error("🚨 CRITICAL: Server STILL returned the Dummy Key!")
         else:
@@ -373,11 +372,23 @@ class MechaApiScraper(BaseScraper):
             target = next((f for f in formats if f['format'] == 'png'), None) or formats[0]
             img_tasks.append({'src': target['src'], 'pg': pg['pageIndex'], 'filename': f"page_{pg['pageIndex']:03d}.png", 'pg_data': pg})
 
+        # 🟢 4. Prepare pure 'requests' session to prevent curl_cffi binary corruption
+        dl_session = requests.Session()
+        
+        # Manually extract cookies and inject them to bypass domain drops
+        cookie_string = "; ".join([f"{k}={v}" for k, v in session.cookies.items()])
+        dl_session.headers.update({
+            "Referer": viewer_url,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Cookie": cookie_string
+        })
+
         # Download & Decrypt Function
         def download_and_decrypt(t):
             url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
             
-            res = session.get(url, timeout=30)
+            # 🟢 Use the native dl_session (requests)
+            res = dl_session.get(url, timeout=30)
             if res.status_code != 200:
                 raise Exception(f"HTTP {res.status_code}")
                 
