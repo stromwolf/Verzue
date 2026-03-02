@@ -30,7 +30,8 @@ class MechaBot(commands.Bot):
             "app.bot.cogs.jumptoon", 
             "app.bot.cogs.kakaopage",
             "app.bot.cogs.acqq",
-            "app.bot.cogs.piccoma"
+            "app.bot.cogs.piccoma",
+            "app.bot.cogs.kuaikan"
         ]
         
         for ext in extensions:

@@ -248,25 +248,48 @@ class JumptoonApiScraper(BaseScraper):
             raise ScraperError(f"Manifest not found for Ch.{ep_num}. Check if the chapter number in Drive matches the site.")
 
         # 6. SAVE MANIFEST & EXECUTE
+        # 🟢 FIX 1: Remove the 'seed' from math.json so the Stitcher doesn't try to unscramble it a second time!
+        clean_manifest = [{'file': d['file'], 'url': d['url']} for d in image_data]
         with open(os.path.join(output_dir, "math.json"), "w") as f:
-            json.dump(image_data, f)
+            json.dump(clean_manifest, f)
             
         total = len(image_data)
         logger.info(f"[Jumptoon] ✅ Success! Filtered out dummies. Mapped {total} REAL pages.")
 
-        # 🟢 2. PACED PARALLEL DOWNLOAD
+        # 🟢 2. PACED PARALLEL DOWNLOAD & UNSCRAMBLING
         task.status = TaskStatus.DOWNLOADING
         def download_worker(item):
             time.sleep(0.3) # Avoid hitting WAF limit
-            self._download_image_robust(dl_session, item['url'], item['file'], output_dir)
+            # Pass the seed to the robust downloader
+            self._download_image_robust(dl_session, item['url'], item['file'], output_dir, item['seed'])
 
         with ThreadPoolExecutor(max_workers=5) as executor:
             list(executor.map(download_worker, image_data))
                 
         return output_dir
 
-    def _download_image_robust(self, dl_session, url, filename, out_dir):
+    def _download_image_robust(self, dl_session, url, filename, out_dir, seed):
+        from app.services.image.optimizer import ImageOptimizer
+        
         res = dl_session.get(url, timeout=30)
         res.raise_for_status()
-        with open(os.path.join(out_dir, filename), 'wb') as f:
+        
+        raw_path = os.path.join(out_dir, f"raw_{filename}")
+        final_path = os.path.join(out_dir, filename)
+        
+        # Save the scrambled image temporarily
+        with open(raw_path, 'wb') as f:
             f.write(res.content)
+            
+        # 🟢 FIX 2: Unscramble the image immediately inside this parallel thread
+        try:
+            if seed:
+                img = ImageOptimizer.unscramble_jumptoon_v2(raw_path, seed)
+                img.save(final_path, format="WEBP", quality=100)
+                os.remove(raw_path) # Delete the raw scrambled file
+            else:
+                os.rename(raw_path, final_path)
+        except Exception as e:
+            logger.error(f"Failed to unscramble {filename}: {e}")
+            if os.path.exists(raw_path):
+                os.rename(raw_path, final_path)

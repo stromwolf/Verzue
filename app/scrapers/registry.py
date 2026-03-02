@@ -6,6 +6,7 @@ from app.scrapers.jumptoon.api import JumptoonApiScraper
 from app.scrapers.kakaopage.api import KakaoApiScraper
 from app.scrapers.acqq.api import AcqqApiScraper
 from app.scrapers.piccoma.api import PiccomaApiScraper
+from app.scrapers.kuaikan.api import KuaikanApiScraper
 
 from app.services.browser.unlocker import BatchUnlocker
 
@@ -33,8 +34,7 @@ class ScraperRegistry:
         self.jumptoon = JumptoonApiScraper()
         self.kakao = KakaoApiScraper()
         self.piccoma = PiccomaApiScraper()
-        
-        # 🟢 ADD THE NEW ENGINE HERE
+        self.kuaikan = KuaikanApiScraper()
         self.acqq = AcqqApiScraper(browser_service)
 
         # Shared Batch Unlocker (Soft Affinity & 3-Tab Support)
@@ -75,7 +75,12 @@ class ScraperRegistry:
             logger.info(" 🗺️ Routing to Tencent AC.QQ Scraper")
             return self.acqq
 
-        # 5. MECHACOMIC ROUTING
+        # 5. KUAIKAN ROUTING
+        if "kuaikanmanhua.com" in url_lower:
+            logger.info("[Registry] 🗺️ Routing to Kuaikan Scraper")
+            return self.kuaikan
+
+        # 6. MECHACOMIC ROUTING
         if "mechacomic.jp" in url_lower:
             if is_smartoon:
                 logger.info("[Registry] 🗺️ Routing to Mecha API Engine")
@@ -83,3 +88,5 @@ class ScraperRegistry:
             else:
                 logger.info("[Registry] 🗺️ Routing to Mecha Web (Selenium) Engine")
                 return self.web_scraper
+
+        raise ValueError(f"No scraper registered for URL: {url}")
