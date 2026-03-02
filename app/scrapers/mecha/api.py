@@ -431,34 +431,12 @@ class MechaApiScraper(BaseScraper):
             for future in concurrent.futures.as_completed(future_to_task):
                 current_task = future_to_task[future]
                 try:
-                    pg_idx, actual_w, actual_h = future.result()
-                    current_task['actual_w'] = actual_w
-                    current_task['actual_h'] = actual_h
+                    # Execute and ignore dimensions (we don't need math.json anymore)
+                    future.result()
                 except Exception as e:
                     logger.error(f"[API] Sync Download failed for page {current_task.get('filename')}: {e}")
 
-        math_data = []
-        current_y = 0
-        
-        # 🟢 4. ゼロ除算 (ZeroDivisionError) を絶対に起こさないための厳格な計算
-        v_width = 480
-        if isinstance(manifest, dict):
-            v_data = manifest.get('viewportSize') or {}
-            v_width = v_data.get('width') or 480
-            
-        if v_width <= 0: # サーバーがダミーの 0 を返した場合のフォールバック
-            v_width = 480
-            
-        scale = max([t.get('actual_w', 0) for t in img_tasks] + [780]) / v_width
-
-        for t in img_tasks:
-            pg = t['pg_data']
-            box_h = int(pg['size']['height'] * scale)
-            y_pos = current_y + int(pg['coord']['y'] * scale)
-            math_data.append({'file': t['filename'], 'y': y_pos, 'width': t.get('actual_w', int(pg['size']['width'] * scale)), 'height': t.get('actual_h', box_h)})
-            current_y = y_pos + box_h + int(manifest.get('gapBetweenImages', 0) * scale)
-
-        with open(os.path.join(output_dir, "math.json"), "w") as f:
-            json.dump(math_data, f, indent=2)
+        # 🟢 REMOVED: All math.json, scaling, and gap calculations. 
+        # The stitcher will now just sequentially stack the decrypted images with 0 gaps!
 
         return output_dir
