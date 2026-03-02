@@ -34,10 +34,11 @@ class GDriveClient:
             with open(Settings.TOKEN_PICKLE, 'wb') as token:
                 pickle.dump(self.creds, token)
 
-        # SSL Safe Mode for Penguin/Linux containers
-        http = google_auth_httplib2.AuthorizedHttp(self.creds, http=httplib2.Http())
-        self.service = build('drive', 'v3', http=http, cache_discovery=False)
-        logger.info("✅ GDrive Service Authorized.")
+        # Use requests-based transport for better SSL/Proxy handling
+        from google.auth.transport.requests import AuthorizedSession
+        session = AuthorizedSession(self.creds)
+        self.service = build('drive', 'v3', http=session, cache_discovery=False)
+        logger.info("✅ GDrive Service Authorized (Requests Transport).")
 
     def get_service(self):
         if not self.service: self.authenticate()

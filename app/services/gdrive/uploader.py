@@ -108,25 +108,39 @@ class GDriveUploader:
     def upload_file(self, file_path, file_name, parent_id):
         """Uploads file with SSL-error protection and retries."""
         from googleapiclient.http import MediaFileUpload
+        
+        # DEBUG Diagnostic
+        logger.debug(f"[DEBUG] Uploading {file_name} to parent {parent_id}")
+        
         for attempt in range(5):
             try:
                 metadata = {'name': file_name, 'parents': [parent_id]}
                 media = MediaFileUpload(str(file_path), mimetype='image/jpeg', resumable=True)
-                # CRITICAL FIX: Added supportsAllDrives=True
-                self.service.files().create(
+                
+                # The .execute() call internally constructs the upload URL
+                request = self.service.files().create(
                     body=metadata, 
                     media_body=media, 
                     fields='id',
                     supportsAllDrives=True
-                ).execute()
+                )
+                
+                # Log the URI for debugging protocol issues as requested
+                if hasattr(request, 'uri'):
+                    logger.debug(f"[DEBUG] Uploading to: {request.uri}")
+                
+                request.execute()
                 logger.info(f"⬆️ Uploaded {file_name}")
                 return
             except Exception as e:
                 # Catch SSL and transient network errors
-                if "SSL" in str(e) or "version number" in str(e):
+                err_msg = str(e)
+                if "SSL" in err_msg or "version number" in err_msg or "Connection reset" in err_msg:
                     logger.warning(f"⚠️ SSL/Transient error during upload of {file_name} (Attempt {attempt+1}): {e}")
+                    # Progressive backoff
                     time.sleep(2 * (attempt + 1))
                     continue
+                
                 if attempt == 4:
                     logger.error(f"Upload failed for {file_name} after retries: {e}")
                 else:
