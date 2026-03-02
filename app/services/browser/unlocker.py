@@ -106,102 +106,27 @@ class BatchUnlocker:
             self.worker_stats[tab_index]["progress"] = p
             self.worker_stats[tab_index]["purchase_status"] = s
             if view: view.trigger_refresh()
-
-            if p == 90:
-                asyncio.create_task(EventBus.emit("purchase_near_completion", tab_index, task))
+            if p == 90: asyncio.create_task(EventBus.emit("purchase_near_completion", tab_index, task))
 
         service = self.worker_stats[tab_index]["service"]
 
-        # 🚀 1. THE FAST PATH (API PURCHASING)
+        # 🚀 1. THE FAST PATH ONLY
         if service == "mecha":
             update_progress(15, "API Fast-Path Attempt")
             try:
                 from app.scrapers.mecha.api import MechaApiScraper
                 scraper = MechaApiScraper()
-                # Run the synchronous API call in a thread to keep the async loop free
                 success, new_cookies = await asyncio.to_thread(scraper.fast_purchase, task)
                 
                 if success:
                     update_progress(90, "API Purchase Successful")
-                    if new_cookies:
-                        await asyncio.to_thread(self._update_disk_cookies, "mecha", new_cookies)
-                    await asyncio.sleep(1) # Let the UI catch up
-                    return # Exit! We bought it instantly, no Selenium required.
+                    if new_cookies: await asyncio.to_thread(self._update_disk_cookies, "mecha", new_cookies)
+                    await asyncio.sleep(1)
+                    return
+                else:
+                    raise Exception("API Purchase rejected. Selenium fallback is currently disabled.")
             except Exception as e:
-                logger.warning(f"API Fast Path failed: {e}. Falling back to Browser.")
-
-        # 🐢 2. THE SLOW PATH (SELENIUM FALLBACK)
-        # A. NAVIGATION (10-30%)
-        update_progress(10, "Navigating Browser")
-        
-        # Atomic Navigation via BrowserService
-        await asyncio.to_thread(self.browser.run_on_tab, tab_index, 
-             lambda d: d.execute_script(f"window.location.href = '{task.url}';"))
-        
-        update_progress(30, "Waiting for Page")
-        
-        # B. POLLING & ACTION (30-90%)
-        start_time = time.time()
-        timeout = 45
-        is_success = False
-
-        while time.time() - start_time < timeout:
-            await asyncio.sleep(1.5)
-            
-            # Define interaction logic to run on the browser thread
-            def check_and_interact(driver):
-                current_url = driver.current_url.lower()
-                
-                # 1. Cookie Injection for Login/Limited pages
-                if "login" in current_url or "limited" in current_url:
-                    BrowserUtils.load_cookies(driver)
-                    driver.execute_script(f"window.location.href = '{task.url}';")
-                    return "reload"
-                
-                # 2. Search for Purchase Buttons
-                selectors = ["input.js-bt_buy_and_download", "input.c-btn-read-end", 
-                             "a.c-btn-read-end", "input.c-btn-free", "input.c-btn-buy", 
-                             "button.btn-purchase"]
-                
-                for sel in selectors:
-                    btns = driver.find_elements(By.CSS_SELECTOR, sel)
-                    if btns and btns[0].is_displayed():
-                        driver.execute_script("arguments[0].click();", btns[0])
-                        return "clicked"
-                
-                # 3. Passive Unlock Verification (Jumptoon)
-                if "jumptoon.com" in current_url:
-                     page_source = driver.page_source
-                     if "無料" in page_source or "view" in current_url or "viewer" in current_url:
-                         return "success"
-
-                # 4. Standard Success
-                if "view" in current_url or "viewer" in current_url:
-                    return "success"
-                
-                return "waiting"
-
-            # Execute interaction atomically on the correct tab
-            result = await asyncio.to_thread(self.browser.run_on_tab, tab_index, check_and_interact)
-
-            if result == "reload":
-                update_progress(40, "Injecting Cookies")
-            elif result == "clicked":
-                update_progress(80, "Clicking Purchase")
-                is_success = True
-                break
-            elif result == "success":
-                is_success = True
-                break
-            else:
-                update_progress(60, "Searching for Buttons")
-
-        if is_success:
-            update_progress(90, "Verifying Purchase")
-            await asyncio.to_thread(self.browser.run_on_tab, tab_index, lambda d: BrowserUtils.save_cookies(d))
-            await asyncio.sleep(2)
+                logger.error(f"API Fast Path failed: {e}")
+                raise e
         else:
-            update_progress(0, "Timeout/Failed")
-            raise Exception("Purchase Timeout")
-
-        update_progress(100, "Purchased")
+            raise Exception("Selenium fallback disabled. Only Mecha API supported currently.")

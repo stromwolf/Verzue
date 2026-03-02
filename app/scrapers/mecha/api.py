@@ -190,10 +190,17 @@ class MechaApiScraper(BaseScraper):
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(res.text, 'html.parser')
             
-            # 2. Find the purchase form using the classes you provided
-            buy_btn = soup.select_one("input.js-bt_buy_and_download, input.c-btn-buy, button.btn-purchase")
+            # 🟢 NEW: Expand selectors to catch "Free Charge" and "Read End" buttons
+            buy_btn = soup.select_one(
+                "input.js-bt_buy_and_download, input.c-btn-buy, button.btn-purchase, "
+                "input.c-btn-free, input.c-btn-read-end, button.js-bt_buy_and_download"
+            )
+            
             if not buy_btn: 
                 logger.debug(f"[API Fast-Path] No buy button found for Ch.{real_id}")
+                # 🟢 NEW: Save the HTML so we can see why it missed the button
+                with open(f"failed_buy_page_{real_id}.html", "w", encoding="utf-8") as f:
+                    f.write(res.text)
                 continue
             
             form = buy_btn.find_parent("form")
@@ -272,13 +279,8 @@ class MechaApiScraper(BaseScraper):
                     self._apply_session_cookies(session, new_cookies)
                     # Try to grab the viewer URL again now that we own it
                     viewer_url = self._check_chapter_access(session, real_id)
-
-            # 3. If STILL blocked, pass to the browser sandbox
-            if not viewer_url and self.browser:
-                logger.info(f"   🛡️ Request blocked. Passing link to Playwright sandbox...")
-                new_cookies, viewer_url = self.browser.run_isolated_handshake(task.url, acc['cookies'], selectors)
-                if viewer_url and new_cookies: 
-                    self._apply_session_cookies(session, new_cookies)
+                else:
+                    raise ScraperError("API Fast Purchase Failed. Selenium fallback is disabled.")
 
             if viewer_url:
                 logger.info(f"   ✅ Access Granted via Account: {acc['name']}")
@@ -320,6 +322,7 @@ class MechaApiScraper(BaseScraper):
         import os
         import io
         import json
+        import requests
         from PIL import Image
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
         from cryptography.hazmat.primitives import padding
@@ -331,32 +334,36 @@ class MechaApiScraper(BaseScraper):
         directory_url = qs['directory'][0]
         version = qs.get('ver', [''])[0]
 
-        # 🟢 1. FORCE THE COOKIES INTO A RAW HTTP HEADER
-        # This completely bypasses the buggy cookie jar
-        cookie_header = "; ".join([f"{k}={v}" for k, v in session.cookies.items()])
+        # ==========================================
+        # FIX 1 & 2: USE STANDARD REQUESTS & AJAX HEADERS
+        # ==========================================
+        req_session = requests.Session()
+        for k, v in session.cookies.items():
+            req_session.cookies.set(k, v, domain=".mechacomic.jp")
+            req_session.cookies.set(k, v, domain="mechacomic.jp")
+
         headers = {
             "Referer": viewer_url, 
             "Origin": "https://mechacomic.jp", 
-            "Accept": "application/json, text/plain, */*",
-            "Cookie": cookie_header,
-            "User-Agent": session.headers.get("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "X-Requested-With": "XMLHttpRequest" # CRITICAL FOR FAKE KEY AVOIDANCE
         }
+        req_session.headers.update(headers)
 
         # Fetch Manifest
-        manifest_res = session.get(contents_vertical_url, headers=headers)
+        manifest_res = req_session.get(contents_vertical_url)
         if manifest_res.status_code != 200:
             raise Exception(f"Failed to fetch manifest. Status: {manifest_res.status_code}")
         manifest = manifest_res.json()
         
-        # 🟢 2. FETCH REAL CRYPTOKEY WITH FORCED COOKIES
+        # Fetch Key
         cryptokey_path = qs.get('cryptokey', [f"/viewer_cryptokey/chapter/{real_id}"])[0]
         key_url = urljoin(self.BASE_URL, cryptokey_path)
         
-        key_res = session.get(key_url, headers=headers)
+        key_res = req_session.get(key_url)
         if key_res.status_code != 200:
             raise Exception(f"Failed to fetch cryptokey. Status: {key_res.status_code}")
         
-        # If the key isn't a 32-character hex string, we got blocked.
         key_text = key_res.text.strip()
         if len(key_text) != 32:
             raise Exception(f"Server returned invalid cryptokey: {key_text[:20]}...")
@@ -368,25 +375,24 @@ class MechaApiScraper(BaseScraper):
         for pg in manifest.get('pages', []):
             formats = manifest.get('images', {}).get(pg['image'], [])
             if not formats: continue
-            
             target = next((f for f in formats if f['format'] == 'png'), None) or formats[0]
             img_tasks.append({'src': target['src'], 'pg': pg['pageIndex'], 'filename': f"page_{pg['pageIndex']:03d}.png", 'pg_data': pg})
 
-        # 🟢 3. SYNCHRONOUS THREAD POOL DOWNLOADER
+        # ==========================================
+        # FIX 3: STREAMING DOWNLOAD TO PREVENT CORRUPTION
+        # ==========================================
         def download_and_decrypt(t):
             url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
             
-            # Explicitly pass the forged headers
-            res = session.get(url, timeout=20, headers=headers)
+            # Stream the request to ensure the entire binary blob is caught
+            res = req_session.get(url, timeout=30, stream=True)
+            res.raise_for_status()
             
-            if res.status_code != 200:
-                raise Exception(f"Failed to download {url}: Status {res.status_code}")
-                
-            # HTML Safeguard: If the response is HTML, it's an error page, not an image!
-            if b"<!DOCTYPE html>" in res.content or b"<html" in res.content:
+            raw_bytes = res.content
+            if b"<!DOCTYPE html>" in raw_bytes or b"<html" in raw_bytes:
                 raise Exception("Server returned HTML page instead of encrypted image blob.")
             
-            iv, encrypted_data = res.content[:16], res.content[16:]
+            iv, encrypted_data = raw_bytes[:16], raw_bytes[16:]
             cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
             decryptor = cipher.decryptor()
             padded = decryptor.update(encrypted_data) + decryptor.finalize()
@@ -400,23 +406,19 @@ class MechaApiScraper(BaseScraper):
                 
             return t['pg'], w, h
 
-        # 🟢 ここを修正：futureとタスク(t)をマッピングして変数の未定義エラーを防ぐ
+        # Execute downloads concurrently
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            # 各futureがどのタスク(t)に対応しているかを辞書に記憶させる
             future_to_task = {executor.submit(download_and_decrypt, t): t for t in img_tasks}
-            
             for future in concurrent.futures.as_completed(future_to_task):
-                # ここで必ずタスク(t)を取得できる
                 current_task = future_to_task[future]
                 try:
                     pg_idx, actual_w, actual_h = future.result()
                     current_task['actual_w'] = actual_w
                     current_task['actual_h'] = actual_h
                 except Exception as e:
-                    # current_taskを使って安全にエラーログを出力
                     logger.error(f"[API] Sync Download failed for page {current_task.get('filename')}: {e}")
 
-        # 🟢 4. BUILD MATH JSON
+        # Build Math JSON
         math_data = []
         current_y = 0
         scale = max([t.get('actual_w', 0) for t in img_tasks] + [780]) / manifest.get('viewportSize', {}).get('width', 480)
