@@ -2,11 +2,14 @@ import discord
 from discord.ext import commands
 import sys
 import os
+import signal
 import asyncio
 import logging
+from pathlib import Path
 from config.settings import Settings
 
 logger = logging.getLogger("AdminCog")
+PID_FILE = Path("bot.pid")
 
 class AdminCog(commands.Cog):
     def __init__(self, bot):
@@ -49,18 +52,33 @@ class AdminCog(commands.Cog):
                 else:
                     browser.stop()
             
-            # 2. UPDATE UI
+            # 2. KILL ANY PREVIOUSLY SAVED PID (stale instances)
+            if PID_FILE.exists():
+                try:
+                    old_pid = int(PID_FILE.read_text().strip())
+                    if old_pid != os.getpid():  # Don't kill ourselves yet
+                        if os.name == 'nt':
+                            # Windows alternative to SIGTERM
+                            os.system(f"taskkill /F /PID {old_pid}")
+                        else:
+                            os.kill(old_pid, signal.SIGTERM)
+                        logger.info(f"Reboot: Killed stale instance PID {old_pid}")
+                except (ProcessLookupError, ValueError, Exception) as e:
+                    logger.debug(f"Reboot: Stale instance PID cleanup note: {e}")
+                PID_FILE.unlink(missing_ok=True)
+
+            # 3. UPDATE UI
             await msg.edit(content="👋 **Services stopped. Rebooting now...**")
             await asyncio.sleep(1)
 
-            # 3. EXECUTE RESTART IN SAME CONSOLE
+            # 4. EXECUTE RESTART IN SAME CONSOLE
             logger.info(f"Reboot: Process re-executing by {ctx.author}")
             
             import subprocess
-            # Spawn the new bot in the exact same terminal window (No creationflags)
+            # Spawn the new bot in the exact same terminal window
             subprocess.Popen([sys.executable] + sys.argv)
             
-            # Cleanly disconnect this old bot from Discord so we don't get rate-limited
+            # Cleanly disconnect this old bot from Discord
             await self.bot.close()
             sys.exit(0)
             

@@ -20,8 +20,11 @@ async def heartbeat():
         
 async def main():
     logger.info("🚀 Starting Mecha Bot System...")
-
-    # 1. Init Services (But don't start them yet)
+    
+    # Write PID to file to prevent duplicate instances
+    from pathlib import Path
+    import os
+    Path("bot.pid").write_text(str(os.getpid()))
     browser = BrowserService()
     
     logger.info("☁️  Initializing Google Drive...")
