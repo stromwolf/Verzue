@@ -51,22 +51,16 @@ class AdminCog(commands.Cog):
             
             # 2. UPDATE UI
             await msg.edit(content="👋 **Services stopped. Rebooting now...**")
-            await asyncio.sleep(1) # Short pause for Discord to send the msg
+            await asyncio.sleep(1)
 
-            # 3. EXECUTE RESTART & GRACEFUL SHUTDOWN
+            # 3. EXECUTE RESTART IN SAME CONSOLE
             logger.info(f"Reboot: Process re-executing by {ctx.author}")
             
             import subprocess
-            kwargs = {}
-            if os.name == 'nt': # If running on Windows
-                # 🟢 This forces Windows to open a brand new terminal window!
-                # Using CREATE_NEW_CONSOLE is standard for Windows subprocesses.
-                kwargs['creationflags'] = 0x00000010 # CREATE_NEW_CONSOLE
+            # Spawn the new bot in the exact same terminal window (No creationflags)
+            subprocess.Popen([sys.executable] + sys.argv)
             
-            # Spawn the new bot in the fresh window
-            subprocess.Popen([sys.executable] + sys.argv, **kwargs)
-            
-            # 🟢 Cleanly disconnect this old bot from Discord so we don't get rate-limited
+            # Cleanly disconnect this old bot from Discord so we don't get rate-limited
             await self.bot.close()
             sys.exit(0)
             
