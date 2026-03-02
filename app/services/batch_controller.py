@@ -23,9 +23,13 @@ class BatchController:
         if not self.uploader:
             return self._create_local_tasks(selected_indices, all_chapters, title, url, scan_group, interaction, series_id, req_id)
 
-        # 1. SETUP DRIVE
+        # 1. SETUP DRIVE (Top-Level)
         drive_series_id = await asyncio.to_thread(self.uploader.create_folder, title, Settings.GDRIVE_ROOT_ID)
         main_id = await asyncio.to_thread(self.uploader.create_folder, "MAIN", drive_series_id)
+        
+        # 🟢 SPEED FIX 1: Make MAIN public once. All chapter folders inside will inherit it instantly!
+        await asyncio.to_thread(self.uploader.make_public, main_id)
+        
         client_folder_name = f"{scan_group}_{title}"
         client_id = await asyncio.to_thread(self.uploader.create_folder, client_folder_name, drive_series_id)
         await asyncio.to_thread(self.uploader.make_public, client_id)
@@ -35,35 +39,48 @@ class BatchController:
 
         tasks_to_queue = []
         chapters_to_unlock = []
-        target_id_for_link = None 
 
-        # 2. LOGIC LOOP
-        for idx in selected_indices:
+        # 🟢 SPEED FIX 2: Async worker for concurrent execution
+        async def setup_chapter(idx):
             ch_data = all_chapters[idx]
             task = self._make_task(idx, ch_data, title, url, scan_group, interaction, series_id, req_id)
             folder_name = task.folder_name
             
+            target_id = None
+            is_queued = False
+            is_locked = ch_data.get('is_locked', "jumptoon.com" in url)
+            
             main_existing_id = main_manifest.get(folder_name)
             if main_existing_id:
-                target_id_for_link = main_existing_id
+                target_id = main_existing_id
                 if folder_name not in client_manifest:
                     await asyncio.to_thread(self.uploader.create_shortcut, main_existing_id, client_id, folder_name)
             else:
-                # 🟢 SMART UNLOCK (V2)
-                # Jumptoon now reports its own 'is_locked' status based on free icons.
-                is_locked = ch_data.get('is_locked', "jumptoon.com" in url)
-                if is_locked:
-                    chapters_to_unlock.append(task)
-                
                 temp_name = f"[Uploading] {folder_name}"
                 pre_id = main_manifest.get(temp_name) or await asyncio.to_thread(self.uploader.create_folder, temp_name, main_id)
-                await asyncio.to_thread(self.uploader.make_public, pre_id)
+                
+                # We NO LONGER call make_public here. (Saves 1 slow API call per chapter)
+                
                 if folder_name not in client_manifest:
                     await asyncio.to_thread(self.uploader.create_shortcut, pre_id, client_id, folder_name)
                 
-                task.pre_created_folder_id, task.final_folder_name = pre_id, folder_name
+                task.pre_created_folder_id = pre_id
+                task.final_folder_name = folder_name
+                target_id = pre_id
+                is_queued = True
+                
+            return task, target_id, is_queued, is_locked
+
+        # 🟢 Execute all 10+ chapter setups simultaneously
+        results = await asyncio.gather(*(setup_chapter(idx) for idx in selected_indices))
+        
+        target_id_for_link = None
+        for task, target_id, is_queued, is_locked in results:
+            target_id_for_link = target_id
+            if is_queued:
                 tasks_to_queue.append(task)
-                target_id_for_link = pre_id
+                if is_locked:
+                    chapters_to_unlock.append(task)
 
         # 3. PHASE 3 UNLOCK
         if chapters_to_unlock:
@@ -74,7 +91,6 @@ class BatchController:
             
             await self.unlocker.unlock_batch(chapters_to_unlock, view_ref=view_ref)
             
-            # DYNAMIC COOKIE RELOAD
             if "jumptoon.com" in url:
                 self.bot.task_queue.scraper_registry.jumptoon._load_cookies()
             
