@@ -33,7 +33,7 @@ class UniversalDashboard:
         if sel_count == 0:
             sel_text = "None"
         elif sel_count == len(self.all_chapters):
-            sel_text = "SR"
+            sel_text = f"Ch1-{len(self.all_chapters)} (SR)"
         else:
             idxs = sorted(list(self.selected_indices))
             ranges, s, p = [], idxs[0], idxs[0]
@@ -42,7 +42,7 @@ class UniversalDashboard:
                 else:
                     ranges.append(f"Ch{s+1}-{p+1}" if s != p else f"Ch{s+1}")
                     s = p = i
-            ranges.append(f"Ch{s+1}-{p+1}" if s != p else f"{s+1}")
+            ranges.append(f"Ch{s+1}-{p+1}" if s != p else f"Ch{s+1}")
             sel_text = ", ".join(ranges)
             if len(sel_text) > 35: sel_text = sel_text[:32] + "..."
 
@@ -113,7 +113,7 @@ class UniversalDashboard:
         if not self.processing_mode:
             inner_components.append({"type": 14, "spacing": 1}) # Separator
             
-            # String Select (Pages)
+            # Row 1: String Select (Pages)
             options = []
             s_page = max(1, self.page - 12)
             e_page = min(self.max_page, s_page + 24)
@@ -121,7 +121,7 @@ class UniversalDashboard:
                 opt = {"label": f"Page {p}", "value": str(p), "emoji": {"name": "📄"}}
                 if p == self.page:
                     opt["description"] = "(Current Page)"
-                    opt["emoji"] = {"name": "🐜"} # As requested!
+                    opt["emoji"] = {"name": "🐜"}
                     opt["default"] = True
                 options.append(opt)
             
@@ -132,12 +132,18 @@ class UniversalDashboard:
                 }]
             })
 
-            # Buttons
+            # 🟢 Row 2: Select Chapters Button
             inner_components.append({
                 "type": 1,
                 "components": [
-                    {"type": 2, "style": 1, "label": "Select", "custom_id": f"btn_select_{self.req_id}"},
-                    # 🟢 UPDATED: Renamed label to "Start"
+                    {"type": 2, "style": 1, "label": "Select Chapters", "custom_id": f"btn_select_{self.req_id}"}
+                ]
+            })
+
+            # 🟢 Row 3: Start and Cancel Buttons (Moved Down)
+            inner_components.append({
+                "type": 1,
+                "components": [
                     {"type": 2, "style": 3, "label": "Start", "custom_id": f"btn_start_{self.req_id}", "disabled": len(self.selected_indices) == 0},
                     {"type": 2, "style": 4, "label": "Cancel", "custom_id": f"btn_cancel_{self.req_id}"}
                 ]
