@@ -103,9 +103,6 @@ class UniversalDashboard(View):
                 desc += f"**{line}**\n" if idx in self.selected_indices else f"{line}\n"
             desc += f"\n**Page:** {self.page}/{self.max_page} | **Selected Chapter:** {sel_text}"
 
-        # Extract native discord.py button rows and merge them into the V2 Container
-        action_rows = [row.to_dict() for row in self.to_components()]
-
         container_components = []
         
         # Section 1: Header & Poster
@@ -119,11 +116,6 @@ class UniversalDashboard(View):
         container_components.append(header_section)
         container_components.append({"type": 14, "spacing": 1}) # Separator
         container_components.append({"type": 10, "content": desc}) # Content
-        
-        # Add interactive buttons
-        if not self.processing_mode:
-            container_components.extend(action_rows)
-            
         container_components.append({"type": 14, "spacing": 1}) # Separator
         container_components.append({"type": 10, "content": f"-# R-ID: {self.req_id} | S-ID: {self.series_id}"}) # Footer
 
@@ -134,9 +126,20 @@ class UniversalDashboard(View):
         }]
 
     async def update_view(self, interaction: discord.Interaction = None):
-        """Bypasses standard discord.py to push raw Container JSON updates."""
-        payload_data = {"flags": 32768, "components": self.build_v2_components(), "content": ""}
+        """Builds the payload using the V2 container and attaches the View's UI components natively."""
         try:
+            # Reconstruct the view components into native discord.py dictionaries
+            ui_components = [child.to_dict() for child in self.children]
+            # Group into Action Rows (Type 1)
+            rows = [{"type": 1, "components": [c for c in ui_components if c.get("row") == i]} for i in range(2)]
+            # Filter out empty rows
+            valid_rows = [r for r in rows if r["components"]]
+
+            # Merge the Container logic (from build_v2_components) with the Button Rows
+            all_components = self.build_v2_components() + valid_rows
+            
+            payload_data = {"flags": 32768, "components": all_components, "content": ""}
+
             if interaction:
                 # Type 7: UPDATE_MESSAGE
                 payload = {"type": 7, "data": payload_data}
