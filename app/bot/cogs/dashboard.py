@@ -40,7 +40,7 @@ class DashboardCog(commands.Cog):
                             },
                             {
                                 "type": 10,
-                                "content": "## Platform Lists\n* **Available Platforms**\n * KakaoPage\n - Mecha Comic\n - Jumptoon\n - Kuaikan Manhua\n - Piccoma\n - AC.QQ\n* **Coming Soon Platforms**\n * Naver Webtoon\n - Line Manga"
+                                "content": "## Platform Lists\n**Available Platforms**\n> * <:Mechacomic:1478369141957333083> Mecha Comic\n> * <:Jumptoon:1478367963928068168> Jumptoon\n\n**Coming Soon Platforms**\n> * <:KakaoPage:1478366505640001566> KakaoPage\n> * <:KuaikanManhua:1478368412609679380> Kuaikan Manhua\n> * <:Piccoma:1478368704164134912> Piccoma\n> * <:acqq:1478369616660140082> AC.QQ"
                             },
                             {
                                 "type": 10,
@@ -54,12 +54,12 @@ class DashboardCog(commands.Cog):
                                         "custom_id": "v2_platform_select",
                                         "placeholder": "Select Platform",
                                         "options": [
-                                            {"label": "KakaoPage", "value": "KakaoPage", "emoji": {"name": "🇰🇷"}},
-                                            {"label": "Mecha Comic", "value": "Mecha Comic", "emoji": {"name": "🇯🇵"}},
-                                            {"label": "Jumptoon", "value": "Jumptoon", "emoji": {"name": "🇰🇷"}},
-                                            {"label": "Kuaikan", "value": "Kuaikan", "emoji": {"name": "🇨🇳"}},
-                                            {"label": "Piccoma", "value": "Piccoma", "emoji": {"name": "🇯🇵"}},
-                                            {"label": "AC.QQ", "value": "AC.QQ", "emoji": {"name": "🇨🇳"}}
+                                            {"label": "Mecha Comic", "value": "Mecha Comic", "emoji": {"id": "1478369141957333083", "name": "Mechacomic"}},
+                                            {"label": "Jumptoon", "value": "Jumptoon", "emoji": {"id": "1478367963928068168", "name": "Jumptoon"}},
+                                            {"label": "KakaoPage", "value": "KakaoPage", "emoji": {"id": "1478366505640001566", "name": "KakaoPage"}},
+                                            {"label": "Kuaikan Manhua", "value": "Kuaikan", "emoji": {"id": "1478368412609679380", "name": "KuaikanManhua"}},
+                                            {"label": "Piccoma", "value": "Piccoma", "emoji": {"id": "1478368704164134912", "name": "Piccoma"}},
+                                            {"label": "AC.QQ", "value": "AC.QQ", "emoji": {"id": "1478369616660140082", "name": "acqq"}}
                                         ]
                                     }
                                 ]
