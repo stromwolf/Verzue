@@ -32,7 +32,13 @@ class AdminCog(commands.Cog):
         
         # 1. Admin Security Check
         if Settings.ALLOWED_IDS and ctx.author.id not in Settings.ALLOWED_IDS:
-            return await ctx.send("❌ You are not authorized to use this command.")
+            return await ctx.send("❌ You are not authorized to use this command.", delete_after=60.0)
+
+        # Automatically delete the user's $cdn-menu message after 60 seconds
+        try:
+            await ctx.message.delete(delay=60.0)
+        except Exception:
+            pass # Ignore if the bot lacks permissions to delete user messages
 
         # 2. Show Guide if no arguments are provided
         if not args:
@@ -44,11 +50,11 @@ class AdminCog(commands.Cog):
                     "`$cdn-menu <Scan Name>, <Server/Channel ID>`\n\n"
                     "**Example:**\n"
                     "`$cdn-menu Thunder Scan, 1443643769751736523`\n\n"
-                    "*(Note: Because this is a standard text command, this message cannot be hidden.)*"
+                    "*(Note: This message will self-destruct in 60 seconds)*"
                 ),
                 color=0x3498db
             )
-            return await ctx.send(embed=guide_embed)
+            return await ctx.send(embed=guide_embed, delete_after=60.0)
 
         # 3. Process the setup if arguments are provided
         try:
@@ -67,14 +73,14 @@ class AdminCog(commands.Cog):
             
             success_embed = discord.Embed(
                 title="✅ Dashboard Mapped",
-                description=f"Successfully mapped ID `{target_id}` to **{scan_name}**.\nThe `/dashboard` command will now say *Menu of {scan_name}* here.",
+                description=f"Successfully mapped ID `{target_id}` to **{scan_name}**.\nThe `/dashboard` command will now say *Menu of {scan_name}* here.\n\n*(This message will self-destruct in 60 seconds)*",
                 color=0x2ecc71
             )
-            await ctx.send(embed=success_embed)
+            await ctx.send(embed=success_embed, delete_after=60.0)
             logger.info(f"Dashboard mapping updated: {target_id} -> {scan_name} by {ctx.author}")
             
         except ValueError:
-            await ctx.send("❌ **Format error!** Please use: `$cdn-menu Scan Name, ServerID`\n*Example:* `$cdn-menu Thunder Scan, 1443643769751736523`")
+            await ctx.send("❌ **Format error!** Please use: `$cdn-menu Scan Name, ServerID`\n*Example:* `$cdn-menu Thunder Scan, 1443643769751736523`", delete_after=60.0)
 
     @commands.command(name="sync")
     async def sync_commands(self, ctx):
