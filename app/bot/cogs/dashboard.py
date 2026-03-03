@@ -6,36 +6,67 @@ from config.settings import Settings
 
 logger = logging.getLogger("Dashboard")
 
-class DownloadModal(discord.ui.Modal, title='Universal Extractor'):
-    url_input = discord.ui.TextInput(
-        label='Manga / Webtoon URL',
-        style=discord.TextStyle.short,
-        placeholder='Paste the chapter or series link here...',
-        required=True
-    )
-
-    def __init__(self, bot):
-        super().__init__()
+class PlatformModal(discord.ui.Modal):
+    def __init__(self, platform_name: str, bot):
+        # 1. Dynamic Modal Title (e.g., "Kakao Extractor")
+        super().__init__(title=f'{platform_name} Menu')
         self.bot = bot
+        self.platform_name = platform_name
+
+        # 2. "Radio Group" Alternative
+        self.action_input = discord.ui.TextInput(
+            label='Action (Download / Subscription)',
+            style=discord.TextStyle.short,
+            placeholder='Type "Download" or "Subscribe"',
+            default='Download',
+            required=True
+        )
+        self.add_item(self.action_input)
+
+        # 3. Dynamic Label wrapping the Text Input
+        self.url_input = discord.ui.TextInput(
+            label=f'Add {platform_name} link here:',
+            style=discord.TextStyle.short,
+            placeholder=f'Paste the {platform_name} URL...',
+            required=True
+        )
+        self.add_item(self.url_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         url = self.url_input.value.strip()
+        action = self.action_input.value.strip().lower()
         
-        # Separated into a variable to fix the f-string syntax error
-        msg = f"🔗 **URL Received:** `{url}`\n*(Processing integration coming in next phase!)*"
-        
+        msg = f"✅ **{self.platform_name} Request Received!**\n🔹 **Action:** `{action.title()}`\n🔗 **URL:** `{url}`\n*(Processing integration coming in next phase!)*"
         await interaction.response.send_message(msg, ephemeral=True)
+
+
+class PlatformSelect(discord.ui.Select):
+    def __init__(self, bot):
+        self.bot = bot
+        # The String Select Structure for your platforms
+        options = [
+            discord.SelectOption(label="KakaoPage", description="Download from Kakao", emoji="🇰🇷"),
+            discord.SelectOption(label="Mecha Comic", description="Download from Mecha", emoji="🇯🇵"),
+            discord.SelectOption(label="Jumptoon", description="Download from Jumptoon", emoji="🇰🇷"),
+            discord.SelectOption(label="Kuaikan", description="Download from Kuaikan", emoji="🇨🇳"),
+            discord.SelectOption(label="Piccoma", description="Download from Piccoma", emoji="🇯🇵"),
+            discord.SelectOption(label="AC.QQ", description="Download from ACQQ", emoji="🇨🇳"),
+        ]
+        super().__init__(placeholder="Select Platform", min_values=1, max_values=1, options=options, custom_id="platform_select")
+
+    async def callback(self, interaction: discord.Interaction):
+        # When clicked, instantly launch the Modal with the chosen platform's name
+        selected_platform = self.values[0]
+        modal = PlatformModal(selected_platform, self.bot)
+        await interaction.response.send_modal(modal)
 
 
 class DashboardView(discord.ui.View):
     def __init__(self, bot):
-        super().__init__(timeout=None) # Timeout None ensures the button never expires
+        super().__init__(timeout=None)
         self.bot = bot
-
-    @discord.ui.button(label="📥 Submit URL", style=discord.ButtonStyle.primary, custom_id="dashboard_submit_btn")
-    async def extract_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Triggers the Modal popup
-        await interaction.response.send_modal(DownloadModal(self.bot))
+        # Add the String Select to the View
+        self.add_item(PlatformSelect(self.bot))
 
 
 class DashboardCog(commands.Cog):
@@ -44,16 +75,34 @@ class DashboardCog(commands.Cog):
 
     @app_commands.command(name="dashboard", description="Open the central extraction menu")
     async def dashboard(self, interaction: discord.Interaction):
-        # Look for a Channel ID override first, then fallback to Guild ID, then Default
         guild_id = interaction.guild.id if interaction.guild else 0
         channel_id = interaction.channel.id if interaction.channel else 0
         
         scan_name = Settings.SERVER_MAP.get(channel_id) or Settings.SERVER_MAP.get(guild_id) or Settings.DEFAULT_CLIENT_NAME
         
+        # Exact Embed Layout requested
+        embed_text = (
+            "***\n"
+            "## Platform Lists\n"
+            "**Available Platforms**\n"
+            "* KakaoPage\n"
+            "* Mecha Comic\n"
+            "* Jumptoon\n"
+            "* Kuaikan Manhua\n"
+            "* Piccoma\n"
+            "* AC.QQ\n\n"
+            "**Coming Soon Platforms**\n"
+            "- Naver Webtoon\n"
+            "- Line Manga\n"
+            "***\n"
+            "## Your Commands\n"
+            "Use the dropdown below to select your platform and choose your action."
+        )
+
         embed = discord.Embed(
-            title=f"Menu of {scan_name}",
-            description="Welcome to the extraction dashboard.\nClick the button below to process a new link.",
-            color=0x2b2d31 # Dark Discord UI theme color
+            title=f"# Dashboard of {scan_name}",
+            description=embed_text,
+            color=0x2b2d31 # Discord Dark Theme Color
         )
         
         view = DashboardView(self.bot)
