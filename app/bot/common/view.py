@@ -49,70 +49,89 @@ class UniversalDashboard(View):
             pass # If even followup fails, silently ignore
 
     def build_live_embed(self):
-        # STEP 5: Success State (Green Color)
+        # 1. Dynamic Range Formatter for Selected Chapters
+        sel_text = "None"
+        if self.selected_indices:
+            if len(self.selected_indices) == len(self.all_chapters):
+                sel_text = f"1-{len(self.all_chapters)} (SR)"
+            else:
+                idxs = sorted(list(self.selected_indices))
+                ranges, s, p = [], idxs[0], idxs[0]
+                for i in idxs[1:]:
+                    if i == p + 1: p = i
+                    else:
+                        ranges.append(f"{s+1}-{p+1}" if s != p else f"{s+1}")
+                        s = p = i
+                ranges.append(f"{s+1}-{p+1}" if s != p else f"{s+1}")
+                sel_text = ", ".join(ranges)
+                if len(sel_text) > 40: sel_text = sel_text[:37] + "..."
+
+        # 2. Setup Base Embed
         color = 0x2ecc71 if self.phases["download"] == "done" else self.color
         embed = discord.Embed(color=color)
-        embed.description = f"## {self.title}\n"
+        
+        # 3. Top Header Section (V2 Markdown)
+        desc = f"## {self.title}\n**Total:** {len(self.all_chapters)}\n──────────────────────────\n"
         
         if self.processing_mode:
             # 1. ANALYZE
             if self.phases["analyze"] == "done":
-                embed.description += f"{ICONS['tick']} Analyzed.\n"
+                desc += f"{ICONS['tick']} Analyzed.\n"
             else:
                 icon = ICONS["load"] if self.phases["analyze"] == "loading" else ICONS["wait"]
                 stat = f"Analyzing... ({self.sub_status})" if self.sub_status else "Analyzing..."
-                embed.description += f"{icon} {stat}\n"
+                desc += f"{icon} {stat}\n"
             
             # 2. PURCHASE
             if self.phases["analyze"] == "done":
                 if self.phases["purchase"] == "done":
-                    txt = "Purchased."
-                    embed.description += f"{ICONS['tick']} {txt}\n"
+                    desc += f"{ICONS['tick']} Purchased.\n"
                 else:
                     icon = ICONS["load"] if self.phases["purchase"] == "loading" else ICONS["wait"]
                     count_str = f" [{getattr(self, 'purchase_count', 0)}]" if getattr(self, 'purchase_count', 0) > 0 else ""
-                    embed.description += f"{icon} Auto-Purchasing{count_str}...\n"
+                    desc += f"{icon} Auto-Purchasing{count_str}...\n"
                     
-                    # LIVE FEEDBACK FROM BATCH UNLOCKER
                     unlocker = self.bot.task_queue.scraper_registry.unlocker
-                    active_info = []
-                    for i, stats in unlocker.worker_stats.items():
-                        if stats.get("view") == self and stats.get("task"):
-                            t = stats["task"]
-                            active_info.append(f"-> `Ch.{t.id:02d}`: {stats.get('progress', 0)}% | {t.purchase_status}")
-                    
-                    if active_info:
-                        embed.description += "\n".join(active_info) + "\n"
+                    active_info = [
+                        f"-> `Ch.{stats['task'].id:02d}`: {stats.get('progress', 0)}% | {stats['task'].purchase_status}"
+                        for stats in unlocker.worker_stats.values()
+                        if stats.get("view") == self and stats.get("task")
+                    ]
+                    if active_info: desc += "\n".join(active_info) + "\n"
             
-            # 3. DOWNLOAD (Processing)
+            # 3. DOWNLOAD
             if self.phases["purchase"] == "done":
                 if self.phases["download"] == "loading":
-                    embed.description += f"{ICONS['load']} Processing [{len(self.active_tasks)}] chapters...\n"
-                    comp = len([t for t in self.active_tasks if t.status == TaskStatus.COMPLETED])
-                    if comp: embed.description += f"-> **{comp}** chapters completed.\n"
+                    desc += f"{ICONS['load']} Processing [{len(self.active_tasks)}] chapters...\n"
+                    comp = sum(1 for t in self.active_tasks if t.status == TaskStatus.COMPLETED)
+                    if comp: desc += f"-> **{comp}** chapters completed.\n"
                     
-                    # Show live statuses for the current task
                     for t in self.active_tasks:
                         if t.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
-                            icon = ICONS["load"]
-                            # Explicit icons for active stages
-                            status_text = t.status.value
-                            embed.description += f"-> `Ch.{t.id:02d}`: {icon} {status_text}...\n"
+                            desc += f"-> `Ch.{t.id:02d}`: {ICONS['load']} {t.status.value}...\n"
                             break
                 elif self.phases["download"] == "done":
-                    embed.description += f"{ICONS['tick']} Download Completed."
+                    desc += f"{ICONS['tick']} Download Completed."
 
-            if self.final_link: embed.description += f"\n\n📂 **Destination:** [Open Google Drive]({self.final_link})"
+            if self.final_link: desc += f"\n\n📂 **Destination:** [Open Google Drive]({self.final_link})"
+            
+            # Processing View Footer
+            desc += f"\n──────────────────────────\n-# R-ID: {self.req_id} | S-ID: {self.series_id}"
         else:
-            embed.description += f"**Total:** {len(self.all_chapters)}\n──────────────────────────\n### Chapter List\n"
+            # 4. Standard Chapter List View
+            desc += "### **Chapter List**\n"
             start = (self.page-1)*self.per_page
             for i, ch in enumerate(self.all_chapters[start:start+self.per_page]):
                 idx, raw_t = start + i, ch.get('title','Ch')
                 clean_t = raw_t.replace(' ', ' - ', 1)[:35]
                 line = f"`{idx+1:02d}` | {clean_t}"
-                embed.description += f"**{line}**\n" if idx in self.selected_indices else f"{line}\n"
-            embed.description += f"\n**Page:** {self.page}/{self.max_page} | **Selected:** {len(self.selected_indices)}\n──────────────────────────\n-# R-ID: {self.req_id} | S-ID: {self.series_id}"
+                desc += f"**{line}**\n" if idx in self.selected_indices else f"{line}\n"
+            
+            # Chapter List View Footer
+            desc += f"\n**Page:** {self.page}/{self.max_page} | **Selected Chapter:** {sel_text}\n──────────────────────────\n-# R-ID: {self.req_id} | S-ID: {self.series_id}"
 
+        # Apply description and add Thumbnail (Poster)
+        embed.description = desc
         if self.image_url: embed.set_thumbnail(url=self.image_url)
         return embed
 
