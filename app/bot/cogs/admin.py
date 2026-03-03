@@ -1,4 +1,4 @@
-import discord
+from discord import app_commands
 from discord.ext import commands
 import sys
 import os
@@ -25,28 +25,47 @@ class AdminCog(commands.Cog):
             
         return ctx.author.id in Settings.ALLOWED_IDS
 
-    @commands.command(name="cdn-menu")
-    async def cdn_menu(self, ctx, *, args: str):
-        """Usage: $cdn-menu Scan Name, Server/Channel ID"""
+    @app_commands.command(name="cdn-menu", description="Set the Scan Group name for the dashboard")
+    @app_commands.describe(
+        scan_name="The name of your scan group (Leave blank for help guide)",
+        target_id="The Discord Server or Channel ID (Leave blank for help guide)"
+    )
+    async def cdn_menu(self, interaction: discord.Interaction, scan_name: str = None, target_id: str = None):
+        # 1. Admin Security Check
+        if Settings.ALLOWED_IDS and interaction.user.id not in Settings.ALLOWED_IDS:
+            return await interaction.response.send_message("❌ You are not authorized to use this command.", ephemeral=True)
+
+        # 2. Trigger the "Invisible" Guide if they run it blank
+        if not scan_name or not target_id:
+            guide_embed = discord.Embed(
+                title="ℹ️ How to use `/cdn-menu`",
+                description=(
+                    "This command links a specific Server or Channel to your Scan Group's name so the `/dashboard` updates its title.\n\n"
+                    "**When you type the command, use Discord's popup options to fill these in:**\n"
+                    "🔹 `scan_name`: The display name (e.g., `Thunder Scan`)\n"
+                    "🔹 `target_id`: The ID of the Server or Channel (e.g., `1443643769751736523`)\n\n"
+                    "**Example:**\n`/cdn-menu scan_name:Thunder Scan target_id:1443643769751736523`"
+                ),
+                color=0x3498db
+            )
+            # ephemeral=True makes it the "invisible" message
+            return await interaction.response.send_message(embed=guide_embed, ephemeral=True)
+
+        # 3. Process the setup if they provided the arguments
         try:
-            # Split from the right in case the scan name contains a comma
-            scan_name, target_id_str = args.rsplit(',', 1)
-            scan_name = scan_name.strip()
-            target_id = int(target_id_str.strip())
-            
-            # Update memory and save to file
-            Settings.SERVER_MAP[target_id] = scan_name
+            t_id = int(target_id.strip())
+            Settings.SERVER_MAP[t_id] = scan_name.strip()
             Settings.save_server_map()
             
-            embed = discord.Embed(
+            success_embed = discord.Embed(
                 title="✅ Dashboard Mapped",
-                description=f"Successfully mapped ID `{target_id}` to **{scan_name}**.\nThe `/dashboard` command will now say *Menu of {scan_name}* here.",
+                description=f"Successfully mapped ID `{t_id}` to **{scan_name}**.\nThe `/dashboard` command will now say *Menu of {scan_name}* here.",
                 color=0x2ecc71
             )
-            await ctx.send(embed=embed)
-            logger.info(f"Dashboard mapping updated: {target_id} -> {scan_name} by {ctx.author}")
+            await interaction.response.send_message(embed=success_embed, ephemeral=True)
+            logger.info(f"Dashboard mapping updated: {t_id} -> {scan_name} by {interaction.user}")
         except ValueError:
-            await ctx.send("❌ **Format error!** Please use: `$cdn-menu Scan Name, ServerID`\n*Example:* `$cdn-menu Thunder Scan, 1443643769751736523`")
+            await interaction.response.send_message("❌ **Error:** `target_id` must be a valid number!", ephemeral=True)
 
     @commands.command(name="sync")
     async def sync_commands(self, ctx):
