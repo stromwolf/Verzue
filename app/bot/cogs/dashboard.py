@@ -55,11 +55,7 @@ class DashboardCog(commands.Cog):
                                         "placeholder": "Select Platform",
                                         "options": [
                                             {"label": "Mecha Comic", "value": "Mecha Comic", "emoji": {"id": "1478369141957333083", "name": "Mechacomic"}},
-                                            {"label": "Jumptoon", "value": "Jumptoon", "emoji": {"id": "1478367963928068168", "name": "Jumptoon"}},
-                                            {"label": "KakaoPage", "value": "KakaoPage", "emoji": {"id": "1478366505640001566", "name": "KakaoPage"}},
-                                            {"label": "Kuaikan Manhua", "value": "Kuaikan", "emoji": {"id": "1478368412609679380", "name": "KuaikanManhua"}},
-                                            {"label": "Piccoma", "value": "Piccoma", "emoji": {"id": "1478368704164134912", "name": "Piccoma"}},
-                                            {"label": "AC.QQ", "value": "AC.QQ", "emoji": {"id": "1478369616660140082", "name": "acqq"}}
+                                            {"label": "Jumptoon", "value": "Jumptoon", "emoji": {"id": "1478367963928068168", "name": "Jumptoon"}}
                                         ]
                                     }
                                 ]
