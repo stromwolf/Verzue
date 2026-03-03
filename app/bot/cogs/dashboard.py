@@ -41,7 +41,7 @@ class DashboardCog(commands.Cog):
                             },
                             {
                                 "type": 10,
-                                "content": "## Platform Lists\n**Available Platforms**\n> * <:Mechacomic:1478369141957333083> Mecha Comic\n> * <:Jumptoon:1478367963928068168> Jumptoon\n\n**Coming Soon Platforms**\n> * <:KakaoPage:1478366505640001566> KakaoPage\n> * <:KuaikanManhua:1478368412609679380> Kuaikan Manhua\n> * <:Piccoma:1478368704164134912> Piccoma\n> * <:acqq:1478369616660140082> AC.QQ"
+                                "content": "## Platform Lists\n* **Available Platforms**\n > <:Mechacomic:1478369141957333083> Mecha Comic\n > <:Jumptoon:1478367963928068168> Jumptoon\n* **Coming Soon Platforms**\n > <:KakaoPage:1478366505640001566> KakaoPage\n > <:KuaikanManhua:1478368412609679380> Kuaikan Manhua\n > <:Piccoma:1478368704164134912> Piccoma\n > <:acqq:1478369616660140082> AC.QQ"
                             },
                             {
                                 "type": 10,
@@ -92,7 +92,9 @@ class DashboardCog(commands.Cog):
 
         # 3. Handle Select Menu Click -> Launch V2 Modal
         if interaction.type == discord.InteractionType.component:
-            if interaction.data.get("custom_id") == "v2_platform_select":
+            custom_id = interaction.data.get("custom_id", "")
+            
+            if custom_id == "v2_platform_select":
                 platform = interaction.data["values"][0]
 
                 modal_payload = {
@@ -139,10 +141,131 @@ class DashboardCog(commands.Cog):
                 except discord.HTTPException as e:
                     if e.code != 40060: logger.error(f"Modal launch error: {e}")
 
+            # 5. Handle Universal Dashboard V2 Native Interactions
+            elif any(custom_id.startswith(prefix) for prefix in ["btn_select_", "btn_start_", "btn_cancel_", "page_select_", "modal_select_"]):
+                req_id = custom_id.split("_")[-1]
+                
+                from app.bot.common.view import UniversalDashboard
+                view = UniversalDashboard.active_views.get(req_id)
+                if not view:
+                    return await interaction.response.send_message("❌ Session expired or invalid.", ephemeral=True)
+                
+                view.interaction = interaction
+
+                # A. Change Page (String Select)
+                if custom_id.startswith("page_select_"):
+                    val = interaction.data.get("values", ["1"])[0]
+                    view.page = int(val)
+                    await view.update_view(interaction)
+
+                # B. Cancel Extraction
+                elif custom_id.startswith("btn_cancel_"):
+                    if view.service_type == "mecha": view.bot.task_queue.scraper_registry.browser.dec_session()
+                    UniversalDashboard.active_views.pop(req_id, None)
+                    payload = {"type": 7, "data": {"content": "❌ **Dashboard Closed**", "components": [], "flags": 0}}
+                    route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
+                    await self.bot.http.request(route, json=payload)
+
+                # C. Start Extraction
+                elif custom_id.startswith("btn_start_"):
+                    from app.core.logger import req_id_context
+                    req_id_context.set(view.req_id)
+                    view.processing_mode = True
+                    view.phases["analyze"] = "loading"
+                    view.sub_status = "Identifying Client"
+                    view.purchase_count = 0 
+                    await view.update_view(interaction)
+                    
+                    asyncio.create_task(view.monitor_tasks())
+                    from app.services.batch_controller import BatchController
+                    controller = BatchController(self.bot)
+                    tasks = await controller.prepare_batch(interaction, sorted(list(view.selected_indices)), view.all_chapters, view.title, view.url, view_ref=view, series_id=view.series_id)
+                    
+                    if tasks:
+                        view.phases.update({"analyze":"done","purchase":"done","download":"loading"})
+                        actual_tasks = []
+                        for t in tasks:
+                            t.is_smartoon = True
+                            t.series_id_key = view.series_id
+                            actual_tasks.append(await self.bot.task_queue.add_task(t))
+                        view.active_tasks = actual_tasks
+                        view.trigger_refresh()
+
+                # D. Launch Selection Modal
+                elif custom_id.startswith("btn_select_"):
+                    modal_payload = {
+                        "type": 9,
+                        "data": {
+                            "custom_id": f"modal_select_{req_id}",
+                            "title": "Select Chapters",
+                            "components": [
+                                {
+                                    "type": 18,
+                                    "label": "Selection Method",
+                                    "component": {
+                                        "type": 21, # Radio Group
+                                        "custom_id": "method_radio",
+                                        "options": [
+                                            {"value": "sr", "label": "SR", "description": "Selects all available chapters"},
+                                            {"value": "select", "label": "Select", "description": "Use the custom range box below"}
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": 18,
+                                    "label": "Custom Range (Only if 'Select' chosen)",
+                                    "component": {
+                                        "type": 4, # Text Input
+                                        "custom_id": "range_input",
+                                        "style": 1,
+                                        "required": False,
+                                        "value": f"1-{len(view.all_chapters)}"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                    route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
+                    await self.bot.http.request(route, json=modal_payload)
+
         # 4. Handle V2 Modal Submission
         elif interaction.type == discord.InteractionType.modal_submit:
             custom_id = interaction.data.get("custom_id", "")
-            if custom_id.startswith("v2_modal_"):
+            
+            # Identify Dashboard selection modals
+            if custom_id.startswith("modal_select_"):
+                req_id = custom_id.split("_")[-1]
+                from app.bot.common.view import UniversalDashboard
+                view = UniversalDashboard.active_views.get(req_id)
+                if not view:
+                    return await interaction.response.send_message("❌ Session expired or invalid.", ephemeral=True)
+                
+                method, range_val = "sr", ""
+                for row in interaction.data.get("components", []):
+                    inner = row.get("component", {})
+                    cid = inner.get("custom_id")
+                    if cid == "method_radio": method = inner.get("value")
+                    elif cid == "range_input": range_val = inner.get("value", "")
+
+                view.selected_indices.clear()
+                if method == "sr":
+                    view.selected_indices.update(range(len(view.all_chapters)))
+                else:
+                    parts = range_val.replace(" ", "").split(",")
+                    for p in parts:
+                        if "-" in p:
+                            try:
+                                s, e = map(int, p.split("-"))
+                                view.selected_indices.update(k-1 for k in range(s, e+1) if 1 <= k <= len(view.all_chapters))
+                            except: pass
+                        elif p.isdigit():
+                            k = int(p)
+                            if 1 <= k <= len(view.all_chapters): view.selected_indices.add(k-1)
+                            
+                await view.update_view(interaction)
+
+            # Handle platform submission modals
+            elif custom_id.startswith("v2_modal_"):
                 platform = custom_id.replace("v2_modal_", "")
                 
                 action = "download"
@@ -157,7 +280,7 @@ class DashboardCog(commands.Cog):
                     elif cid == "url_input":
                         url = inner.get("value", "")
 
-                # 🛑 NEW: STRICT URL VALIDATION
+                # STRICT URL VALIDATION
                 platform_domains = {
                     "Mecha Comic": "mechacomic.jp",
                     "Jumptoon": "jumptoon.com",
@@ -172,7 +295,7 @@ class DashboardCog(commands.Cog):
                     error_payload = {
                         "type": 4, # MESSAGE_WITH_SOURCE
                         "data": {
-                            "flags": 64, # EPHEMERAL (Invisible)
+                            "flags": 64, # EPHEMERAL
                             "content": f"⛔ **Protocol Violation**\nYou selected **{platform}**, but provided a link for a different site.\n\nPlease provide a valid `{expected_domain}` link."
                         }
                     }
@@ -181,9 +304,9 @@ class DashboardCog(commands.Cog):
                         await self.bot.http.request(route, json=error_payload)
                     except discord.NotFound:
                         pass
-                    return # Stop processing
+                    return 
 
-                # 🛑 PATH B: Subscription (Coming Soon)
+                # Subscription Check
                 if action == "subscribe":
                     msg_payload = {
                         "type": 4, # MESSAGE_WITH_SOURCE
@@ -199,14 +322,11 @@ class DashboardCog(commands.Cog):
                         pass
                     return
 
-                # 🟢 PATH A: Download (Bridge to Universal Dashboard)
-                
-                # 1. Create a NEW standard V1 response
+                # Download Path
                 msg_target = interaction
                 try:
                     await interaction.response.send_message(f"🔍 **Analyzing {platform} Link:**\n`{url}`\n*Fetching metadata, please wait...*")
                 except discord.NotFound:
-                    # 10062 Error: Fallback to channel message
                     if interaction.channel:
                         msg_target = await interaction.channel.send(f"🔍 **Analyzing {platform} Link for {interaction.user.mention}:**\n`{url}`\n*Fetching metadata...*")
                     else:
@@ -214,7 +334,6 @@ class DashboardCog(commands.Cog):
                 except discord.HTTPException as e:
                     if e.code == 40060: pass
 
-                # 3. Fetch Metadata and Launch Dashboard
                 try:
                     from app.core.logger import req_id_context
                     from app.bot.common.view import UniversalDashboard
@@ -222,33 +341,31 @@ class DashboardCog(commands.Cog):
                     req_id = str(uuid.uuid4())[:8].upper()
                     token = req_id_context.set(req_id)
                     
-                    # 🟢 CRITICAL FIX: Force the API Scraper for Mecha!
-                    # Prevents 'NoneType' Selenium crash.
                     is_smartoon = "mecha" in platform.lower()
                     scraper = self.bot.task_queue.scraper_registry.get_scraper(url, is_smartoon=is_smartoon)
-                    
                     data = await asyncio.to_thread(scraper.get_series_info, url)
                     
                     title, total_chapters, chapter_list, image_url, series_id = data
-                    
                     ctx_data = {
                         'url': url, 'title': title, 'chapters': chapter_list,
                         'image_url': image_url, 'series_id': series_id,
                         'req_id': req_id, 'user': interaction.user
                     }
-                    
                     service_type = platform.lower().replace(" ", "").replace(".jp", "").replace("comic", "")
                     
-                    # 4. Mount Universal Dashboard
+                    # 4. Mount Universal Dashboard (Pure V2 JSON)
                     view = UniversalDashboard(self.bot, ctx_data, service_type)
+                    view.interaction = interaction
+                    
+                    payload_data = {"flags": 32768, "components": view.build_v2_payload(), "content": ""}
                     
                     if hasattr(msg_target, 'edit_original_response'):
-                        view.interaction = interaction
-                        await msg_target.edit_original_response(content=" ", embed=view.build_live_embed(), view=view)
+                        route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+                        await self.bot.http.request(route, json=payload_data)
                     else:
-                        await msg_target.edit(content=" ", embed=view.build_live_embed(), view=view)
+                        route = discord.http.Route('PATCH', f'/channels/{msg_target.channel.id}/messages/{msg_target.id}')
+                        await self.bot.http.request(route, json=payload_data)
                     
-                    # 5. Speculative Browser Warmup (For Mecha)
                     if service_type == "mecha":
                         browser = self.bot.task_queue.scraper_registry.browser
                         asyncio.create_task(asyncio.to_thread(browser.warmup))
@@ -257,7 +374,6 @@ class DashboardCog(commands.Cog):
                 except Exception as e:
                     logger.error(f"Failed to fetch metadata: {e}", exc_info=True)
                     error_text = str(e).splitlines()[0] if str(e) else "Unknown Error"
-                    
                     if hasattr(msg_target, 'edit_original_response'):
                         await msg_target.edit_original_response(content=f"❌ **Extraction Failed**\nCould not fetch metadata for `{url}`.\n**Reason:** `{error_text}`")
                     else:

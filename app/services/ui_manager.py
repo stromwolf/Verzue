@@ -53,13 +53,13 @@ class UIManager:
                     await self.queue.put((req_id, view))
                     continue
 
-                # 3. Build the current state
+                # 3. Build the current state via V2 JSON Payload hash
                 try:
-                    embed = view.build_live_embed()
+                    payload_components = view.build_v2_payload()
                     task_states = "".join([t.status.value for t in view.active_tasks])
                     
                     state_blob = (
-                        f"{embed.description}"
+                        f"{str(payload_components)}"
                         f"{view.phases}"
                         f"{task_states}"
                         f"{len(view.active_tasks)}"
@@ -95,11 +95,8 @@ class UIManager:
 
     async def _safe_edit(self, view, req_id: str):
         try:
-            embed = view.build_live_embed()
-            await view.interaction.followup.edit_message(
-                message_id=view.interaction.message.id,
-                embed=embed,
-                view=view  # Reattach the view!
-            )
+            logger.debug(f"[_safe_edit] Attempting V2 background edit for R-ID: {req_id}")
+            # The view handles the raw HTTP patch natively now!
+            await view.update_view()
         except Exception as e:
             logger.error(f"[_safe_edit] FAILED for R-ID: {req_id}: {e}", exc_info=True)
