@@ -2,72 +2,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import logging
+import re
 from config.settings import Settings
 
 logger = logging.getLogger("Dashboard")
-
-class PlatformModal(discord.ui.Modal):
-    def __init__(self, platform_name: str, bot):
-        # 1. Dynamic Modal Title (e.g., "Kakao Extractor")
-        super().__init__(title=f'{platform_name} Menu')
-        self.bot = bot
-        self.platform_name = platform_name
-
-        # 2. "Radio Group" Alternative
-        self.action_input = discord.ui.TextInput(
-            label='Action (Download / Subscription)',
-            style=discord.TextStyle.short,
-            placeholder='Type "Download" or "Subscribe"',
-            default='Download',
-            required=True
-        )
-        self.add_item(self.action_input)
-
-        # 3. Dynamic Label wrapping the Text Input
-        self.url_input = discord.ui.TextInput(
-            label=f'Add {platform_name} link here:',
-            style=discord.TextStyle.short,
-            placeholder=f'Paste the {platform_name} URL...',
-            required=True
-        )
-        self.add_item(self.url_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        url = self.url_input.value.strip()
-        action = self.action_input.value.strip().lower()
-        
-        msg = f"✅ **{self.platform_name} Request Received!**\n🔹 **Action:** `{action.title()}`\n🔗 **URL:** `{url}`\n*(Processing integration coming in next phase!)*"
-        await interaction.response.send_message(msg, ephemeral=True)
-
-
-class PlatformSelect(discord.ui.Select):
-    def __init__(self, bot):
-        self.bot = bot
-        # The String Select Structure for your platforms
-        options = [
-            discord.SelectOption(label="KakaoPage", description="Download from Kakao", emoji="🇰🇷"),
-            discord.SelectOption(label="Mecha Comic", description="Download from Mecha", emoji="🇯🇵"),
-            discord.SelectOption(label="Jumptoon", description="Download from Jumptoon", emoji="🇰🇷"),
-            discord.SelectOption(label="Kuaikan", description="Download from Kuaikan", emoji="🇨🇳"),
-            discord.SelectOption(label="Piccoma", description="Download from Piccoma", emoji="🇯🇵"),
-            discord.SelectOption(label="AC.QQ", description="Download from ACQQ", emoji="🇨🇳"),
-        ]
-        super().__init__(placeholder="Select Platform", min_values=1, max_values=1, options=options, custom_id="platform_select")
-
-    async def callback(self, interaction: discord.Interaction):
-        # When clicked, instantly launch the Modal with the chosen platform's name
-        selected_platform = self.values[0]
-        modal = PlatformModal(selected_platform, self.bot)
-        await interaction.response.send_modal(modal)
-
-
-class DashboardView(discord.ui.View):
-    def __init__(self, bot):
-        super().__init__(timeout=None)
-        self.bot = bot
-        # Add the String Select to the View
-        self.add_item(PlatformSelect(self.bot))
-
 
 class DashboardCog(commands.Cog):
     def __init__(self, bot):
@@ -75,39 +13,157 @@ class DashboardCog(commands.Cog):
 
     @app_commands.command(name="dashboard", description="Open the central extraction menu")
     async def dashboard(self, interaction: discord.Interaction):
+        """Phase 1: Launch the V2 Dashboard using raw API payloads."""
+        # 1. Gather Context
         guild_id = interaction.guild.id if interaction.guild else 0
         channel_id = interaction.channel.id if interaction.channel else 0
-        
         scan_name = Settings.SERVER_MAP.get(channel_id) or Settings.SERVER_MAP.get(guild_id) or Settings.DEFAULT_CLIENT_NAME
-        
-        # Exact Embed Layout requested
-        embed_text = (
-            "***\n"
-            "## Platform Lists\n"
-            "**Available Platforms**\n"
-            "* KakaoPage\n"
-            "* Mecha Comic\n"
-            "* Jumptoon\n"
-            "* Kuaikan Manhua\n"
-            "* Piccoma\n"
-            "* AC.QQ\n\n"
-            "**Coming Soon Platforms**\n"
-            "- Naver Webtoon\n"
-            "- Line Manga\n"
-            "***\n"
-            "## Your Commands\n"
-            "Use the dropdown below to select your platform and choose your action."
-        )
 
-        embed = discord.Embed(
-            title=f"# Dashboard of {scan_name}",
-            description=embed_text,
-            color=0x2b2d31 # Discord Dark Theme Color
-        )
-        
-        view = DashboardView(self.bot)
-        await interaction.response.send_message(embed=embed, view=view)
+        # 2. Construct Raw V2 JSON Payload
+        # We bypass discord.py's UI limits by sending the raw API payload described in the V2 Docs
+        payload = {
+            "type": 4, # MESSAGE_WITH_SOURCE
+            "data": {
+                "flags": 32768, # 🟢 THIS IS THE MAGIC FLAG (1 << 15) THAT ENABLES V2 COMPONENTS
+                "components": [
+                    {
+                        "type": 17, # 📦 V2 CONTAINER
+                        "components": [
+                            {
+                                "type": 10, # 📝 V2 TEXT DISPLAY
+                                "content": f"# Dashboard of {scan_name}"
+                            },
+                            {
+                                "type": 14, # ➖ V2 SEPARATOR
+                                "divider": True,
+                                "spacing": 1
+                            },
+                            {
+                                "type": 10,
+                                "content": "## Platform Lists\n**Available Platforms**\n* KakaoPage\n* Mecha Comic\n* Jumptoon\n* Kuaikan Manhua\n* Piccoma\n* AC.QQ\n\n**Coming Soon Platforms**\n- Naver Webtoon\n- Line Manga"
+                            },
+                            {
+                                "type": 10,
+                                "content": "## Your Commands"
+                            },
+                            {
+                                "type": 1, # ➡️ ACTION ROW
+                                "components": [
+                                    {
+                                        "type": 3, # 📜 STRING SELECT
+                                        "custom_id": "v2_platform_select",
+                                        "placeholder": "Select Platform",
+                                        "options": [
+                                            {"label": "KakaoPage", "value": "KakaoPage", "emoji": {"name": "🇰🇷"}},
+                                            {"label": "Mecha Comic", "value": "Mecha Comic", "emoji": {"name": "🇯🇵"}},
+                                            {"label": "Jumptoon", "value": "Jumptoon", "emoji": {"name": "🇰🇷"}},
+                                            {"label": "Kuaikan", "value": "Kuaikan", "emoji": {"name": "🇨🇳"}},
+                                            {"label": "Piccoma", "value": "Piccoma", "emoji": {"name": "🇯🇵"}},
+                                            {"label": "AC.QQ", "value": "AC.QQ", "emoji": {"name": "🇨🇳"}}
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
 
+        # Send raw HTTP request to Discord
+        try:
+            await self.bot.http.request(
+                discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                json=payload
+            )
+        except Exception as e:
+            logger.error(f"Failed to send V2 Dashboard: {e}")
+            await interaction.response.send_message("❌ Failed to launch V2 Dashboard. Check bot logs.", ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        """🟢 EVENT LISTENER: Catch raw V2 interactions that bypass the standard View system."""
+
+        # 3. Handle Select Menu Click -> Launch V2 Modal
+        if interaction.type == discord.InteractionType.component:
+            if interaction.data.get("custom_id") == "v2_platform_select":
+                platform = interaction.data["values"][0]
+
+                # V2 Modal with RadioGroup and Labels
+                modal_payload = {
+                    "type": 9, # MODAL
+                    "data": {
+                        "custom_id": f"v2_modal_{platform}",
+                        "title": f"{platform} Extractor",
+                        "components": [
+                            {
+                                "type": 18, # 🏷️ V2 LABEL COMPONENT
+                                "label": "Choose Action",
+                                "component": {
+                                    "type": 21, # 🔘 V2 RADIO GROUP
+                                    "custom_id": "action_radio",
+                                    "options": [
+                                        {"label": "Download Chapters", "value": "download", "default": True},
+                                        {"label": "Add Subscription", "value": "subscribe"}
+                                    ],
+                                    "required": True
+                                }
+                            },
+                            {
+                                "type": 18, # 🏷️ V2 LABEL COMPONENT
+                                "label": f"Add {platform} link here:",
+                                "component": {
+                                    "type": 4, # ⌨️ TEXT INPUT
+                                    "custom_id": "url_input",
+                                    "style": 1,
+                                    "placeholder": f"Paste {platform} URL...",
+                                    "required": True
+                                }
+                            }
+                        ]
+                    }
+                }
+
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=modal_payload
+                )
+
+        # 4. Handle V2 Modal Submission
+        elif interaction.type == discord.InteractionType.modal_submit:
+            custom_id = interaction.data.get("custom_id", "")
+            if custom_id.startswith("v2_modal_"):
+                platform = custom_id.replace("v2_modal_", "")
+                
+                action = "download"
+                url = ""
+
+                # Extract values from the V2 Label > Component nesting
+                # Data structure: components: [ { type: 18, components: [ { type: 21, value: ... } ] }, ... ]
+                # Actually, V2 interaction data for modals might differ. 
+                # According to the pattern provided by the user:
+                for row in interaction.data.get("components", []):
+                    # In V2, the Label wraps the component
+                    inner = row.get("components", [{}])[0]
+                    cid = inner.get("custom_id")
+                    if cid == "action_radio":
+                        action = inner.get("value", "download") 
+                    elif cid == "url_input":
+                        url = inner.get("value", "")
+
+                # Send an ephemeral confirmation
+                msg_payload = {
+                    "type": 4, # MESSAGE_WITH_SOURCE
+                    "data": {
+                        "flags": 64, # EPHEMERAL
+                        "content": f"✅ **{platform} Request Received!**\n🔹 **Action:** `{action.title()}`\n🔗 **URL:** `{url}`"
+                    }
+                }
+                
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=msg_payload
+                )
 
 async def setup(bot):
     await bot.add_cog(DashboardCog(bot))
