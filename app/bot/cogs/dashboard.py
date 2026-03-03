@@ -157,6 +157,32 @@ class DashboardCog(commands.Cog):
                     elif cid == "url_input":
                         url = inner.get("value", "")
 
+                # 🛑 NEW: STRICT URL VALIDATION
+                platform_domains = {
+                    "Mecha Comic": "mechacomic.jp",
+                    "Jumptoon": "jumptoon.com",
+                    "KakaoPage": "kakao.com",
+                    "Kuaikan Manhua": "kuaikanmanhua.com",
+                    "Piccoma": "piccoma.com",
+                    "AC.QQ": "ac.qq.com"
+                }
+                
+                expected_domain = platform_domains.get(platform)
+                if expected_domain and expected_domain not in url.lower():
+                    error_payload = {
+                        "type": 4, # MESSAGE_WITH_SOURCE
+                        "data": {
+                            "flags": 64, # EPHEMERAL (Invisible)
+                            "content": f"⛔ **Protocol Violation**\nYou selected **{platform}**, but provided a link for a different site.\n\nPlease provide a valid `{expected_domain}` link."
+                        }
+                    }
+                    try:
+                        route = discord.http.Route('POST', '/interactions/{interaction_id}/{interaction_token}/callback', interaction_id=interaction.id, interaction_token=interaction.token)
+                        await self.bot.http.request(route, json=error_payload)
+                    except discord.NotFound:
+                        pass
+                    return # Stop processing
+
                 # 🛑 PATH B: Subscription (Coming Soon)
                 if action == "subscribe":
                     msg_payload = {
