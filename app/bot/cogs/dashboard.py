@@ -3,6 +3,8 @@ from discord import app_commands
 from discord.ext import commands
 import logging
 import re
+import uuid
+import asyncio
 from config.settings import Settings
 
 logger = logging.getLogger("Dashboard")
@@ -20,21 +22,20 @@ class DashboardCog(commands.Cog):
         scan_name = Settings.SERVER_MAP.get(channel_id) or Settings.SERVER_MAP.get(guild_id) or Settings.DEFAULT_CLIENT_NAME
 
         # 2. Construct Raw V2 JSON Payload
-        # We bypass discord.py's UI limits by sending the raw API payload described in the V2 Docs
         payload = {
             "type": 4, # MESSAGE_WITH_SOURCE
             "data": {
-                "flags": 32768, # 🟢 THIS IS THE MAGIC FLAG (1 << 15) THAT ENABLES V2 COMPONENTS
+                "flags": 32768, # 🟢 MAGIC FLAG FOR V2 COMPONENTS
                 "components": [
                     {
-                        "type": 17, # 📦 V2 CONTAINER
+                        "type": 17, # CONTAINER
                         "components": [
                             {
-                                "type": 10, # 📝 V2 TEXT DISPLAY
+                                "type": 10, # TEXT DISPLAY
                                 "content": f"# Dashboard of {scan_name}"
                             },
                             {
-                                "type": 14, # ➖ V2 SEPARATOR
+                                "type": 14, # SEPARATOR
                                 "divider": True,
                                 "spacing": 1
                             },
@@ -47,10 +48,10 @@ class DashboardCog(commands.Cog):
                                 "content": "## Your Commands"
                             },
                             {
-                                "type": 1, # ➡️ ACTION ROW
+                                "type": 1, # ACTION ROW
                                 "components": [
                                     {
-                                        "type": 3, # 📜 STRING SELECT
+                                        "type": 3, # SELECT
                                         "custom_id": "v2_platform_select",
                                         "placeholder": "Select Platform",
                                         "options": [
@@ -74,27 +75,26 @@ class DashboardCog(commands.Cog):
                 interaction_token=interaction.token
             )
             await self.bot.http.request(route, json=payload)
-            # Note: We deliberately do NOT set _responded here to avoid AttributeError.
-            # discord.py will safely finish the cycle.
             
         except discord.NotFound:
-            # This triggers if you use the command too fast on bot startup and it times out (> 3 seconds)
-            logger.warning("[Dashboard] Interaction timed out. This is normal on startup. Try the command again!")
+            logger.warning("[Dashboard] Interaction timed out. This is normal on startup.")
+        except discord.HTTPException as e:
+            if e.code == 40060:
+                pass # Already acknowledged (Double-click), ignore silently
+            else:
+                logger.error(f"Failed to send V2 Dashboard: {e}")
         except Exception as e:
             logger.error(f"Failed to send V2 Dashboard: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("❌ Failed to launch V2 Dashboard. Check bot logs.", ephemeral=True)
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
-        """🟢 EVENT LISTENER: Catch raw V2 interactions that bypass the standard View system."""
+        """🟢 EVENT LISTENER: Catch raw V2 interactions."""
 
         # 3. Handle Select Menu Click -> Launch V2 Modal
         if interaction.type == discord.InteractionType.component:
             if interaction.data.get("custom_id") == "v2_platform_select":
                 platform = interaction.data["values"][0]
 
-                # V2 Modal with RadioGroup and Labels
                 modal_payload = {
                     "type": 9, # MODAL
                     "data": {
@@ -102,10 +102,10 @@ class DashboardCog(commands.Cog):
                         "title": f"{platform} Extractor",
                         "components": [
                             {
-                                "type": 18, # 🏷️ V2 LABEL COMPONENT
+                                "type": 18, # LABEL
                                 "label": "Choose Action",
                                 "component": {
-                                    "type": 21, # 🔘 V2 RADIO GROUP
+                                    "type": 21, # RADIO GROUP
                                     "custom_id": "action_radio",
                                     "options": [
                                         {"label": "Download Chapters", "value": "download", "default": True},
@@ -115,10 +115,10 @@ class DashboardCog(commands.Cog):
                                 }
                             },
                             {
-                                "type": 18, # 🏷️ V2 LABEL COMPONENT
+                                "type": 18, # LABEL
                                 "label": f"Add {platform} link here:",
                                 "component": {
-                                    "type": 4, # ⌨️ TEXT INPUT
+                                    "type": 4, # TEXT INPUT
                                     "custom_id": "url_input",
                                     "style": 1,
                                     "placeholder": f"Paste {platform} URL...",
@@ -129,10 +129,15 @@ class DashboardCog(commands.Cog):
                     }
                 }
 
-                await self.bot.http.request(
-                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
-                    json=modal_payload
-                )
+                try:
+                    await self.bot.http.request(
+                        discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                        json=modal_payload
+                    )
+                except discord.NotFound:
+                    logger.warning("[Dashboard] Modal launch timed out.")
+                except discord.HTTPException as e:
+                    if e.code != 40060: logger.error(f"Modal launch error: {e}")
 
         # 4. Handle V2 Modal Submission
         elif interaction.type == discord.InteractionType.modal_submit:
@@ -170,44 +175,53 @@ class DashboardCog(commands.Cog):
 
                 # 🟢 PATH A: Download (Bridge to Universal Dashboard)
                 
-                # 1. Create a NEW standard V1 response (This strips the V2 flag so Embeds will work)
-                await interaction.response.send_message(f"🔍 **Analyzing {platform} Link:**\n`{url}`\n*Fetching metadata, please wait...*")
+                # 1. Create a NEW standard V1 response
+                msg_target = interaction
+                try:
+                    await interaction.response.send_message(f"🔍 **Analyzing {platform} Link:**\n`{url}`\n*Fetching metadata, please wait...*")
+                except discord.NotFound:
+                    # 10062 Error: Fallback to channel message
+                    if interaction.channel:
+                        msg_target = await interaction.channel.send(f"🔍 **Analyzing {platform} Link for {interaction.user.mention}:**\n`{url}`\n*Fetching metadata...*")
+                    else:
+                        return 
+                except discord.HTTPException as e:
+                    if e.code == 40060: pass
 
                 # 3. Fetch Metadata and Launch Dashboard
                 try:
-                    import uuid
-                    import asyncio
                     from app.core.logger import req_id_context
                     from app.bot.common.view import UniversalDashboard
 
                     req_id = str(uuid.uuid4())[:8].upper()
                     token = req_id_context.set(req_id)
                     
-                    # Fetch from Scraper Registry
-                    scraper = self.bot.task_queue.scraper_registry.get_scraper(url)
+                    # 🟢 CRITICAL FIX: Force the API Scraper for Mecha!
+                    # Prevents 'NoneType' Selenium crash.
+                    is_smartoon = "mecha" in platform.lower()
+                    scraper = self.bot.task_queue.scraper_registry.get_scraper(url, is_smartoon=is_smartoon)
+                    
                     data = await asyncio.to_thread(scraper.get_series_info, url)
                     
                     title, total_chapters, chapter_list, image_url, series_id = data
                     
                     ctx_data = {
-                        'url': url,
-                        'title': title,
-                        'chapters': chapter_list,
-                        'image_url': image_url,
-                        'series_id': series_id,
-                        'req_id': req_id,
-                        'user': interaction.user
+                        'url': url, 'title': title, 'chapters': chapter_list,
+                        'image_url': image_url, 'series_id': series_id,
+                        'req_id': req_id, 'user': interaction.user
                     }
                     
-                    # Map Platform Name to Service Color/Type
                     service_type = platform.lower().replace(" ", "").replace(".jp", "").replace("comic", "")
                     
                     # 4. Mount Universal Dashboard
                     view = UniversalDashboard(self.bot, ctx_data, service_type)
-                    view.interaction = interaction
                     
-                    # Passing " " clears the "Analyzing" text, leaving only the clean Embed
-                    await interaction.edit_original_response(content=" ", embed=view.build_live_embed(), view=view)
+                    # Update either Interaction or Fallback Message
+                    if hasattr(msg_target, 'edit_original_response'):
+                        view.interaction = interaction
+                        await msg_target.edit_original_response(content=" ", embed=view.build_live_embed(), view=view)
+                    else:
+                        await msg_target.edit(content=" ", embed=view.build_live_embed(), view=view)
                     
                     # 5. Speculative Browser Warmup (For Mecha)
                     if service_type == "mecha":
@@ -218,7 +232,11 @@ class DashboardCog(commands.Cog):
                 except Exception as e:
                     logger.error(f"Failed to fetch metadata: {e}", exc_info=True)
                     error_text = str(e).splitlines()[0] if str(e) else "Unknown Error"
-                    await interaction.edit_original_response(content=f"❌ **Extraction Failed**\nCould not fetch metadata for `{url}`.\n**Reason:** `{error_text}`")
+                    
+                    if hasattr(msg_target, 'edit_original_response'):
+                        await msg_target.edit_original_response(content=f"❌ **Extraction Failed**\nCould not fetch metadata for `{url}`.\n**Reason:** `{error_text}`")
+                    else:
+                        await msg_target.edit(content=f"❌ **Extraction Failed for {interaction.user.mention}**\nCould not fetch metadata for `{url}`.\n**Reason:** `{error_text}`")
                 finally:
                     try:
                         req_id_context.reset(token)
