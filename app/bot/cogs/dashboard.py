@@ -239,15 +239,12 @@ class DashboardCog(commands.Cog):
                     
                     service_type = platform.lower().replace(" ", "").replace(".jp", "").replace("comic", "")
                     
-                    # 4. Mount Universal Dashboard
+                    # 4. Mount Universal Dashboard in V2 Container Format
                     view = UniversalDashboard(self.bot, ctx_data, service_type)
+                    view.interaction = interaction
                     
-                    # Update either Interaction or Fallback Message
-                    if hasattr(msg_target, 'edit_original_response'):
-                        view.interaction = interaction
-                        await msg_target.edit_original_response(content=" ", embed=view.build_live_embed(), view=view)
-                    else:
-                        await msg_target.edit(content=" ", embed=view.build_live_embed(), view=view)
+                    # Push the custom Container payload immediately using the webhook
+                    await view.update_view()
                     
                     # 5. Speculative Browser Warmup (For Mecha)
                     if service_type == "mecha":

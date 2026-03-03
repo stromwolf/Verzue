@@ -45,25 +45,21 @@ class UIManager:
                 req_id, view = await self.queue.get()
                 
                 # 2. Ask Redis for a token (Rate limit: 30 edits per sec)
-                # We use a slightly lower limit to be safe with Webhooks
                 allowed, wait_time = await redis_brain.get_token("global_ui_limit_discord_ui", rate=30)
                 
                 if not allowed:
                     logger.debug(f"UI Update for R-ID: {req_id} rate limited. Waiting {wait_time:.2f}s.")
-                    # Re-queue with a slight penalty to avoid hot-looping
                     await asyncio.sleep(wait_time or 0.1)
                     await self.queue.put((req_id, view))
                     continue
 
-                # 3. Build the current state
+                # 3. Build the current state via V2 JSON Payload hash
                 try:
-                    embed = view.build_live_embed()
-                    
-                    # 4. Hash Check (Detects sub-status, phases, and task progress)
+                    components = view.build_v2_components()
                     task_states = "".join([t.status.value for t in view.active_tasks])
                     
                     state_blob = (
-                        f"{embed.description}"
+                        f"{str(components)}"
                         f"{view.phases}"
                         f"{task_states}"
                         f"{len(view.active_tasks)}"
@@ -73,17 +69,15 @@ class UIManager:
                     new_hash = hash(state_blob)
 
                     if getattr(view, "_last_hash", 0) == new_hash:
-                        logger.debug(f"UI Update for R-ID: {req_id} skipped (hash match).")
                         self.queue.task_done()
                         continue
                     
                     view._last_hash = new_hash
                     
-                    # 5. Serialized Edit Execution
                     if req_id not in self.locks:
                         self.locks[req_id] = asyncio.Lock()
                     
-                    asyncio.create_task(self._serialized_edit(req_id, view, embed))
+                    asyncio.create_task(self._serialized_edit(req_id, view))
                     
                 except Exception as e:
                     logger.error(f"UI Build Error for R-ID: {req_id}: {e}", exc_info=True)
@@ -94,20 +88,16 @@ class UIManager:
                 logger.error(f"UI Dispatcher Critical Error: {e}")
                 await asyncio.sleep(1)
 
-    async def _serialized_edit(self, req_id, view, embed):
+    async def _serialized_edit(self, req_id, view):
         """Ensures only one edit is in flight per request."""
         async with self.locks[req_id]:
-            await self._safe_edit(view, embed, req_id)
+            await self._safe_edit(view, req_id)
 
-    async def _safe_edit(self, view, embed, req_id: str):
+    async def _safe_edit(self, view, req_id: str):
         try:
-            logger.debug(f"[_safe_edit] Attempting edit for R-ID: {req_id}")
-            # Use followup.edit_message for maximum robustness after initial response
-            await view.interaction.followup.edit_message(
-                message_id=view.interaction.message.id,
-                embed=embed,
-                view=None # We explicitly remove view (buttons) in Step 1
-            )
+            logger.debug(f"[_safe_edit] Attempting V2 edit for R-ID: {req_id}")
+            # Route strictly to the raw V2 payload function!
+            await view.update_view()
             logger.debug(f"[_safe_edit] SUCCESS for R-ID: {req_id}")
         except Exception as e:
             logger.error(f"[_safe_edit] FAILED for R-ID: {req_id}: {e}", exc_info=True)
