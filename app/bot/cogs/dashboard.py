@@ -21,10 +21,10 @@ class DownloadModal(discord.ui.Modal, title='Universal Extractor'):
     async def on_submit(self, interaction: discord.Interaction):
         url = self.url_input.value.strip()
         
-        # We will bridge this to your scraper logic in the next phase!
-        # For now, we just acknowledge receipt to test the UI.
-        await interaction.response.send_message(f"🔗 **URL Received:** `{url}`
-*(Processing integration coming in next phase!)*", ephemeral=True)
+        # Separated into a variable to fix the f-string syntax error
+        msg = f"🔗 **URL Received:** `{url}`\n*(Processing integration coming in next phase!)*"
+        
+        await interaction.response.send_message(msg, ephemeral=True)
 
 
 class DashboardView(discord.ui.View):
@@ -52,13 +52,13 @@ class DashboardCog(commands.Cog):
         
         embed = discord.Embed(
             title=f"Menu of {scan_name}",
-            description="Welcome to the extraction dashboard.
-Click the button below to process a new link.",
+            description="Welcome to the extraction dashboard.\nClick the button below to process a new link.",
             color=0x2b2d31 # Dark Discord UI theme color
         )
         
         view = DashboardView(self.bot)
         await interaction.response.send_message(embed=embed, view=view)
+
 
 async def setup(bot):
     await bot.add_cog(DashboardCog(bot))
