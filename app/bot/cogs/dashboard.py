@@ -40,7 +40,7 @@ class DashboardCog(commands.Cog):
                             },
                             {
                                 "type": 10,
-                                "content": "## Platform Lists\n**Available Platforms**\n> <:Mechacomic:1478369141957333083> Mecha Comic\n> <:Jumptoon:1478367963928068168> Jumptoon\n\n**Coming Soon Platforms**\n> <:KakaoPage:1478366505640001566> KakaoPage\n> <:KuaikanManhua:1478368412609679380> Kuaikan Manhua\n> <:Piccoma:1478368704164134912> Piccoma\n> <:acqq:1478369616660140082> AC.QQ"
+                                "content": "## Platform Lists\n**Available Platforms**\n> * <:Mechacomic:1478369141957333083> Mecha Comic\n> * <:Jumptoon:1478367963928068168> Jumptoon\n\n**Coming Soon Platforms**\n> * <:KakaoPage:1478366505640001566> KakaoPage\n> * <:KuaikanManhua:1478368412609679380> Kuaikan Manhua\n> * <:Piccoma:1478368704164134912> Piccoma\n> * <:acqq:1478369616660140082> AC.QQ"
                             },
                             {
                                 "type": 10,
