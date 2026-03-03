@@ -16,7 +16,7 @@ class MechaCog(commands.Cog):
         self.semaphore = asyncio.BoundedSemaphore(3)
         self._seen_interactions = set()
 
-    @app_commands.command(name="mecha", description="Download from MechaComic (JP)")
+    @app_commands.command(name="mecha", description="Browse & Download from MechaComic")
     async def mecha(self, interaction: discord.Interaction, url: str):
         """
         Phase 1: Intelligence (Validated & Throttled).

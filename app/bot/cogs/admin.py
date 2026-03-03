@@ -25,6 +25,29 @@ class AdminCog(commands.Cog):
             
         return ctx.author.id in Settings.ALLOWED_IDS
 
+    @commands.command(name="cdn-menu")
+    async def cdn_menu(self, ctx, *, args: str):
+        """Usage: $cdn-menu Scan Name, Server/Channel ID"""
+        try:
+            # Split from the right in case the scan name contains a comma
+            scan_name, target_id_str = args.rsplit(',', 1)
+            scan_name = scan_name.strip()
+            target_id = int(target_id_str.strip())
+            
+            # Update memory and save to file
+            Settings.SERVER_MAP[target_id] = scan_name
+            Settings.save_server_map()
+            
+            embed = discord.Embed(
+                title="✅ Dashboard Mapped",
+                description=f"Successfully mapped ID `{target_id}` to **{scan_name}**.\nThe `/dashboard` command will now say *Menu of {scan_name}* here.",
+                color=0x2ecc71
+            )
+            await ctx.send(embed=embed)
+            logger.info(f"Dashboard mapping updated: {target_id} -> {scan_name} by {ctx.author}")
+        except ValueError:
+            await ctx.send("❌ **Format error!** Please use: `$cdn-menu Scan Name, ServerID`\n*Example:* `$cdn-menu Thunder Scan, 1443643769751736523`")
+
     @commands.command(name="sync")
     async def sync_commands(self, ctx):
         """Forces a global sync of slash commands."""

@@ -13,7 +13,7 @@ class KakaoCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="kakao", description="Download from Kakaopage or Kakao Webtoon")
+    @app_commands.command(name="kakao", description="Coming Soon")
     async def kakaopage(self, interaction: discord.Interaction, url: str):
         # 1. THE 3-SECOND RULE (First line)
         try:

@@ -47,13 +47,38 @@ class Settings:
     LOGIN_URL = "https://mechacomic.jp/login"
 
     # --- CLIENT MAPPING ---
-    # Format: { Server_ID_Integer : "Folder Name String" }
-    SERVER_MAP = {
-        1443643769751736523: "Timeless Toons"
-    }
+    SERVER_MAP_FILE = DATA_DIR / "server_map.json"
     
     # Fallback name if an unknown server uses the bot
     DEFAULT_CLIENT_NAME = "Timeless Toons"
+
+    # Default memory map
+    SERVER_MAP = {
+        1443643769751736523: "Timeless Toons"
+    }
+
+    @classmethod
+    def load_server_map(cls):
+        """Loads the dynamically set scan names from disk."""
+        import json
+        if cls.SERVER_MAP_FILE.exists():
+            try:
+                with open(cls.SERVER_MAP_FILE, 'r') as f:
+                    # JSON stores keys as strings, so we convert back to int
+                    loaded = json.load(f)
+                    cls.SERVER_MAP = {int(k): v for k, v in loaded.items()}
+            except Exception as e:
+                logging.error(f"Failed to load Server Map: {e}")
+
+    @classmethod
+    def save_server_map(cls):
+        """Saves the current scan names to disk."""
+        import json
+        try:
+            with open(cls.SERVER_MAP_FILE, 'w') as f:
+                json.dump(cls.SERVER_MAP, f)
+        except Exception as e:
+            logging.error(f"Failed to save Server Map: {e}")
 
     @classmethod
     def ensure_dirs(cls):
@@ -64,3 +89,4 @@ class Settings:
         cls.DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
         cls.LOG_DIR.mkdir(parents=True, exist_ok=True)
         cls.REQUEST_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        cls.load_server_map()

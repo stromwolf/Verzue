@@ -24,14 +24,10 @@ class MechaBot(commands.Bot):
 
     async def setup_hook(self):
         """Loads extensions and subscribes to events."""
+        # Removed all individual site cogs!
         extensions = [
             "app.bot.cogs.admin",
-            "app.bot.cogs.mecha", 
-            "app.bot.cogs.jumptoon", 
-            "app.bot.cogs.kakaopage",
-            "app.bot.cogs.acqq",
-            "app.bot.cogs.piccoma",
-            "app.bot.cogs.kuaikan"
+            "app.bot.cogs.dashboard" 
         ]
         
         for ext in extensions:

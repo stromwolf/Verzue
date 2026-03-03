@@ -13,7 +13,7 @@ class PiccomaCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="piccoma", description="Download from Piccoma (High-Speed API)")
+    @app_commands.command(name="piccoma", description="Coming Soon")
     async def piccoma(self, interaction: discord.Interaction, url: str):
         """
         Phase 1: Intelligence.

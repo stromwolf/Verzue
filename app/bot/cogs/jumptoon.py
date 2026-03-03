@@ -14,7 +14,7 @@ class JumptoonCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="jumptoon", description="Download from Jumptoon (High-Speed API)")
+    @app_commands.command(name="jumptoon", description="Browse & Download from Jumptoon")
     async def jumptoon(self, interaction: discord.Interaction, url: str):
         """
         Phase 1: Intelligence.

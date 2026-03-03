@@ -13,7 +13,7 @@ class AcQqCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="acqq", description="Download from Tencent Comics (ac.qq.com)")
+    @app_commands.command(name="acqq", description="Coming Soon")
     async def acqq(self, interaction: discord.Interaction, url: str):
         try:
             await interaction.response.defer()

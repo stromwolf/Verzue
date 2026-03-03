@@ -14,7 +14,7 @@ class KuaikanCog(commands.Cog):
         self.bot = bot
         self.semaphore = asyncio.BoundedSemaphore(3)
 
-    @app_commands.command(name="kuaikan", description="Download from Kuaikan Manhua (CN)")
+    @app_commands.command(name="kuaikan", description="Coming Soon")
     async def kuaikan(self, interaction: discord.Interaction, url: str):
         # 1. STRICT VALIDATION
         if "kuaikanmanhua.com" not in url:
