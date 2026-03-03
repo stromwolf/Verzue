@@ -43,7 +43,7 @@ class UniversalDashboard(View):
         except: pass
 
     def build_live_embed(self):
-        """Constructs the Embed to look natively like a V2 Container."""
+        # 1. Dynamic Range Formatter for Selected Chapters
         sel_text = "None"
         if self.selected_indices:
             if len(self.selected_indices) == len(self.all_chapters):
@@ -60,33 +60,46 @@ class UniversalDashboard(View):
                 sel_text = ", ".join(ranges)
                 if len(sel_text) > 40: sel_text = sel_text[:37] + "..."
 
-        color = 0x2ecc71 if self.phases.get("download") == "done" else self.color
+        # 2. Setup Base Embed
+        color = 0x2ecc71 if self.phases["download"] == "done" else self.color
         embed = discord.Embed(color=color)
         
+        # 3. Top Header Section (V2 Markdown)
         desc = f"## {self.title}\n**Total:** {len(self.all_chapters)}\n──────────────────────────\n"
         
         if self.processing_mode:
-            if self.phases["analyze"] == "done": desc += f"{ICONS['tick']} Analyzed.\n"
+            # 1. ANALYZE
+            if self.phases["analyze"] == "done":
+                desc += f"{ICONS['tick']} Analyzed.\n"
             else:
                 icon = ICONS["load"] if self.phases["analyze"] == "loading" else ICONS["wait"]
                 stat = f"Analyzing... ({self.sub_status})" if self.sub_status else "Analyzing..."
                 desc += f"{icon} {stat}\n"
             
+            # 2. PURCHASE
             if self.phases["analyze"] == "done":
-                if self.phases["purchase"] == "done": desc += f"{ICONS['tick']} Purchased.\n"
+                if self.phases["purchase"] == "done":
+                    desc += f"{ICONS['tick']} Purchased.\n"
                 else:
                     icon = ICONS["load"] if self.phases["purchase"] == "loading" else ICONS["wait"]
                     count_str = f" [{getattr(self, 'purchase_count', 0)}]" if getattr(self, 'purchase_count', 0) > 0 else ""
                     desc += f"{icon} Auto-Purchasing{count_str}...\n"
+                    
                     unlocker = self.bot.task_queue.scraper_registry.unlocker
-                    active_info = [f"-> `Ch.{stats['task'].id:02d}`: {stats.get('progress', 0)}% | {stats['task'].purchase_status}" for stats in unlocker.worker_stats.values() if stats.get("view") == self and stats.get("task")]
+                    active_info = [
+                        f"-> `Ch.{stats['task'].id:02d}`: {stats.get('progress', 0)}% | {stats['task'].purchase_status}"
+                        for stats in unlocker.worker_stats.values()
+                        if stats.get("view") == self and stats.get("task")
+                    ]
                     if active_info: desc += "\n".join(active_info) + "\n"
             
+            # 3. DOWNLOAD
             if self.phases["purchase"] == "done":
                 if self.phases["download"] == "loading":
                     desc += f"{ICONS['load']} Processing [{len(self.active_tasks)}] chapters...\n"
                     comp = sum(1 for t in self.active_tasks if t.status == TaskStatus.COMPLETED)
                     if comp: desc += f"-> **{comp}** chapters completed.\n"
+                    
                     for t in self.active_tasks:
                         if t.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
                             desc += f"-> `Ch.{t.id:02d}`: {ICONS['load']} {t.status.value}...\n"
@@ -95,8 +108,11 @@ class UniversalDashboard(View):
                     desc += f"{ICONS['tick']} Download Completed."
 
             if self.final_link: desc += f"\n\n📂 **Destination:** [Open Google Drive]({self.final_link})"
+            
+            # Processing View Footer
             desc += f"\n──────────────────────────\n-# R-ID: {self.req_id} | S-ID: {self.series_id}"
         else:
+            # 4. Standard Chapter List View
             desc += "### **Chapter List**\n"
             start = (self.page-1)*self.per_page
             for i, ch in enumerate(self.all_chapters[start:start+self.per_page]):
@@ -104,11 +120,21 @@ class UniversalDashboard(View):
                 clean_t = raw_t.replace(' ', ' - ', 1)[:35]
                 line = f"`{idx+1:02d}` | {clean_t}"
                 desc += f"**{line}**\n" if idx in self.selected_indices else f"{line}\n"
+            
+            # Chapter List View Footer
             desc += f"\n**Page:** {self.page}/{self.max_page} | **Selected Chapter:** {sel_text}\n──────────────────────────\n-# R-ID: {self.req_id} | S-ID: {self.series_id}"
 
+        # Apply description and add Thumbnail (Poster)
         embed.description = desc
         if self.image_url: embed.set_thumbnail(url=self.image_url)
         return embed
+
+    async def update_view(self, interaction: discord.Interaction = None):
+        if interaction:
+            await interaction.response.edit_message(embed=self.build_live_embed(), view=self)
+        else:
+            if not self.interaction: return
+            await self.interaction.edit_original_response(embed=self.build_live_embed(), view=self)
 
     @discord.ui.button(label="Start Extraction", style=discord.ButtonStyle.success, row=1)
     async def start(self, interaction: discord.Interaction, button: Button):
@@ -120,7 +146,7 @@ class UniversalDashboard(View):
         self.phases["analyze"] = "loading"
         self.sub_status = "Identifying Client"
         self.purchase_count = 0 
-        await interaction.response.edit_message(embed=self.build_live_embed(), view=None)
+        await self.update_view(interaction)
         
         asyncio.create_task(self.monitor_tasks())
         from app.services.batch_controller import BatchController
@@ -157,20 +183,20 @@ class UniversalDashboard(View):
 
     @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary, row=0)
     async def prev(self, i, b): 
-        if self.page > 1: self.page -= 1; await i.response.edit_message(embed=self.build_live_embed(), view=self)
+        if self.page > 1: self.page -= 1; await self.update_view(i)
     
     @discord.ui.button(label="Page", style=discord.ButtonStyle.secondary, row=0)
     async def jump(self, i, b): await i.response.send_modal(UniversalJumpModal(self))
 
     @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary, row=0)
     async def next(self, i, b): 
-        if self.page < self.max_page: self.page += 1; await i.response.edit_message(embed=self.build_live_embed(), view=self)
+        if self.page < self.max_page: self.page += 1; await self.update_view(i)
 
     @discord.ui.button(label="Select Range", style=discord.ButtonStyle.primary, row=1)
     async def range_select(self, i, b): await i.response.send_modal(UniversalRangeModal(self))
 
     @discord.ui.button(label="Clear", style=discord.ButtonStyle.danger, row=1)
-    async def clear(self, i, b): self.selected_indices.clear(); await i.response.edit_message(embed=self.build_live_embed(), view=self)
+    async def clear(self, i, b): self.selected_indices.clear(); await self.update_view(i)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1)
     async def cancel(self, interaction: discord.Interaction, button: Button):
@@ -189,7 +215,7 @@ class UniversalJumpModal(Modal, title="Jump to Page"):
             p = int(self.pg.value)
             if 1 <= p <= self.view.max_page: 
                 self.view.page = p
-                await i.response.edit_message(embed=self.view.build_live_embed(), view=self.view)
+                await self.view.update_view(i)
             else: 
                 await i.response.defer()
         except: 
@@ -209,6 +235,6 @@ class UniversalRangeModal(Modal, title="Select Range"):
                 elif p.isdigit():
                     k = int(p); 
                     if 1 <= k <= len(self.view.all_chapters): self.view.selected_indices.add(k-1)
-            await i.response.edit_message(embed=self.view.build_live_embed(), view=self.view)
+            await self.view.update_view(i)
         except: 
             await i.response.defer()
