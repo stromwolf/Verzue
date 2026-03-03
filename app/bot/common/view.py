@@ -31,9 +31,7 @@ class UniversalDashboard(View):
             browser.dec_session()
         if self.interaction:
             try:
-                payload = {"content": "❌ **Session Expired** (Inactive for 120s)", "components": []}
-                route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{self.interaction.token}/messages/@original')
-                await self.bot.http.request(route, json=payload)
+                await self.interaction.edit_original_response(content="❌ **Session Expired** (Inactive for 120s)", view=None)
             except: pass
 
     async def on_error(self, interaction, error, item):
@@ -44,8 +42,8 @@ class UniversalDashboard(View):
         try: await interaction.followup.send("❌ A critical error occurred.", ephemeral=True)
         except: pass
 
-    def build_v2_components(self):
-        """Builds the raw Discord V2 Component payload (Container, Section, Separator)."""
+    def build_live_embed(self):
+        """Constructs the Embed to look natively like a V2 Container."""
         sel_text = "None"
         if self.selected_indices:
             if len(self.selected_indices) == len(self.all_chapters):
@@ -62,7 +60,11 @@ class UniversalDashboard(View):
                 sel_text = ", ".join(ranges)
                 if len(sel_text) > 40: sel_text = sel_text[:37] + "..."
 
-        desc = ""
+        color = 0x2ecc71 if self.phases.get("download") == "done" else self.color
+        embed = discord.Embed(color=color)
+        
+        desc = f"## {self.title}\n**Total:** {len(self.all_chapters)}\n──────────────────────────\n"
+        
         if self.processing_mode:
             if self.phases["analyze"] == "done": desc += f"{ICONS['tick']} Analyzed.\n"
             else:
@@ -93,6 +95,7 @@ class UniversalDashboard(View):
                     desc += f"{ICONS['tick']} Download Completed."
 
             if self.final_link: desc += f"\n\n📂 **Destination:** [Open Google Drive]({self.final_link})"
+            desc += f"\n──────────────────────────\n-# R-ID: {self.req_id} | S-ID: {self.series_id}"
         else:
             desc += "### **Chapter List**\n"
             start = (self.page-1)*self.per_page
@@ -101,56 +104,11 @@ class UniversalDashboard(View):
                 clean_t = raw_t.replace(' ', ' - ', 1)[:35]
                 line = f"`{idx+1:02d}` | {clean_t}"
                 desc += f"**{line}**\n" if idx in self.selected_indices else f"{line}\n"
-            desc += f"\n**Page:** {self.page}/{self.max_page} | **Selected Chapter:** {sel_text}"
+            desc += f"\n**Page:** {self.page}/{self.max_page} | **Selected Chapter:** {sel_text}\n──────────────────────────\n-# R-ID: {self.req_id} | S-ID: {self.series_id}"
 
-        container_components = []
-        
-        # Section 1: Header & Poster
-        header_section = {
-            "type": 9,
-            "components": [{"type": 10, "content": f"## {self.title}\n**Total:** {len(self.all_chapters)}"}]
-        }
-        if self.image_url:
-            header_section["accessory"] = {"type": 11, "media": {"url": self.image_url}}
-            
-        container_components.append(header_section)
-        container_components.append({"type": 14, "spacing": 1}) # Separator
-        container_components.append({"type": 10, "content": desc}) # Content
-        container_components.append({"type": 14, "spacing": 1}) # Separator
-        container_components.append({"type": 10, "content": f"-# R-ID: {self.req_id} | S-ID: {self.series_id}"}) # Footer
-
-        return [{
-            "type": 17, # CONTAINER (V2)
-            "accent_color": self.color if self.phases.get("download") != "done" else 0x2ecc71,
-            "components": container_components
-        }]
-
-    async def update_view(self, interaction: discord.Interaction = None):
-        """Builds the payload using the V2 container and attaches the View's UI components natively."""
-        try:
-            # Reconstruct the view components into native discord.py dictionaries
-            ui_components = [child.to_dict() for child in self.children]
-            # Group into Action Rows (Type 1)
-            rows = [{"type": 1, "components": [c for c in ui_components if c.get("row") == i]} for i in range(2)]
-            # Filter out empty rows
-            valid_rows = [r for r in rows if r["components"]]
-
-            # Merge the Container logic (from build_v2_components) with the Button Rows
-            all_components = self.build_v2_components() + valid_rows
-            
-            payload_data = {"flags": 32768, "components": all_components, "content": ""}
-
-            if interaction:
-                # Type 7: UPDATE_MESSAGE
-                payload = {"type": 7, "data": payload_data}
-                route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
-                await self.bot.http.request(route, json=payload)
-            else:
-                if not self.interaction: return
-                route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{self.interaction.token}/messages/@original')
-                await self.bot.http.request(route, json=payload_data)
-        except Exception as e:
-            logger.error(f"V2 UI Update Failed: {e}", exc_info=True)
+        embed.description = desc
+        if self.image_url: embed.set_thumbnail(url=self.image_url)
+        return embed
 
     @discord.ui.button(label="Start Extraction", style=discord.ButtonStyle.success, row=1)
     async def start(self, interaction: discord.Interaction, button: Button):
@@ -162,7 +120,7 @@ class UniversalDashboard(View):
         self.phases["analyze"] = "loading"
         self.sub_status = "Identifying Client"
         self.purchase_count = 0 
-        await self.update_view(interaction)
+        await interaction.response.edit_message(embed=self.build_live_embed(), view=None)
         
         asyncio.create_task(self.monitor_tasks())
         from app.services.batch_controller import BatchController
@@ -199,20 +157,20 @@ class UniversalDashboard(View):
 
     @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary, row=0)
     async def prev(self, i, b): 
-        if self.page > 1: self.page -= 1; await self.update_view(i)
+        if self.page > 1: self.page -= 1; await i.response.edit_message(embed=self.build_live_embed(), view=self)
     
     @discord.ui.button(label="Page", style=discord.ButtonStyle.secondary, row=0)
     async def jump(self, i, b): await i.response.send_modal(UniversalJumpModal(self))
 
     @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary, row=0)
     async def next(self, i, b): 
-        if self.page < self.max_page: self.page += 1; await self.update_view(i)
+        if self.page < self.max_page: self.page += 1; await i.response.edit_message(embed=self.build_live_embed(), view=self)
 
     @discord.ui.button(label="Select Range", style=discord.ButtonStyle.primary, row=1)
     async def range_select(self, i, b): await i.response.send_modal(UniversalRangeModal(self))
 
     @discord.ui.button(label="Clear", style=discord.ButtonStyle.danger, row=1)
-    async def clear(self, i, b): self.selected_indices.clear(); await self.update_view(i)
+    async def clear(self, i, b): self.selected_indices.clear(); await i.response.edit_message(embed=self.build_live_embed(), view=self)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1)
     async def cancel(self, interaction: discord.Interaction, button: Button):
@@ -221,9 +179,7 @@ class UniversalDashboard(View):
             browser = self.bot.task_queue.scraper_registry.browser
             browser.dec_session()
         self.stop()
-        payload = {"content": "❌ **Dashboard Closed** (Manual Cancel)", "components": [], "flags": 0}
-        route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
-        await self.bot.http.request(route, json={"type": 7, "data": payload})
+        await interaction.response.edit_message(content="❌ **Dashboard Closed** (Manual Cancel)", embed=None, view=None)
 
 class UniversalJumpModal(Modal, title="Jump to Page"):
     pg = TextInput(label="Page Number", placeholder="e.g. 5")
@@ -231,9 +187,13 @@ class UniversalJumpModal(Modal, title="Jump to Page"):
     async def on_submit(self, i: discord.Interaction):
         try:
             p = int(self.pg.value)
-            if 1 <= p <= self.view.max_page: self.view.page = p; await self.view.update_view(i)
-            else: await i.response.defer()
-        except: await i.response.defer()
+            if 1 <= p <= self.view.max_page: 
+                self.view.page = p
+                await i.response.edit_message(embed=self.view.build_live_embed(), view=self.view)
+            else: 
+                await i.response.defer()
+        except: 
+            await i.response.defer()
 
 class UniversalRangeModal(Modal, title="Select Range"):
     rng = TextInput(label="Range (e.g. 1-10, 15)", placeholder="1-5")
@@ -249,5 +209,6 @@ class UniversalRangeModal(Modal, title="Select Range"):
                 elif p.isdigit():
                     k = int(p); 
                     if 1 <= k <= len(self.view.all_chapters): self.view.selected_indices.add(k-1)
-            await self.view.update_view(i)
-        except: await i.response.defer()
+            await i.response.edit_message(embed=self.view.build_live_embed(), view=self.view)
+        except: 
+            await i.response.defer()

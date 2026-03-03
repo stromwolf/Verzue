@@ -53,13 +53,13 @@ class UIManager:
                     await self.queue.put((req_id, view))
                     continue
 
-                # 3. Build the current state via V2 JSON Payload hash
+                # 3. Build the current state
                 try:
-                    components = view.build_v2_components()
+                    embed = view.build_live_embed()
                     task_states = "".join([t.status.value for t in view.active_tasks])
                     
                     state_blob = (
-                        f"{str(components)}"
+                        f"{embed.description}"
                         f"{view.phases}"
                         f"{task_states}"
                         f"{len(view.active_tasks)}"
@@ -77,7 +77,7 @@ class UIManager:
                     if req_id not in self.locks:
                         self.locks[req_id] = asyncio.Lock()
                     
-                    asyncio.create_task(self._serialized_edit(req_id, view))
+                    asyncio.create_task(self._serialized_edit(req_id, view, embed))
                     
                 except Exception as e:
                     logger.error(f"UI Build Error for R-ID: {req_id}: {e}", exc_info=True)
@@ -88,16 +88,20 @@ class UIManager:
                 logger.error(f"UI Dispatcher Critical Error: {e}")
                 await asyncio.sleep(1)
 
-    async def _serialized_edit(self, req_id, view):
+    async def _serialized_edit(self, req_id, view, embed):
         """Ensures only one edit is in flight per request."""
         async with self.locks[req_id]:
-            await self._safe_edit(view, req_id)
+            await self._safe_edit(view, embed, req_id)
 
-    async def _safe_edit(self, view, req_id: str):
+    async def _safe_edit(self, view, embed, req_id: str):
         try:
-            logger.debug(f"[_safe_edit] Attempting V2 edit for R-ID: {req_id}")
-            # Route strictly to the raw V2 payload function!
-            await view.update_view()
+            logger.debug(f"[_safe_edit] Attempting edit for R-ID: {req_id}")
+            # Use followup.edit_message for maximum robustness
+            await view.interaction.followup.edit_message(
+                message_id=view.interaction.message.id,
+                embed=embed,
+                view=None 
+            )
             logger.debug(f"[_safe_edit] SUCCESS for R-ID: {req_id}")
         except Exception as e:
             logger.error(f"[_safe_edit] FAILED for R-ID: {req_id}: {e}", exc_info=True)
