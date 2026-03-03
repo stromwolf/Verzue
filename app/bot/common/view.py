@@ -29,23 +29,25 @@ class UniversalDashboard:
 
     def build_v2_payload(self):
         """Constructs the pure Discord V2 Container Layout"""
-        sel_text = "None"
-        if self.selected_indices:
-            if len(self.selected_indices) == len(self.all_chapters):
-                sel_text = f"1-{len(self.all_chapters)} (SR)"
-            else:
-                idxs = sorted(list(self.selected_indices))
-                ranges, s, p = [], idxs[0], idxs[0]
-                for i in idxs[1:]:
-                    if i == p + 1: p = i
-                    else:
-                        ranges.append(f"{s+1}-{p+1}" if s != p else f"{s+1}")
-                        s = p = i
-                ranges.append(f"{s+1}-{p+1}" if s != p else f"{s+1}")
-                sel_text = ", ".join(ranges)
-                if len(sel_text) > 40: sel_text = sel_text[:37] + "..."
+        sel_count = len(self.selected_indices)
+        if sel_count == 0:
+            sel_text = "None"
+        elif sel_count == len(self.all_chapters):
+            sel_text = "SR"
+        else:
+            idxs = sorted(list(self.selected_indices))
+            ranges, s, p = [], idxs[0], idxs[0]
+            for i in idxs[1:]:
+                if i == p + 1: p = i
+                else:
+                    ranges.append(f"Ch{s+1}-{p+1}" if s != p else f"Ch{s+1}")
+                    s = p = i
+            ranges.append(f"Ch{s+1}-{p+1}" if s != p else f"{s+1}")
+            sel_text = ", ".join(ranges)
+            if len(sel_text) > 35: sel_text = sel_text[:32] + "..."
 
-        header_text = f"## {self.title}\n**Total:** {len(self.all_chapters)}"
+        # 🟢 UPDATED: Header layout
+        header_text = f"## {self.title}\n**Total Pages:** {self.max_page} | **Total Chapters:** {len(self.all_chapters)}"
         
         desc = ""
         if self.processing_mode:
@@ -78,7 +80,8 @@ class UniversalDashboard:
                     desc += f"{ICONS['tick']} Download Completed."
 
             if self.final_link: desc += f"\n\n📂 **Destination:** [Open Google Drive]({self.final_link})"
-            desc += f"\n\n**Selected Chapter:** {sel_text}"
+            # 🟢 UPDATED: Processing footer layout
+            desc += f"\n\n**Selected:** {sel_count} ({sel_text})"
         else:
             desc += "### **Chapter List**\n"
             start = (self.page-1)*self.per_page
@@ -87,7 +90,8 @@ class UniversalDashboard:
                 clean_t = raw_t.replace(' ', ' - ', 1)[:35]
                 line = f"`{idx+1:02d}` | {clean_t}"
                 desc += f"**{line}**\n" if idx in self.selected_indices else f"{line}\n"
-            desc += f"\n**Page:** {self.page}/{self.max_page} | **Selected Chapter:** {sel_text}"
+            # 🟢 UPDATED: Chapter list footer layout
+            desc += f"\n**Selected:** {sel_count} ({sel_text})"
 
         footer_text = f"-# R-ID: {self.req_id} | S-ID: {self.series_id}"
 
@@ -133,7 +137,8 @@ class UniversalDashboard:
                 "type": 1,
                 "components": [
                     {"type": 2, "style": 1, "label": "Select", "custom_id": f"btn_select_{self.req_id}"},
-                    {"type": 2, "style": 3, "label": "Start Extraction", "custom_id": f"btn_start_{self.req_id}", "disabled": len(self.selected_indices) == 0},
+                    # 🟢 UPDATED: Renamed label to "Start"
+                    {"type": 2, "style": 3, "label": "Start", "custom_id": f"btn_start_{self.req_id}", "disabled": len(self.selected_indices) == 0},
                     {"type": 2, "style": 4, "label": "Cancel", "custom_id": f"btn_cancel_{self.req_id}"}
                 ]
             })
