@@ -68,13 +68,22 @@ class DashboardCog(commands.Cog):
 
         # Send raw HTTP request to Discord
         try:
-            await self.bot.http.request(
-                discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
-                json=payload
+            route = discord.http.Route(
+                'POST', '/interactions/{interaction_id}/{interaction_token}/callback',
+                interaction_id=interaction.id,
+                interaction_token=interaction.token
             )
+            await self.bot.http.request(route, json=payload)
+            # 🟢 CRITICAL: Tell discord.py we've answered so it doesn't try to double-ack and crash!
+            interaction.response._responded = True
+            
+        except discord.NotFound:
+            # This triggers if you use the command too fast on bot startup and it times out (> 3 seconds)
+            logger.warning("[Dashboard] Interaction timed out. This is normal on startup. Try the command again!")
         except Exception as e:
             logger.error(f"Failed to send V2 Dashboard: {e}")
-            await interaction.response.send_message("❌ Failed to launch V2 Dashboard. Check bot logs.", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Failed to launch V2 Dashboard. Check bot logs.", ephemeral=True)
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
@@ -135,13 +144,11 @@ class DashboardCog(commands.Cog):
                 url = ""
 
                 # Extract values from the V2 Label > Component nesting
-                # Data structure: components: [ { type: 18, components: [ { type: 21, value: ... } ] }, ... ]
-                # Actually, V2 interaction data for modals might differ. 
-                # According to the pattern provided by the user:
                 for row in interaction.data.get("components", []):
-                    # In V2, the Label wraps the component
-                    inner = row.get("components", [{}])[0]
+                    # In V2, the Label wraps the item using the "component" key (singular)
+                    inner = row.get("component", {})
                     cid = inner.get("custom_id")
+                    
                     if cid == "action_radio":
                         action = inner.get("value", "download") 
                     elif cid == "url_input":
@@ -156,10 +163,15 @@ class DashboardCog(commands.Cog):
                     }
                 }
                 
-                await self.bot.http.request(
-                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
-                    json=msg_payload
-                )
+                try:
+                    route = discord.http.Route(
+                        'POST', '/interactions/{interaction_id}/{interaction_token}/callback',
+                        interaction_id=interaction.id,
+                        interaction_token=interaction.token
+                    )
+                    await self.bot.http.request(route, json=msg_payload)
+                except discord.NotFound:
+                    logger.warning("[Dashboard] Modal submission timed out.")
 
 async def setup(bot):
     await bot.add_cog(DashboardCog(bot))
