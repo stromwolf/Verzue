@@ -40,7 +40,7 @@ class DashboardCog(commands.Cog):
                             },
                             {
                                 "type": 10,
-                                "content": "## Platform Lists\n**Available Platforms**\n* KakaoPage\n* Mecha Comic\n* Jumptoon\n* Kuaikan Manhua\n* Piccoma\n* AC.QQ\n\n**Coming Soon Platforms**\n- Naver Webtoon\n- Line Manga"
+                                "content": "## Platform Lists\n* **Available Platforms**\n * KakaoPage\n - Mecha Comic\n - Jumptoon\n - Kuaikan Manhua\n - Piccoma\n - AC.QQ\n* **Coming Soon Platforms**\n * Naver Webtoon\n - Line Manga"
                             },
                             {
                                 "type": 10,
