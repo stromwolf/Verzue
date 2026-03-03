@@ -145,33 +145,87 @@ class DashboardCog(commands.Cog):
 
                 # Extract values from the V2 Label > Component nesting
                 for row in interaction.data.get("components", []):
-                    # In V2, the Label wraps the item using the "component" key (singular)
                     inner = row.get("component", {})
                     cid = inner.get("custom_id")
-                    
                     if cid == "action_radio":
                         action = inner.get("value", "download") 
                     elif cid == "url_input":
                         url = inner.get("value", "")
 
-                # Send an ephemeral confirmation
-                msg_payload = {
-                    "type": 4, # MESSAGE_WITH_SOURCE
-                    "data": {
-                        "flags": 64, # EPHEMERAL
-                        "content": f"✅ **{platform} Request Received!**\n🔹 **Action:** `{action.title()}`\n🔗 **URL:** `{url}`"
+                # 🛑 PATH B: Subscription (Coming Soon)
+                if action == "subscribe":
+                    msg_payload = {
+                        "type": 4, # MESSAGE_WITH_SOURCE
+                        "data": {
+                            "flags": 64, # EPHEMERAL
+                            "content": f"🚧 **Subscription Feature Coming Soon!**\nWe are currently building the tracking database for **{platform}**."
+                        }
                     }
-                }
+                    try:
+                        route = discord.http.Route('POST', '/interactions/{interaction_id}/{interaction_token}/callback', interaction_id=interaction.id, interaction_token=interaction.token)
+                        await self.bot.http.request(route, json=msg_payload)
+                    except discord.NotFound:
+                        pass
+                    return
+
+                # 🟢 PATH A: Download (Bridge to Universal Dashboard)
                 
+                # 1. Acknowledge and Defer instantly so the modal closes
+                await interaction.response.defer(ephemeral=False)
+                
+                # 2. Send loading state
+                loading_msg = await interaction.followup.send(f"🔍 **Analyzing {platform} Link:**\n`{url}`\n*Fetching metadata, please wait...*", wait=True)
+
+                # 3. Fetch Metadata and Launch Dashboard
                 try:
-                    route = discord.http.Route(
-                        'POST', '/interactions/{interaction_id}/{interaction_token}/callback',
-                        interaction_id=interaction.id,
-                        interaction_token=interaction.token
-                    )
-                    await self.bot.http.request(route, json=msg_payload)
-                except discord.NotFound:
-                    logger.warning("[Dashboard] Modal submission timed out.")
+                    import uuid
+                    import asyncio
+                    from app.core.logger import req_id_context
+                    from app.bot.common.view import UniversalDashboard
+
+                    req_id = str(uuid.uuid4())[:8].upper()
+                    token = req_id_context.set(req_id)
+                    
+                    # Fetch from Scraper Registry
+                    scraper = self.bot.task_queue.scraper_registry.get_scraper(url)
+                    data = await asyncio.to_thread(scraper.get_series_info, url)
+                    
+                    title, total_chapters, chapter_list, image_url, series_id = data
+                    
+                    ctx_data = {
+                        'url': url,
+                        'title': title,
+                        'chapters': chapter_list,
+                        'image_url': image_url,
+                        'series_id': series_id,
+                        'req_id': req_id,
+                        'user': interaction.user
+                    }
+                    
+                    # Map Platform Name to Service Color/Type
+                    service_type = platform.lower().replace(" ", "").replace(".jp", "").replace("comic", "")
+                    
+                    # 4. Mount Universal Dashboard
+                    view = UniversalDashboard(self.bot, ctx_data, service_type)
+                    view.interaction = interaction
+                    
+                    await interaction.edit_original_response(content=None, embed=view.build_live_embed(), view=view)
+                    
+                    # 5. Speculative Browser Warmup (For Mecha)
+                    if service_type == "mecha":
+                        browser = self.bot.task_queue.scraper_registry.browser
+                        asyncio.create_task(asyncio.to_thread(browser.warmup))
+                        logger.info("🔥 Browser Warmup Triggered (Background)")
+
+                except Exception as e:
+                    logger.error(f"Failed to fetch metadata: {e}", exc_info=True)
+                    error_text = str(e).splitlines()[0] if str(e) else "Unknown Error"
+                    await interaction.edit_original_response(content=f"❌ **Extraction Failed**\nCould not fetch metadata for `{url}`.\n**Reason:** `{error_text}`")
+                finally:
+                    try:
+                        req_id_context.reset(token)
+                    except:
+                        pass
 
 async def setup(bot):
     await bot.add_cog(DashboardCog(bot))
