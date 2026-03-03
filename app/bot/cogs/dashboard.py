@@ -74,8 +74,8 @@ class DashboardCog(commands.Cog):
                 interaction_token=interaction.token
             )
             await self.bot.http.request(route, json=payload)
-            # 🟢 CRITICAL: Tell discord.py we've answered so it doesn't try to double-ack and crash!
-            interaction.response._responded = True
+            # Note: We deliberately do NOT set _responded here to avoid AttributeError.
+            # discord.py will safely finish the cycle.
             
         except discord.NotFound:
             # This triggers if you use the command too fast on bot startup and it times out (> 3 seconds)
@@ -170,11 +170,8 @@ class DashboardCog(commands.Cog):
 
                 # 🟢 PATH A: Download (Bridge to Universal Dashboard)
                 
-                # 1. Acknowledge and Defer instantly so the modal closes
-                await interaction.response.defer(ephemeral=False)
-                
-                # 2. Send loading state
-                loading_msg = await interaction.followup.send(f"🔍 **Analyzing {platform} Link:**\n`{url}`\n*Fetching metadata, please wait...*", wait=True)
+                # 1. Create a NEW standard V1 response (This strips the V2 flag so Embeds will work)
+                await interaction.response.send_message(f"🔍 **Analyzing {platform} Link:**\n`{url}`\n*Fetching metadata, please wait...*")
 
                 # 3. Fetch Metadata and Launch Dashboard
                 try:
@@ -209,7 +206,8 @@ class DashboardCog(commands.Cog):
                     view = UniversalDashboard(self.bot, ctx_data, service_type)
                     view.interaction = interaction
                     
-                    await interaction.edit_original_response(content=None, embed=view.build_live_embed(), view=view)
+                    # Passing " " clears the "Analyzing" text, leaving only the clean Embed
+                    await interaction.edit_original_response(content=" ", embed=view.build_live_embed(), view=view)
                     
                     # 5. Speculative Browser Warmup (For Mecha)
                     if service_type == "mecha":
