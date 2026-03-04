@@ -163,22 +163,16 @@ class DashboardCog(commands.Cog):
                     if view.service_type == "mecha": view.bot.task_queue.scraper_registry.browser.dec_session()
                     UniversalDashboard.active_views.pop(req_id, None)
                     
-                    # 🟢 FIX: Must keep the 32768 flag and use a Text Display component (Type 10) instead of standard content!
-                    payload = {
-                        "type": 7, 
-                        "data": {
-                            "flags": 32768, 
-                            "components": [
-                                {
-                                    "type": 10, 
-                                    "content": "❌ **Dashboard Closed**"
-                                }
-                            ]
-                        }
-                    }
-                    
+                    # 1. Acknowledge the button press silently (Type 6: Deferred Update)
+                    payload = {"type": 6}
                     route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
                     await self.bot.http.request(route, json=payload)
+                    
+                    # 2. Delete the dashboard message entirely to clean up the channel
+                    try:
+                        await interaction.message.delete()
+                    except Exception:
+                        pass
 
                 # C. Start Extraction
                 elif custom_id.startswith("btn_start_"):
