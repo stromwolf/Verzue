@@ -27,13 +27,9 @@ class TaskQueue:
         # ==========================================
         # ⚖️ THE PIT BOSS (RAM Auto-Scaler)
         # ==========================================
-        self.max_workers = 6        # Max parallel threads (Adjust based on CPU limits)
         self.min_workers = 1        # Never drop below this
         self.active_worker_count = 0
         self.workers_to_kill = 0    # Hit-list for when RAM is critical
-        
-        self.ram_threshold_high_mb = 2048  # If free RAM > 2GB, spawn more workers!
-        self.ram_threshold_low_mb = 500    # If free RAM < 500MB, start killing workers!
 
         if browser_service:
             self.scraper_registry = ScraperRegistry(browser_service)
@@ -107,8 +103,13 @@ class TaskQueue:
         asyncio.create_task(self._pit_boss_loop())
 
     async def _pit_boss_loop(self):
-        """Monitors RAM and scales workers dynamically."""
+        """Monitors RAM and scales workers dynamically based on real telemetry."""
         worker_id_counter = 0
+        
+        # 🟢 TELEMETRY-BASED CONFIGURATION
+        RAM_PER_WORKER_MB = 200     # Based on the ~181MB spike per chapter
+        OS_SAFETY_BUFFER_MB = 1024  # Always keep 1GB free so Windows/Discord doesn't crash
+        ABSOLUTE_MAX_WORKERS = 15   # CPU bottleneck ceiling (prevents CPU thrashing)
         
         # 1. Spawn Initial Minimum Workers
         for _ in range(self.min_workers):
@@ -121,17 +122,21 @@ class TaskQueue:
             mem = psutil.virtual_memory()
             avail_mb = mem.available / (1024 * 1024)
             
-            # Do we need more workers? (Lots of RAM + Idle tasks waiting)
-            if avail_mb > self.ram_threshold_high_mb and self.total_tasks > self.active_worker_count:
-                if self.active_worker_count < self.max_workers:
-                    logger.info(f"📈 [Pit Boss] RAM Healthy ({avail_mb:.0f}MB). Table is busy. Spawning Worker {worker_id_counter}.")
-                    asyncio.create_task(self._worker_loop(worker_id_counter))
-                    worker_id_counter += 1
+            # 🟢 THE DYNAMIC FORMULA
+            # Example: (8000MB free - 1024MB buffer) / 200MB = 34 affordable workers
+            affordable_workers = int((avail_mb - OS_SAFETY_BUFFER_MB) / RAM_PER_WORKER_MB)
+            target_workers = max(self.min_workers, min(affordable_workers, ABSOLUTE_MAX_WORKERS))
             
-            # Are we choking on RAM?
-            elif avail_mb < self.ram_threshold_low_mb:
+            # Do we need more workers? (We have RAM + Idle tasks waiting)
+            if self.active_worker_count < target_workers and self.total_tasks > self.active_worker_count:
+                logger.info(f"📈 [Pit Boss] RAM: {avail_mb:.0f}MB. Target: {target_workers} workers. Spawning Worker {worker_id_counter}.")
+                asyncio.create_task(self._worker_loop(worker_id_counter))
+                worker_id_counter += 1
+            
+            # Are we choking on RAM? (Current workers exceed what we can currently afford)
+            elif self.active_worker_count > target_workers:
                 if self.active_worker_count - self.workers_to_kill > self.min_workers:
-                    logger.warning(f"📉 [Pit Boss] RAM CRITICAL ({avail_mb:.0f}MB)! Tapping a worker to cash out.")
+                    logger.warning(f"📉 [Pit Boss] RAM Dropping ({avail_mb:.0f}MB)! Tapping a worker to cash out.")
                     self.workers_to_kill += 1
                     
                     # Wake up a sleeping worker just in case they need to die
