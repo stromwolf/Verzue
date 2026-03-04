@@ -77,14 +77,13 @@ class JumptoonApiScraper(BaseScraper):
     def get_series_info(self, url: str):
         match = re.search(r'jumptoon\.com/series/([a-zA-Z0-9]+)', url)
         if not match: raise ScraperError("Invalid Jumptoon URL.")
-        
         series_id = match.group(1)
         
-        # Metadata Fetch
+        # 🟢 Metadata Fetch
         res = self.session.get(f"{self.BASE_URL}/series/{series_id}/episodes/?page=1", timeout=15)
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # 🟢 POSTER: Use the specific vertical key from the JSON state
+        # 🟢 FIX: High-Res Vertical Poster
         image_url = None
         # We unescape the Next.js JSON to find the V2 vertical poster path
         clean_json = res.text.replace('\\/', '/').replace('\\"', '"')
@@ -92,9 +91,9 @@ class JumptoonApiScraper(BaseScraper):
         if img_match:
             image_url = img_match.group(1).split('?')[0] + "?auto=avif-webp&width=3840"
 
-        # 🟢 CHAPTERS: Extract with "UP" badge detection from JSON state for accuracy
+        # 🟢 FIX: Chapter Extraction with "UP" Badge detection
         all_chapters = []
-        # Target the episode data directly in the JSON state
+        # Target the episode data directly in the JSON state for accuracy
         episodes_data = re.findall(
             r'\\?"id\\?":\\?"(\d+)\\?",\\?"number\\?":\\?"(\d+)\\?",\\?"notation\\?":\\?"([^"]+)\\?",\\?"title\\?":\\?"([^"]+)\\?".*?\\?"isNew\\?":\s*(true|false)', 
             res.text
@@ -105,24 +104,15 @@ class JumptoonApiScraper(BaseScraper):
             # Logic to check if chapter is locked
             is_locked = f'\\"id\\":\\"{ep_id}\\",\\"isPurchased\\":false' in res.text
             
-            # Use original visual order from JSON (which matches the website)
             all_chapters.append({
                 'id': ep_id,
                 'title': title.replace("UP", "").strip(),
                 'notation': notation,
-                'url': f"{self.BASE_URL}/episodes/{ep_id}/",
                 'is_locked': is_locked,
                 'is_new': is_new
             })
 
         title = soup.find("h1").get_text(strip=True) if soup.find("h1") else "Unknown"
-        
-        # Fallback to OG Image if JSON mining fails
-        if not image_url:
-            og_img = soup.find("meta", property="og:image")
-            if og_img:
-                image_url = og_img["content"]
-
         return title, len(all_chapters), all_chapters, image_url, series_id
 
     def scrape_chapter(self, task, output_dir):

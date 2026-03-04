@@ -161,7 +161,8 @@ class DashboardCog(commands.Cog):
 
                 elif custom_id.startswith("mode_select_"):
                     choice = interaction.data.get("values", [None])[0]
-                    view.show_selection_menu = False
+                    view.show_selection_menu = False # Close menu after picking
+                    
                     if choice == "all":
                         view.selected_indices = set(range(len(view.all_chapters)))
                         await view.update_view(interaction)
@@ -173,6 +174,7 @@ class DashboardCog(commands.Cog):
                         else:
                             await interaction.response.send_message("❌ No new chapter detected.", ephemeral=True)
                     elif choice == "custom":
+                        # Launch the existing range modal logic
                         sel_count = len(view.selected_indices)
                         total_chapters = len(view.all_chapters)
                         current_range = ""

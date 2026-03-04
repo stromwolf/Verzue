@@ -49,7 +49,6 @@ class UniversalDashboard:
             sel_text = ", ".join(ranges)
             if len(sel_text) > 35: sel_text = sel_text[:32] + "..."
 
-        # Header layout
         header_text = f"## {self.title}\n**Total Pages:** {self.max_page} | **Total Chapters:** {len(self.all_chapters)}"
         
         desc = ""
@@ -86,21 +85,19 @@ class UniversalDashboard:
             desc += f"\n\n**Selected:** {sel_count} ({sel_text})"
         else:
             desc += "### **Chapter List**\n"
-            start = (self.page-1)*self.per_page
-            for i, ch in enumerate(self.all_chapters[start:start+self.per_page]):
-                idx = start + i
-                raw_t = ch.get('title','Ch')
-                # 🟢 Format title with notation if available
-                notation = ch.get('notation', '')
-                clean_t = raw_t.replace(' ', ' - ', 1)[:35]
-                
-                # 🟢 Restore "NEW" (UP) badge display and ✅ selection icon
+            start_idx = (self.page - 1) * self.per_page
+            display_chapters = self.all_chapters[start_idx : start_idx + self.per_page]
+            
+            for i, ch in enumerate(display_chapters):
+                real_idx = start_idx + i
                 new_tag = "✨ " if ch.get('is_new') else ""
-                sel_icon = "✅" if idx in self.selected_indices else "⬛"
-                lock_icon = "🔒" if ch.get('is_locked') else "🔓"
+                sel = "✅" if real_idx in self.selected_indices else "⬛"
+                # Handle different key names for notation/title if they vary by scraper
+                notation = ch.get('notation', f"{real_idx+1:02d}")
+                title_val = ch.get('title', 'Ch')
+                clean_t = title_val.replace(' ', ' - ', 1)[:35]
                 
-                line = f"{sel_icon} {lock_icon} {new_tag}`{idx+1:02d}` | {notation} {clean_t}"
-                desc += f"**{line}**\n" if idx in self.selected_indices else f"{line}\n"
+                desc += f"**{new_tag}{sel} {'🔒' if ch.get('is_locked') else '🔓'} `{notation}`** | {clean_t}\n"
             
             desc += f"\n**Selected:** {sel_count} ({sel_text})"
 
@@ -122,7 +119,7 @@ class UniversalDashboard:
         if not self.processing_mode:
             inner_components.append({"type": 14, "spacing": 1}) # Separator
             
-            # Row 1: Page Select (Always visible)
+            # Row 1: String Select (Pages)
             options = []
             s_page = max(1, self.page - 12)
             e_page = min(self.max_page, s_page + 24)
@@ -141,21 +138,19 @@ class UniversalDashboard:
                 }]
             })
 
-            # 🟢 Toggle Logic for Selection Mode Sub-Menu
+            # 🟢 Row 2: Sub-Menu Toggle vs Radio Group
             if not self.show_selection_menu:
-                # Row 2: Standard Action Buttons
                 inner_components.append({
                     "type": 1,
                     "components": [
                         {"type": 2, "style": 1, "label": "Select Chapters", "custom_id": f"btn_open_menu_{self.req_id}"},
-                        {"type": 2, "style": 3, "label": "Start", "custom_id": f"btn_start_{self.req_id}", "disabled": sel_count == 0}
+                        {"type": 2, "style": 3, "label": "Start", "custom_id": f"btn_start_{self.req_id}", "disabled": len(self.selected_indices) == 0}
                     ]
                 })
             else:
-                # Row 2: Selection Mode Dropdown (The "Radio Group")
+                # THE MODE SELECTION MENU
                 new_ch = next((ch for ch in self.all_chapters if ch.get('is_new')), None)
-                latest_label = f"[NEW] {new_ch['title']} released." if new_ch else "No New Chapter."
-                can_select_latest = True if new_ch else False
+                latest_desc = f"[NEW] {new_ch.get('notation', 'Ch')} - {new_ch.get('title', '')}" if new_ch else "No New Chapter."
 
                 inner_components.append({
                     "type": 1,
@@ -166,19 +161,12 @@ class UniversalDashboard:
                         "options": [
                             {"label": "SR", "description": "Select all available chapters.", "value": "all", "emoji": {"name": "📚"}},
                             {"label": "Select Chapter", "description": "Add custom range in the box", "value": "custom", "emoji": {"name": "🖊️"}},
-                            {"label": "Latest Chapter", "description": latest_label, "value": "latest", "emoji": {"name": "✨"}, "disabled": not can_select_latest}
+                            {"label": "Latest Chapter", "description": latest_desc, "value": "latest", "emoji": {"name": "✨"}, "disabled": not new_ch}
                         ]
                     }]
                 })
-                # Row 3: Start Button (Still visible in menu mode for convenience)
-                inner_components.append({
-                    "type": 1,
-                    "components": [
-                        {"type": 2, "style": 3, "label": "Start", "custom_id": f"btn_start_{self.req_id}", "disabled": sel_count == 0}
-                    ]
-                })
 
-        # 🟢 THE NEW FOOTER LAYOUT (Text on left, ✖️ pinned to the right)
+        # 🟢 Footer Section with Right-Aligned Accessory (Cancel Button)
         inner_components.append({"type": 14, "spacing": 1}) # Separator before Footer
         
         footer_section = {
@@ -186,13 +174,9 @@ class UniversalDashboard:
             "components": [{"type": 10, "content": footer_text}]
         }
         
-        # Only attach the Cancel button if we are in the selection menu
         if not self.processing_mode:
             footer_section["accessory"] = {
-                "type": 2, 
-                "style": 4, 
-                "emoji": {"name": "✖️"}, 
-                "custom_id": f"btn_cancel_{self.req_id}"
+                "type": 2, "style": 4, "emoji": {"name": "✖️"}, "custom_id": f"btn_cancel_{self.req_id}"
             }
             
         inner_components.append(footer_section)
