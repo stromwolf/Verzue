@@ -160,8 +160,21 @@ class UniversalDashboard:
                 await self.bot.http.request(route, json=payload)
             else:
                 if not self.interaction: return
-                route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{self.interaction.token}/messages/@original')
-                await self.bot.http.request(route, json=payload_data)
+                try:
+                    # Primary Route: Interaction Webhook (Fast, but expires in 15 mins)
+                    route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{self.interaction.token}/messages/@original')
+                    await self.bot.http.request(route, json=payload_data)
+                except discord.HTTPException as e:
+                    # 🟢 Error 50027: Invalid Webhook Token (Triggered after 15 minutes)
+                    if e.code == 50027 and getattr(self.interaction, 'message', None):
+                        # Fallback Route: Standard Channel Message Edit (Never expires!)
+                        route = discord.http.Route(
+                            'PATCH', 
+                            f'/channels/{self.interaction.channel_id}/messages/{self.interaction.message.id}'
+                        )
+                        await self.bot.http.request(route, json=payload_data)
+                    else:
+                        raise e
         except Exception as e:
             logger.error(f"V2 UI Update Failed: {e}", exc_info=True)
 
