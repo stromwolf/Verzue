@@ -162,22 +162,23 @@ class JumptoonApiScraper(BaseScraper):
         # 🟢 FIX: Remove the flawed ID-based sort completely. 
         # By enforcing page order above, the list is already in the exact visual order presented by the website!
         
-        # 4. Extract High-Res Poster directly from Next.js JSON state (Bulletproof Method)
+        # 4. Extract High-Res Poster directly from Next.js JSON state
         image_url = None
         
-        # This regex directly parses the raw text without relying on string replacements.
-        # \\?" handles the Next.js JSON escaping, and [^"]+ safely grabs the URL up to the closing quote.
+        # 🟢 THE ULTIMATE REGEX:
+        # [^a-zA-Z0-9]+ bulldozes through ALL backslashes, quotes, and colons (e.g. `\":\"` or `\\\\\":\\\\\"`)
+        # [^"\\]+ safely grabs the raw URL and stops the instant it hits the closing quote or backslash
         patterns = [
-            r'\\?"seriesThumbnailV2ImageUrl\\?"\s*:\s*\\?"(https?://[^"]+)',
-            r'\\?"seriesHeroImageUrl\\?"\s*:\s*\\?"(https?://[^"]+)',
-            r'\\?"seriesSignboardLargeImageUrl\\?"\s*:\s*\\?"(https?://[^"]+)'
+            r'seriesThumbnailV2ImageUrl[^a-zA-Z0-9]+(https?://[^"\\]+)',
+            r'seriesHeroImageUrl[^a-zA-Z0-9]+(https?://[^"\\]+)',
+            r'seriesSignboardLargeImageUrl[^a-zA-Z0-9]+(https?://[^"\\]+)'
         ]
         
         for pattern in patterns:
             img_match = re.search(pattern, res.text)
             if img_match:
-                # Clean the captured string (remove trailing backslashes, unescape slashes/ampersands)
-                raw_url = img_match.group(1).rstrip('\\').replace('\\/', '/').replace('\\u0026', '&')
+                # Clean up any leftover HTML or Unicode ampersands in the link
+                raw_url = img_match.group(1).replace('&amp;', '&').replace('\\u0026', '&')
                 
                 # Force max resolution for Discord embed
                 if 'width=' in raw_url:
@@ -187,7 +188,7 @@ class JumptoonApiScraper(BaseScraper):
                     image_url = f"{raw_url}{sep}width=3840"
                 break
                 
-        # Absolute fallback to OG Image meta tag
+        # Absolute fallback to OG Image meta tag (This is where the wide banner was coming from)
         if not image_url:
             og_img = soup.find("meta", property="og:image")
             if og_img:
