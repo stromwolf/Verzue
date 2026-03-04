@@ -162,19 +162,36 @@ class JumptoonApiScraper(BaseScraper):
         # 🟢 FIX: Remove the flawed ID-based sort completely. 
         # By enforcing page order above, the list is already in the exact visual order presented by the website!
         
-        image_url = self._fetch_high_res_poster(title) or (soup.find("meta", property="og:image")["content"] if soup.find("meta", property="og:image") else None)
+        # 4. Extract High-Res Poster directly from the series page (Saves 1 HTTP Request!)
+        image_url = None
+        
+        # 🟢 Unescape the JSON payload hiding in the Next.js script tags
+        clean_html = res.text.replace('\\/', '/').replace('\\u0026', '&')
+        
+        # Search the raw state for the primary series asset
+        poster_match = re.search(rf'(https://assets\.jumptoon\.com/series/{series_id}/[a-zA-Z0-9_-]+\.(?:png|jpg|jpeg|webp)[^\s"\'\\]*)', clean_html)
+        
+        if poster_match:
+            raw_url = poster_match.group(1)
+            # Force highest resolution possible by manipulating the URL parameters
+            if 'width=' in raw_url:
+                image_url = re.sub(r'width=\d+', 'width=3840', raw_url)
+            else:
+                sep = '&' if '?' in raw_url else '?'
+                image_url = f"{raw_url}{sep}width=3840"
+        else:
+            # Fallback to OG Image meta tag
+            og_img = soup.find("meta", property="og:image")
+            if og_img:
+                image_url = og_img["content"]
+                if 'width=' in image_url:
+                    image_url = re.sub(r'width=\d+', 'width=3840', image_url)
+                else:
+                    sep = '&' if '?' in image_url else '?'
+                    image_url += f"{sep}width=3840"
 
         return title, len(all_chapters), all_chapters, image_url, series_id
 
-    def _fetch_high_res_poster(self, title):
-        try:
-            res = self.session.get(f"{self.BASE_URL}/search/{quote(title)}/", timeout=10)
-            soup = BeautifulSoup(res.text, 'html.parser')
-            img = soup.select_one("ul#load-searchResultList li img")
-            if img and img.get('srcset'):
-                return img['srcset'].split(',')[-1].strip().split(' ')[0]
-        except: return None
-        
     def scrape_chapter(self, task, output_dir):
         logger.info(f"[Jumptoon] 🕷️  EXTRACTING: {task.title}")
         import requests
