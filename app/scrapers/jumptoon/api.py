@@ -165,30 +165,33 @@ class JumptoonApiScraper(BaseScraper):
         # 4. Extract High-Res Poster directly from Next.js JSON state
         image_url = None
         
-        # 🟢 THE ULTIMATE REGEX:
-        # [^a-zA-Z0-9]+ bulldozes through ALL backslashes, quotes, and colons (e.g. `\":\"` or `\\\\\":\\\\\"`)
-        # [^"\\]+ safely grabs the raw URL and stops the instant it hits the closing quote or backslash
-        patterns = [
-            r'seriesThumbnailV2ImageUrl[^a-zA-Z0-9]+(https?://[^"\\]+)',
-            r'seriesHeroImageUrl[^a-zA-Z0-9]+(https?://[^"\\]+)',
-            r'seriesSignboardLargeImageUrl[^a-zA-Z0-9]+(https?://[^"\\]+)'
-        ]
+        # Normalize Next.js escaping so we can parse it safely
+        clean_text = res.text.replace('\\/', '/').replace('\\"', '"').replace('\\u0026', '&')
         
-        for pattern in patterns:
-            img_match = re.search(pattern, res.text)
-            if img_match:
-                # Clean up any leftover HTML or Unicode ampersands in the link
-                raw_url = img_match.group(1).replace('&amp;', '&').replace('\\u0026', '&')
+        # Look for the exact keys in order of best quality
+        for key in ["seriesThumbnailV2ImageUrl", "seriesHeroImageUrl", "seriesSignboardLargeImageUrl"]:
+            key_idx = clean_text.find(key)
+            if key_idx != -1:
+                # Find the start of the URL right after our key
+                url_start = clean_text.find('https://', key_idx)
                 
-                # Force max resolution for Discord embed
-                if 'width=' in raw_url:
-                    image_url = re.sub(r'width=\d+', 'width=3840', raw_url)
-                else:
-                    sep = '&' if '?' in raw_url else '?'
-                    image_url = f"{raw_url}{sep}width=3840"
-                break
-                
-        # Absolute fallback to OG Image meta tag (This is where the wide banner was coming from)
+                # Make sure the URL actually belongs to this key 
+                # (Prevents grabbing a random URL if this specific key is set to "null")
+                if url_start != -1 and (url_start - key_idx) < 60:
+                    # Find the closing quote of the URL
+                    url_end = clean_text.find('"', url_start)
+                    if url_end != -1:
+                        raw_url = clean_text[url_start:url_end]
+                        
+                        # Force 4K resolution
+                        if 'width=' in raw_url:
+                            image_url = re.sub(r'width=\d+', 'width=3840', raw_url)
+                        else:
+                            sep = '&' if '?' in raw_url else '?'
+                            image_url = f"{raw_url}{sep}width=3840"
+                        break
+                        
+        # Fallback to OG Image meta tag
         if not image_url:
             og_img = soup.find("meta", property="og:image")
             if og_img:
