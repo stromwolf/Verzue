@@ -190,7 +190,8 @@ class UniversalDashboard:
 
     async def update_view(self, interaction: discord.Interaction = None):
         """Pushes raw V2 JSON natively via HTTP"""
-        payload_data = {"flags": 32768, "components": self.build_v2_payload()}
+        # 🟢 Double check there is no 'content' key at the end of this line:
+        payload_data = {"flags": 32768, "components": self.build_v2_payload()} 
         try:
             if interaction:
                 payload = {"type": 7, "data": payload_data} # UPDATE_MESSAGE

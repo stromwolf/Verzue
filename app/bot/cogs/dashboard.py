@@ -242,32 +242,100 @@ class DashboardCog(commands.Cog):
     async def handle_platform_modal(self, interaction, custom_id):
         """Processes the platform URL submission modal."""
         platform = custom_id.replace("v2_modal_", "")
-        url = ""
+        url, action = "", "download"
+        
         for row in interaction.data.get("components", []):
             inner = row.get("component", {})
-            if inner.get("custom_id") == "url_input": url = inner.get("value", "")
+            if inner.get("custom_id") == "action_radio": action = inner.get("value", "download") 
+            elif inner.get("custom_id") == "url_input": url = inner.get("value", "")
+        
+        platform_domains = {"Mecha Comic": "mechacomic.jp", "Jumptoon": "jumptoon.com", "KakaoPage": "kakao.com", "Kuaikan Manhua": "kuaikanmanhua.com", "Piccoma": "piccoma.com", "AC.QQ": "ac.qq.com"}
+        expected_domain = platform_domains.get(platform)
+        
+        if expected_domain and expected_domain not in url.lower():
+            await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json={
+                "type": 4, "data": {"flags": 64, "content": f"⛔ **Protocol Violation**\nExpected `{expected_domain}` link."}
+            })
+            return 
 
-        try:
-            await interaction.response.send_message(f"🔍 **Analyzing {platform} Link:**\n`{url}`\n*Fetching metadata, please wait...*")
-        except discord.NotFound:
-            logger.warning("Interaction expired before Analyze message could send.")
+        if action == "subscribe":
+            await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json={
+                "type": 4, "data": {"flags": 64, "content": "🚧 **Subscription Coming Soon!**"}
+            })
+            return
+
+        # 🟢 THE FIX: Send the Analyzing message as a V2 Component so there is no root "content"
+        # 🟢 THE FIX: Use type 10 (Text) directly inside the Container. No type 9!
+        analyzing_payload = {
+            "type": 4, 
+            "data": {
+                "flags": 32768,
+                "components": [{
+                    "type": 17,
+                    "components": [{
+                        "type": 10, # <--- CHANGED FROM 9 TO 10
+                        "content": f"🔍 **Analyzing {platform} Link:**\n`{url}`\n*Fetching metadata, please wait...*"
+                    }]
+                }]
+            }
+        }
         
         try:
-            req_id = str(uuid.uuid4())[:8].upper()
-            is_smartoon = "mecha" in platform.lower()
-            scraper = self.bot.task_queue.scraper_registry.get_scraper(url, is_smartoon=is_smartoon)
-            data = await asyncio.to_thread(scraper.get_series_info, url)
-            
-            from app.bot.common.view import UniversalDashboard
-            ctx_data = {'url': url, 'title': data[0], 'chapters': data[2], 'image_url': data[3], 'series_id': data[4], 'req_id': req_id, 'user': interaction.user}
-            view = UniversalDashboard(self.bot, ctx_data, platform.lower().replace(" ", ""))
-            
-            # Send the dashboard container
-            payload = {"flags": 32768, "components": view.build_v2_payload()}
-            route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
-            await self.bot.http.request(route, json=payload)
+            route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
+            await self.bot.http.request(route, json=analyzing_payload)
         except Exception as e:
-            logger.error(f"Metadata Fetch Error: {e}")
+            logger.error(f"Interaction expired: {e}")
+            return
+
+        try:
+            from app.core.logger import req_id_context
+            from app.bot.common.view import UniversalDashboard
+            req_id = str(uuid.uuid4())[:8].upper()
+            token = req_id_context.set(req_id)
+            
+            scraper = self.bot.task_queue.scraper_registry.get_scraper(url, is_smartoon=("mecha" in platform.lower()))
+            data = await asyncio.to_thread(scraper.get_series_info, url)
+            title, total_chapters, chapter_list, image_url, series_id = data
+            
+            ctx_data = {'url': url, 'title': title, 'chapters': chapter_list, 'image_url': image_url, 'series_id': series_id, 'req_id': req_id, 'user': interaction.user}
+            service_type = platform.lower().replace(" ", "").replace(".jp", "").replace("comic", "")
+            
+            view = UniversalDashboard(self.bot, ctx_data, service_type)
+            view.interaction = interaction
+            
+            # 🟢 NO "content": "" here!
+            payload_data = {"flags": 32768, "components": view.build_v2_payload()}
+            
+            route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+            await self.bot.http.request(route, json=payload_data)
+            
+            if service_type == "mecha":
+                asyncio.create_task(asyncio.to_thread(self.bot.task_queue.scraper_registry.browser.warmup))
+                
+        except Exception as e:
+            logger.error(f"Failed to fetch metadata: {e}", exc_info=True)
+            err = str(e).splitlines()[0] if str(e) else "Unknown Error"
+            
+            # Match V2 format for errors so Discord doesn't crash on the PATCH
+            # 🟢 Match V2 format for errors so Discord doesn't crash on the PATCH
+            error_payload = {
+                "flags": 32768,
+                "components": [{
+                    "type": 17,
+                    "components": [{
+                        "type": 10, # <--- CHANGED FROM 9 TO 10
+                        "content": f"❌ **Extraction Failed:**\n`{err}`"
+                    }]
+                }]
+            }
+            try:
+                route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+                await self.bot.http.request(route, json=error_payload)
+            except:
+                pass
+        finally:
+            try: req_id_context.reset(token)
+            except: pass
 
 async def setup(bot):
     await bot.add_cog(DashboardCog(bot))
