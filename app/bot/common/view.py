@@ -31,7 +31,7 @@ class UniversalDashboard:
         UniversalDashboard.active_views[self.req_id] = self
 
     def build_v2_payload(self):
-        """Constructs the pure Discord V2 Container Layout"""
+        """Constructs the pure Discord V2 Container Layout with Sub-Menu Logic"""
         sel_count = len(self.selected_indices)
         if sel_count == 0:
             sel_text = "None"
@@ -49,138 +49,138 @@ class UniversalDashboard:
             sel_text = ", ".join(ranges)
             if len(sel_text) > 35: sel_text = sel_text[:32] + "..."
 
-        header_text = f"## {self.title}\n**Total Pages:** {self.max_page} | **Total Chapters:** {len(self.all_chapters)}"
+        # 1. HEADER SECTION
+        header_text = f"## {self.title}\n**Total Chapters:** {len(self.all_chapters)} | **Service:** {self.service_type.upper()}"
         
+        # 2. CONTENT DESCRIPTION (Processing Mode or Chapter List)
         desc = ""
         if self.processing_mode:
+            # --- Status Tracking UI ---
             if self.phases["analyze"] == "done": desc += f"{ICONS['tick']} Analyzed.\n"
             else:
                 icon = ICONS["load"] if self.phases["analyze"] == "loading" else ICONS["wait"]
-                stat = f"Analyzing... ({self.sub_status})" if self.sub_status else "Analyzing..."
-                desc += f"{icon} {stat}\n"
+                desc += f"{icon} Analyzing... {f'({self.sub_status})' if self.sub_status else ''}\n"
             
             if self.phases["analyze"] == "done":
                 if self.phases["purchase"] == "done": desc += f"{ICONS['tick']} Purchased.\n"
                 else:
                     icon = ICONS["load"] if self.phases["purchase"] == "loading" else ICONS["wait"]
-                    count_str = f" [{getattr(self, 'purchase_count', 0)}]" if getattr(self, 'purchase_count', 0) > 0 else ""
-                    desc += f"{icon} Auto-Purchasing{count_str}...\n"
-                    unlocker = self.bot.task_queue.scraper_registry.unlocker
-                    active_info = [f"-> `Ch.{stats['task'].id:02d}`: {stats.get('progress', 0)}% | {stats['task'].purchase_status}" for stats in unlocker.worker_stats.values() if stats.get("view") == self and stats.get("task")]
-                    if active_info: desc += "\n".join(active_info) + "\n"
+                    desc += f"{icon} Auto-Purchasing...\n"
             
             if self.phases["purchase"] == "done":
                 if self.phases["download"] == "loading":
                     desc += f"{ICONS['load']} Processing [{len(self.active_tasks)}] chapters...\n"
-                    comp = sum(1 for t in self.active_tasks if t.status == TaskStatus.COMPLETED)
-                    if comp: desc += f"-> **{comp}** chapters completed.\n"
-                    for t in self.active_tasks:
-                        if t.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
-                            desc += f"-> `Ch.{t.id:02d}`: {ICONS['load']} {t.status.value}...\n"
-                            break
                 elif self.phases["download"] == "done":
                     desc += f"{ICONS['tick']} Download Completed."
 
             if self.final_link: desc += f"\n\n📂 **Destination:** [Open Google Drive]({self.final_link})"
             desc += f"\n\n**Selected:** {sel_count} ({sel_text})"
         else:
+            # --- Interactive Chapter List ---
             desc += "### **Chapter List**\n"
-            start_idx = (self.page - 1) * self.per_page
-            display_chapters = self.all_chapters[start_idx : start_idx + self.per_page]
+            start = (self.page - 1) * self.per_page
+            display_slice = self.all_chapters[start : start + self.per_page]
             
-            for i, ch in enumerate(display_chapters):
-                real_idx = start_idx + i
+            for i, ch in enumerate(display_slice):
+                idx = start + i
+                # Check for the NEW badge from scraper metadata
                 new_tag = "✨ " if ch.get('is_new') else ""
-                sel = "✅" if real_idx in self.selected_indices else "⬛"
-                # Handle different key names for notation/title if they vary by scraper
-                notation = ch.get('notation', f"{real_idx+1:02d}")
-                title_val = ch.get('title', 'Ch')
-                clean_t = title_val.replace(' ', ' - ', 1)[:35]
+                lock_icon = "🔒" if ch.get('is_locked') else "🔓"
+                tick = "✅" if idx in self.selected_indices else "⬛"
                 
-                desc += f"**{new_tag}{sel} {'🔒' if ch.get('is_locked') else '🔓'} `{notation}`** | {clean_t}\n"
+                # Format: 01 | ✨ ✅ 🔓 第1話 - Title
+                raw_t = ch.get('title', 'Ch').replace(' ', ' - ', 1)[:30]
+                desc += f"`{idx+1:02d}` | {new_tag}{tick} {lock_icon} **{raw_t}**\n"
             
             desc += f"\n**Selected:** {sel_count} ({sel_text})"
 
-        footer_text = f"-# R-ID: {self.req_id} | S-ID: {self.series_id}"
-
-        # 1. Base Container using V2 Layout Items
+        # 3. COMPONENT ASSEMBLY
         inner_components = []
         
-        # Header Section (Poster on Right)
-        section = {"type": 9, "components": [{"type": 10, "content": header_text}]}
+        # Header Section (With Vertical Poster Accessory)
+        # Note: Accessory field is ONLY added if image_url exists to prevent 400 errors.
+        header_section = {
+            "type": 9, # SECTION
+            "components": [{"type": 10, "content": header_text}]
+        }
         if self.image_url:
-            section["accessory"] = {"type": 11, "media": {"url": self.image_url}}
-        inner_components.append(section)
+            header_section["accessory"] = {
+                "type": 11, # MEDIA
+                "media": {"url": self.image_url}
+            }
+        inner_components.append(header_section)
         
         inner_components.append({"type": 14, "spacing": 1}) # Separator
-        inner_components.append({"type": 10, "content": desc}) # Content
+        inner_components.append({"type": 10, "content": desc}) # Main Body Text
         
-        # Interactive Elements
+        # 4. INTERACTIVE ELEMENTS (Selection Mode & Navigation)
         if not self.processing_mode:
             inner_components.append({"type": 14, "spacing": 1}) # Separator
             
-            # Row 1: String Select (Pages)
-            options = []
-            s_page = max(1, self.page - 12)
-            e_page = min(self.max_page, s_page + 24)
-            for p in range(s_page, e_page + 1):
-                opt = {"label": f"Page {p}", "value": str(p), "emoji": {"name": "📄"}}
-                if p == self.page:
-                    opt["description"] = "(Current Page)"
-                    opt["emoji"] = {"name": "🐜"}
-                    opt["default"] = True
-                options.append(opt)
-            
-            inner_components.append({
-                "type": 1, 
-                "components": [{
-                    "type": 3, "custom_id": f"page_select_{self.req_id}", "options": options
-                }]
-            })
-
-            # 🟢 Row 2: Sub-Menu Toggle vs Radio Group
-            if not self.show_selection_menu:
-                inner_components.append({
-                    "type": 1,
-                    "components": [
-                        {"type": 2, "style": 1, "label": "Select Chapters", "custom_id": f"btn_open_menu_{self.req_id}"},
-                        {"type": 2, "style": 3, "label": "Start", "custom_id": f"btn_start_{self.req_id}", "disabled": len(self.selected_indices) == 0}
-                    ]
-                })
-            else:
-                # THE MODE SELECTION MENU
+            # --- ROW 1: SELECTION MENU (THE RADIO GROUP) ---
+            # This only appears if show_selection_menu is toggled on
+            if getattr(self, "show_selection_menu", False):
+                # Look for the latest "UP" chapter in metadata
                 new_ch = next((ch for ch in self.all_chapters if ch.get('is_new')), None)
-                latest_desc = f"[NEW] {new_ch.get('notation', 'Ch')} - {new_ch.get('title', '')}" if new_ch else "No New Chapter."
+                latest_label = f"[NEW] {new_ch['title']} released." if new_ch else "No New Chapter."
 
                 inner_components.append({
-                    "type": 1,
+                    "type": 1, # ACTION ROW
                     "components": [{
-                        "type": 3,
+                        "type": 3, # STRING SELECT
                         "custom_id": f"mode_select_{self.req_id}",
                         "placeholder": "Choose Selection Mode",
                         "options": [
                             {"label": "SR", "description": "Select all available chapters.", "value": "all", "emoji": {"name": "📚"}},
                             {"label": "Select Chapter", "description": "Add custom range in the box", "value": "custom", "emoji": {"name": "🖊️"}},
-                            {"label": "Latest Chapter", "description": latest_desc, "value": "latest", "emoji": {"name": "✨"}, "disabled": not new_ch}
+                            {"label": "Latest Chapter", "description": latest_label, "value": "latest", "emoji": {"name": "✨"}, "disabled": not new_ch}
                         ]
                     }]
                 })
+            else:
+                # Default State: Show the "Select Chapters" button to open the menu
+                inner_components.append({
+                    "type": 1,
+                    "components": [
+                        {"type": 2, "style": 1, "label": "Select Chapters", "custom_id": f"btn_open_menu_{self.req_id}"},
+                        {"type": 2, "style": 3, "label": "Start Extraction", "custom_id": f"btn_start_{self.req_id}", "disabled": sel_count == 0}
+                    ]
+                })
 
-        # 🟢 Footer Section with Right-Aligned Accessory (Cancel Button)
-        inner_components.append({"type": 14, "spacing": 1}) # Separator before Footer
+            # --- ROW 2: PAGE NAVIGATION ---
+            p_options = []
+            s_p = max(1, self.page - 12)
+            e_p = min(self.max_page, s_p + 24)
+            for p in range(s_p, e_p + 1):
+                opt = {"label": f"Page {p}", "value": str(p), "emoji": {"name": "📄"}}
+                if p == self.page:
+                    opt["description"] = "(Current Page)"
+                    opt["default"] = True
+                p_options.append(opt)
+            
+            inner_components.append({
+                "type": 1, 
+                "components": [{
+                    "type": 3, "custom_id": f"page_select_{self.req_id}", "options": p_options
+                }]
+            })
+
+        # 5. FOOTER SECTION
+        inner_components.append({"type": 14, "spacing": 1})
+        footer_text = f"-# R-ID: {self.req_id} | S-ID: {self.series_id}"
         
         footer_section = {
             "type": 9,
             "components": [{"type": 10, "content": footer_text}]
         }
-        
+        # Add Cancel button as an accessory pinned to the right
         if not self.processing_mode:
             footer_section["accessory"] = {
                 "type": 2, "style": 4, "emoji": {"name": "✖️"}, "custom_id": f"btn_cancel_{self.req_id}"
             }
-            
         inner_components.append(footer_section)
 
+        # Final V2 Container Wrapper
         return [{
             "type": 17, # CONTAINER
             "accent_color": self.color if self.phases.get("download") != "done" else 0x2ecc71,

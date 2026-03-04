@@ -79,21 +79,18 @@ class JumptoonApiScraper(BaseScraper):
         if not match: raise ScraperError("Invalid Jumptoon URL.")
         series_id = match.group(1)
         
-        # 🟢 Metadata Fetch
         res = self.session.get(f"{self.BASE_URL}/series/{series_id}/episodes/?page=1", timeout=15)
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # 🟢 FIX: High-Res Vertical Poster
+        # 🟢 CORRECT POSTER: Use the specific vertical V2 key from JSON
         image_url = None
-        # We unescape the Next.js JSON to find the V2 vertical poster path
         clean_json = res.text.replace('\\/', '/').replace('\\"', '"')
         img_match = re.search(r'seriesThumbnailV2ImageUrl":"(https?://[^"]+)"', clean_json)
         if img_match:
             image_url = img_match.group(1).split('?')[0] + "?auto=avif-webp&width=3840"
 
-        # 🟢 FIX: Chapter Extraction with "UP" Badge detection
+        # 🟢 CHAPTERS: Extract with "UP" Badge detection
         all_chapters = []
-        # Target the episode data directly in the JSON state for accuracy
         episodes_data = re.findall(
             r'\\?"id\\?":\\?"(\d+)\\?",\\?"number\\?":\\?"(\d+)\\?",\\?"notation\\?":\\?"([^"]+)\\?",\\?"title\\?":\\?"([^"]+)\\?".*?\\?"isNew\\?":\s*(true|false)', 
             res.text
@@ -101,9 +98,8 @@ class JumptoonApiScraper(BaseScraper):
         
         for ep_id, num, notation, title, is_new_str in episodes_data:
             is_new = is_new_str.lower() == "true"
-            # Logic to check if chapter is locked
+            # Lock detection logic
             is_locked = f'\\"id\\":\\"{ep_id}\\",\\"isPurchased\\":false' in res.text
-            
             all_chapters.append({
                 'id': ep_id,
                 'title': title.replace("UP", "").strip(),
