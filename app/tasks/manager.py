@@ -108,7 +108,7 @@ class TaskQueue:
         
         # 🟢 TELEMETRY-BASED CONFIGURATION
         RAM_PER_WORKER_MB = 200     # Based on the ~181MB spike per chapter
-        OS_SAFETY_BUFFER_MB = 1024  # Always keep 1GB free so Windows/Discord doesn't crash
+        OS_SAFETY_BUFFER_MB = 700   # 🟢 UPDATED: Keep 700MB free for the OS and Discord
         ABSOLUTE_MAX_WORKERS = 15   # CPU bottleneck ceiling (prevents CPU thrashing)
         
         # 1. Spawn Initial Minimum Workers
