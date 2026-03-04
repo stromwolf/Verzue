@@ -163,10 +163,6 @@ class JumptoonApiScraper(BaseScraper):
         # By enforcing page order above, the list is already in the exact visual order presented by the website!
         
         # --- 🔍 POSTER DEBUGGER START ---
-        import os
-        import requests
-        import re
-        
         image_url = None
         
         logger.info(f"🔍 DEBUG: Scanning HTML for images...")
@@ -218,7 +214,6 @@ class JumptoonApiScraper(BaseScraper):
 
     def scrape_chapter(self, task, output_dir):
         logger.info(f"[Jumptoon] 🕷️  EXTRACTING: {task.title}")
-        import requests
         from requests.adapters import HTTPAdapter
         from urllib3.util.retry import Retry
         
