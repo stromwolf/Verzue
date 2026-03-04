@@ -174,24 +174,53 @@ class JumptoonApiScraper(BaseScraper):
         return title, len(all_chapters), all_chapters, image_url, series_id
 
     def _fetch_poster_via_search(self, title, series_id):
-        """Helper to find the specific vertical poster on the search result page."""
+        """Fetches the vertical poster by hitting the internal Jumptoon Search API."""
+        try:
+            # 🟢 1. Hit the Internal API instead of the HTML page
+            # This returns clean JSON and bypasses Next.js rendering issues
+            encoded_title = quote(title)
+            api_url = f"https://jumptoon.com/api/search?q={encoded_title}"
+            
+            headers = {
+                "Referer": f"https://jumptoon.com/search/{encoded_title}/",
+                "X-Requested-With": "XMLHttpRequest",
+                "Accept": "application/json"
+            }
+            
+            res = self.session.get(api_url, headers=headers, timeout=10)
+            data = res.json()
+            
+            # 🟢 2. Locate our specific series in the results
+            series_list = data.get("seriesList", [])
+            target_series = next((s for s in series_list if s.get("id") == series_id), None)
+            
+            if target_series:
+                # 🟢 3. Grab the V2 Thumbnail (Vertical)
+                raw_url = target_series.get("seriesThumbnailV2ImageUrl")
+                
+                # If V2 is missing, try the standard Thumbnail
+                if not raw_url:
+                    raw_url = target_series.get("seriesThumbnailImageUrl")
+                
+                if raw_url:
+                    # Clean URL and force 4K resolution
+                    clean_url = raw_url.split("?")[0]
+                    return f"{clean_url}?auto=avif-webp&width=3840"
+                    
+        except Exception as e:
+            logger.error(f"⚠️ API search poster fetch failed for {series_id}: {e}")
+            
+        # 🟢 4. FINAL FALLBACK: Scrape the raw HTML if the API is down
         try:
             search_url = f"https://jumptoon.com/search/{quote(title)}/"
             res = self.session.get(search_url, timeout=10)
-            search_soup = BeautifulSoup(res.text, 'html.parser')
+            # Use a more aggressive regex to find the URL in the raw text if BS4 fails
+            img_match = re.search(rf'https://assets\.jumptoon\.com/series/{series_id}/[^"\'\s\\]+\.(?:png|jpg|webp)', res.text)
+            if img_match:
+                return f"{img_match.group(0)}?auto=avif-webp&width=3840"
+        except:
+            pass
             
-            # Look for the link that matches our series ID
-            result_link = search_soup.find("a", href=re.compile(rf'/series/{series_id}'))
-            if result_link:
-                img = result_link.find("img")
-                if img:
-                    # Grab the highest resolution from srcset or src
-                    raw_url = img.get("srcset", img.get("src", "")).split(",")[-1].strip().split(" ")[0]
-                    # Clean the URL and force 4K width
-                    clean_url = raw_url.split("?")[0]
-                    return f"{clean_url}?auto=avif-webp&width=3840"
-        except Exception as e:
-            logger.error(f"⚠️ Search poster fetch failed: {e}")
         return None
 
     def scrape_chapter(self, task, output_dir):
