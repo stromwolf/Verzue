@@ -162,55 +162,37 @@ class JumptoonApiScraper(BaseScraper):
         # 🟢 FIX: Remove the flawed ID-based sort completely. 
         # By enforcing page order above, the list is already in the exact visual order presented by the website!
         
-        # --- 🔍 POSTER DEBUGGER START ---
-        image_url = None
-        
-        logger.info(f"🔍 DEBUG: Scanning HTML for images...")
-        clean_text = res.text.replace('\\/', '/').replace('\\"', '"').replace('\\u0026', '&')
-        all_urls = re.findall(rf'(https://assets\.jumptoon\.com/series/{series_id}/[^"\s\\]+)', clean_text)
-        unique_urls = list(set(all_urls))
-        
-        logger.info(f"🔍 DEBUG: Found {len(unique_urls)} unique images. Downloading locally...")
-        
-        os.makedirs("debug_posters", exist_ok=True)
-        
-        # 🟢 ANTI-BLOCK HEADERS: Spoof a real browser so Jumptoon doesn't block the download
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://jumptoon.com/"
-        }
-        
-        for i, url in enumerate(unique_urls):
-            url = url.rstrip("}").rstrip("]")
-            
-            # Force max resolution
-            if 'width=' in url:
-                test_url = re.sub(r'width=\d+', 'width=3840', url)
-            else:
-                sep = '&' if '?' in url else '?'
-                test_url = f"{url}{sep}width=3840"
-                
-            try:
-                img_res = requests.get(test_url, headers=headers, timeout=10)
-                if img_res.status_code == 200:
-                    file_id = test_url.split('/')[-1].split('?')[0]
-                    file_path = f"debug_posters/{i}_{file_id}.png"
-                    
-                    with open(file_path, "wb") as f:
-                        f.write(img_res.content)
-                    logger.info(f"   ✅ Saved Image {i}: {file_id}.png")
-                else:
-                    logger.warning(f"   ❌ Blocked (HTTP {img_res.status_code}): {file_id}")
-            except Exception as e:
-                logger.error(f"   ⚠️ Error on Image {i}: {e}")
-                
-        logger.info("🏁 DEBUG: Finished downloading! Check the 'debug_posters' folder.")
-        
-        # Temporary fallback to keep bot running
-        image_url = unique_urls[0] if unique_urls else None
-        # --- 🔍 POSTER DEBUGGER END ---
+        # 4. Fetch High-Res Poster from Search (The Reliable Way)
+        image_url = self._fetch_poster_via_search(title, series_id)
+
+        # If Search fails, absolute fallback to OG Image
+        if not image_url:
+            og_img = soup.find("meta", property="og:image")
+            if og_img:
+                image_url = og_img["content"]
 
         return title, len(all_chapters), all_chapters, image_url, series_id
+
+    def _fetch_poster_via_search(self, title, series_id):
+        """Helper to find the specific vertical poster on the search result page."""
+        try:
+            search_url = f"https://jumptoon.com/search/{quote(title)}/"
+            res = self.session.get(search_url, timeout=10)
+            search_soup = BeautifulSoup(res.text, 'html.parser')
+            
+            # Look for the link that matches our series ID
+            result_link = search_soup.find("a", href=re.compile(rf'/series/{series_id}'))
+            if result_link:
+                img = result_link.find("img")
+                if img:
+                    # Grab the highest resolution from srcset or src
+                    raw_url = img.get("srcset", img.get("src", "")).split(",")[-1].strip().split(" ")[0]
+                    # Clean the URL and force 4K width
+                    clean_url = raw_url.split("?")[0]
+                    return f"{clean_url}?auto=avif-webp&width=3840"
+        except Exception as e:
+            logger.error(f"⚠️ Search poster fetch failed: {e}")
+        return None
 
     def scrape_chapter(self, task, output_dir):
         logger.info(f"[Jumptoon] 🕷️  EXTRACTING: {task.title}")
