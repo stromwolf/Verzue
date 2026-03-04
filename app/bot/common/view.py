@@ -107,7 +107,17 @@ class UniversalDashboard:
         inner_components.append({"type": 14, "spacing": 1}) # Separator
         inner_components.append({"type": 10, "content": desc}) # Content
         inner_components.append({"type": 14, "spacing": 1}) # Separator
-        inner_components.append({"type": 10, "content": footer_text}) # Footer
+        
+        # 🟢 Footer Section with Right-Aligned Accessory (Cancel Button)
+        footer_section = {
+            "type": 9,
+            "components": [{"type": 10, "content": footer_text}]
+        }
+        if not self.processing_mode:
+            footer_section["accessory"] = {
+                "type": 2, "style": 4, "emoji": {"name": "✖️"}, "custom_id": f"btn_cancel_{self.req_id}"
+            }
+        inner_components.append(footer_section)
         
         # Interactive Elements
         if not self.processing_mode:
@@ -132,15 +142,12 @@ class UniversalDashboard:
                 }]
             })
 
-            # 🟢 Row 2: Action Buttons (Combined)
+            # 🟢 Row 2: Main Action Buttons (Left Aligned)
             inner_components.append({
                 "type": 1,
                 "components": [
                     {"type": 2, "style": 1, "label": "Select Chapters", "custom_id": f"btn_select_{self.req_id}"},
-                    {"type": 2, "style": 3, "label": "Start", "custom_id": f"btn_start_{self.req_id}", "disabled": len(self.selected_indices) == 0},
-                    
-                    # The Close Button (Style 4 makes it Red!)
-                    {"type": 2, "style": 4, "emoji": {"name": "✖️"}, "custom_id": f"btn_cancel_{self.req_id}"}
+                    {"type": 2, "style": 3, "label": "Start", "custom_id": f"btn_start_{self.req_id}", "disabled": len(self.selected_indices) == 0}
                 ]
             })
 
