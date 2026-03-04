@@ -163,36 +163,46 @@ class JumptoonApiScraper(BaseScraper):
         # By enforcing page order above, the list is already in the exact visual order presented by the website!
         
         # --- 🔍 POSTER DEBUGGER START ---
+        import os
+        import requests
         image_url = None
         
-        # 1. Clean the raw HTML to make URLs readable
+        # Clean HTML and find all Jumptoon asset links
         clean_text = res.text.replace('\\/', '/').replace('\\"', '"').replace('\\u0026', '&')
-        
-        # 2. Brute-force find EVERY Jumptoon asset link for this specific series
-        # This regex looks for: https://assets.jumptoon.com/series/{series_id}/(anything until a quote or space)
         all_urls = re.findall(rf'(https://assets\.jumptoon\.com/series/{series_id}/[^"\s\\]+)', clean_text)
-        
-        # 3. Deduplicate the list so we don't spam the console
         unique_urls = list(set(all_urls))
         
-        # 4. Print them all to the terminal!
-        logger.info(f"==================================================")
-        logger.info(f"🔍 DEBUG: Found {len(unique_urls)} unique image links for {series_id}")
+        logger.info(f"🔍 DEBUG: Found {len(unique_urls)} images. Downloading locally...")
+        
+        # Create a folder to hold the test images
+        os.makedirs("debug_posters", exist_ok=True)
+        
         for i, url in enumerate(unique_urls):
-            # Clean up trailing artifacts just in case
             url = url.rstrip("}").rstrip("]")
             
-            # Force high-res for testing
+            # Force max resolution
             if 'width=' in url:
                 test_url = re.sub(r'width=\d+', 'width=3840', url)
             else:
                 sep = '&' if '?' in url else '?'
                 test_url = f"{url}{sep}width=3840"
                 
-            logger.info(f"🖼️ [Image {i}] -> {test_url}")
-        logger.info(f"==================================================")
+            try:
+                # Download and save the image locally
+                img_res = requests.get(test_url, timeout=10)
+                if img_res.status_code == 200:
+                    # Extract the unique image ID for the filename
+                    file_id = test_url.split('/')[-1].split('?')[0]
+                    file_path = f"debug_posters/{i}_{file_id}.png"
+                    
+                    with open(file_path, "wb") as f:
+                        f.write(img_res.content)
+            except Exception as e:
+                pass
+                
+        logger.info("✅ DEBUG: All images saved to the 'debug_posters' folder!")
         
-        # Temporary fallback just so the bot doesn't crash while we test
+        # Temporary fallback to keep bot running
         image_url = unique_urls[0] if unique_urls else None
         # --- 🔍 POSTER DEBUGGER END ---
 
