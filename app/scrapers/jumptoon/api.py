@@ -176,41 +176,43 @@ class JumptoonApiScraper(BaseScraper):
     def _fetch_poster_via_search(self, title: str, series_id: str):
         """Helper to find the specific vertical poster on the HTML search result page."""
         try:
-            # 1. Properly encode the search query
             encoded_title = quote(title)
             search_url = f"https://jumptoon.com/search/{encoded_title}/"
             
-            # 2. Use the browser-like session to fetch the page
             res = self.session.get(search_url, timeout=15)
             if res.status_code != 200:
-                logger.warning(f"[Jumptoon] Search page returned status {res.status_code}")
                 return None
                 
-            search_soup = BeautifulSoup(res.text, 'html.parser')
+            soup = BeautifulSoup(res.text, 'html.parser')
             
-            # 3. Find the specific result link that matches our series_id
-            # We look for an <a> tag that contains /series/YOUR_ID in the href
-            result_link = search_soup.find("a", href=re.compile(rf'/series/{series_id}'))
-            
-            if not result_link:
-                # Fallback: Search the raw text if BS4 failed to find the tag (Next.js rendering quirk)
+            # 🟢 1. Locate the specific <li> or link containing our series_id
+            # Use a more reliable search: Find the link to the series, then find its parent container
+            target_link = soup.find("a", href=re.compile(rf'/series/{series_id}/?'))
+            if not target_link:
+                # Fallback to regex if Next.js didn't render the tags fully in the raw HTML
                 img_match = re.search(rf'https://assets\.jumptoon\.com/series/{series_id}/[^"\'\s\\]+', res.text)
                 if img_match:
-                    raw_url = img_match.group(0).replace('\\/', '/')
+                    raw_url = img_match.group(0).replace('\\/', '/').replace('&amp;', '&')
                     return f"{raw_url.split('?')[0]}?auto=avif-webp&width=3840"
                 return None
 
-            # 4. Extract the image from the link
-            img = result_link.find("img")
-            if img:
-                # Prefer srcset for higher resolution, fallback to src
-                raw_url = img.get("srcset", img.get("src", "")).split(",")[-1].strip().split(" ")[0]
-                
-                # Clean up URL (remove width params and fix escaping)
-                clean_url = raw_url.split("?")[0].replace("&amp;", "&")
-                
-                # Force maximum resolution for Discord
-                return f"{clean_url}?auto=avif-webp&width=3840"
+            # Find the parent list item or div container to narrow down the search
+            container = target_link.find_parent("li") or target_link.find_parent("div", class_="_15q9yjo0")
+            
+            # 🟢 2. Extract the image from this specific container
+            if container:
+                img = container.find("img")
+                if img:
+                    # Prefer the 'src' which already has the full overlay and width params
+                    raw_url = img.get("src", "")
+                    
+                    if not raw_url and img.get("srcset"):
+                        raw_url = img.get("srcset").split(",")[-1].strip().split(" ")[0]
+                    
+                    if raw_url:
+                        # Clean HTML escaping and force max resolution
+                        clean_url = raw_url.replace("&amp;", "&").split("?")[0]
+                        return f"{clean_url}?auto=avif-webp&width=3840"
 
         except Exception as e:
             logger.error(f"⚠️ Search poster fetch failed for {series_id}: {e}")
