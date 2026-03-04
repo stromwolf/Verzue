@@ -56,19 +56,31 @@ async def main():
     
     try:
         await bot.start_bot()
-    except KeyboardInterrupt:
-        logger.info("👋 Keyboard Interrupt.")
+    except asyncio.CancelledError:
+        # This catches the Ctrl+C interrupt gracefully
+        logger.info("👋 Shutdown signal received.")
     except Exception as e:
         logger.critical(f"💀 Crash: {e}", exc_info=True)
     finally:
-        logger.info("🛑 Shutting down...")
-        # The new BrowserService is ephemeral and doesn't need to be stopped.
-        # This call is left in case of future changes but it does nothing now.
-        # browser.stop() 
+        logger.info("🛑 Disconnecting from Discord...")
+        await bot.close() # 🟢 CRITICAL: This gracefully closes the websocket and aiohttp sessions!
+        
+        logger.info("🧹 Cleaning up background tasks...")
+        current_task = asyncio.current_task()
         for task in asyncio.all_tasks():
-            task.cancel()
+            if task is not current_task:
+                task.cancel()
+                
+        # 🟢 Clean up the PID file so the next startup is clean
+        from pathlib import Path
+        try:
+            Path("bot.pid").unlink(missing_ok=True)
+        except Exception:
+            pass
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        pass
+        # Windows terminal catches Ctrl+C here
+        print("\n✅ System fully shut down.")
