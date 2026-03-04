@@ -90,6 +90,8 @@ class UniversalDashboard:
             for i, ch in enumerate(self.all_chapters[start:start+self.per_page]):
                 idx = start + i
                 raw_t = ch.get('title','Ch')
+                # 🟢 Format title with notation if available
+                notation = ch.get('notation', '')
                 clean_t = raw_t.replace(' ', ' - ', 1)[:35]
                 
                 # 🟢 Restore "NEW" (UP) badge display and ✅ selection icon
@@ -97,7 +99,7 @@ class UniversalDashboard:
                 sel_icon = "✅" if idx in self.selected_indices else "⬛"
                 lock_icon = "🔒" if ch.get('is_locked') else "🔓"
                 
-                line = f"{sel_icon} {lock_icon} {new_tag}`{idx+1:02d}` | {clean_t}"
+                line = f"{sel_icon} {lock_icon} {new_tag}`{idx+1:02d}` | {notation} {clean_t}"
                 desc += f"**{line}**\n" if idx in self.selected_indices else f"{line}\n"
             
             desc += f"\n**Selected:** {sel_count} ({sel_text})"
