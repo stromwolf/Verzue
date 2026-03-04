@@ -270,21 +270,40 @@ class DashboardCog(commands.Cog):
                     if cid == "method_radio": method = inner.get("value")
                     elif cid == "range_input": range_val = inner.get("value", "")
 
+                total_chapters = len(view.all_chapters)
+                clean_range = range_val.replace(" ", "")
+
+                # 🟢 NEW: Conflict Validation Rule
+                if method == "sr" and clean_range and clean_range != f"1-{total_chapters}":
+                    error_payload = {
+                        "type": 4, # MESSAGE_WITH_SOURCE
+                        "data": {
+                            "flags": 64, # EPHEMERAL (Invisible)
+                            "content": f"⚠️ **Selection Conflict:** You checked **SR** (Select All) but entered a custom range (`{range_val}`).\n\nPlease either check **Select** to use your custom range, or change the range back to `1-{total_chapters}`."
+                        }
+                    }
+                    try:
+                        route = discord.http.Route('POST', '/interactions/{interaction_id}/{interaction_token}/callback', interaction_id=interaction.id, interaction_token=interaction.token)
+                        await self.bot.http.request(route, json=error_payload)
+                    except: pass
+                    return # Stop processing so the dashboard doesn't update incorrectly
+                
+                # Proceed with updating the selection
                 view.selected_indices.clear()
                 
                 if method == "sr":
-                    view.selected_indices.update(range(len(view.all_chapters)))
+                    view.selected_indices.update(range(total_chapters))
                 elif range_val.strip():
                     # Parse custom range
                     try:
-                        parts = range_val.replace(" ", "").split(",")
+                        parts = clean_range.split(",")
                         for p in parts:
                             if "-" in p:
                                 s, e = map(int, p.split("-"))
-                                view.selected_indices.update(k-1 for k in range(s, e+1) if 1 <= k <= len(view.all_chapters))
+                                view.selected_indices.update(k-1 for k in range(s, e+1) if 1 <= k <= total_chapters)
                             elif p.isdigit():
                                 k = int(p)
-                                if 1 <= k <= len(view.all_chapters): view.selected_indices.add(k-1)
+                                if 1 <= k <= total_chapters: view.selected_indices.add(k-1)
                     except Exception as e:
                         pass # Ignore malformed text input
                             
