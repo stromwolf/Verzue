@@ -16,5 +16,11 @@
         "@modelcontextprotocol/server-puppeteer"
       ]
     }
+  },
+  "general": {
+    "plan": {
+      "modelRouting": false,
+      "directory": ""
+    }
   }
 }

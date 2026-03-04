@@ -426,13 +426,22 @@ class MechaApiScraper(BaseScraper):
                     time.sleep(2) # 失敗した場合は2秒待機して再試行
 
         # 🟢 3. PACED IMAGE DOWNLOADER (Native Requests)
+        total_pages = len(img_tasks)
+        completed = 0
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             future_to_task = {executor.submit(download_and_decrypt, t): t for t in img_tasks}
             for future in concurrent.futures.as_completed(future_to_task):
                 current_task = future_to_task[future]
                 try:
-                    # Execute and ignore dimensions (we don't need math.json anymore)
+                    # Execute and ignore dimensions
                     future.result()
+                    completed += 1
+                    
+                    # Log every 10 pages so it doesn't spam your console, plus the final page
+                    if completed % 10 == 0 or completed == total_pages:
+                        logger.info(f"   [API] 📥 Downloaded {completed}/{total_pages} pages...")
+                        
                 except Exception as e:
                     logger.error(f"[API] Sync Download failed for page {current_task.get('filename')}: {e}")
 

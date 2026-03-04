@@ -94,20 +94,23 @@ class TaskWorker:
     async def _ensure_drive_folder(self, task: ChapterTask):
         """Runs concurrently in a thread to create Drive folders without blocking."""
         def sync_create():
-            # Assume GDRIVE_ROOT_FOLDER_ID is in your Settings. Adjust if named differently.
-            root_id = getattr(Settings, "GDRIVE_ROOT_FOLDER_ID", "root")
+            # 1. Check/Create the "[Uploading]" folder in MAIN
+            folder_name = task.folder_name
+            temp_name = f"[Uploading] {folder_name}"
             
-            # 1. Check/Create Series Folder
-            series_id = self.uploader.find_folder(task.series_title, root_id)
-            if not series_id:
-                series_id = self.uploader.create_folder(task.series_title, root_id)
-                
-            # 2. Check/Create Chapter Folder
-            chapter_id = self.uploader.find_folder(task.title, series_id)
+            # Use main_folder_id provided by controller (e.g., the 'MAIN' folder ID)
+            parent_id = task.main_folder_id or getattr(Settings, "GDRIVE_ROOT_FOLDER_ID", "root")
+            
+            # Check if it exists
+            chapter_id = self.uploader.find_folder(temp_name, parent_id)
             if not chapter_id:
-                chapter_id = self.uploader.create_folder(task.title, series_id)
+                chapter_id = self.uploader.create_folder(temp_name, parent_id)
+            
+            # 2. Create the shortcut in the client folder if specified
+            if task.client_folder_id:
+                self.uploader.create_shortcut(chapter_id, task.client_folder_id, folder_name)
                 
-            logger.info(f"☁️ [Parallel Track] Folder '{task.title}' is ready! ID: {chapter_id}")
+            logger.info(f"☁️ [Parallel Track] Folder '{folder_name}' is ready! ID: {chapter_id}")
             return chapter_id
             
         return await asyncio.to_thread(sync_create)

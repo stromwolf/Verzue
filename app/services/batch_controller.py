@@ -23,66 +23,58 @@ class BatchController:
         if not self.uploader:
             return self._create_local_tasks(selected_indices, all_chapters, title, url, scan_group, interaction, series_id, req_id)
 
-        # 1. SETUP DRIVE (Top-Level)
+        # 1. SETUP DRIVE (Top-Level Only)
+        # We only create the Series, MAIN, and Client folders. Individual chapters are offloaded to workers.
         drive_series_id = await asyncio.to_thread(self.uploader.create_folder, title, Settings.GDRIVE_ROOT_ID)
         main_id = await asyncio.to_thread(self.uploader.create_folder, "MAIN", drive_series_id)
-        
-        # 🟢 SPEED FIX 1: Make MAIN public once. All chapter folders inside will inherit it instantly!
-        await asyncio.to_thread(self.uploader.make_public, main_id)
-        
         client_folder_name = f"{scan_group}_{title}"
         client_id = await asyncio.to_thread(self.uploader.create_folder, client_folder_name, drive_series_id)
+        
+        # Ensure they are public (inherited by children)
+        await asyncio.to_thread(self.uploader.make_public, main_id)
         await asyncio.to_thread(self.uploader.make_public, client_id)
 
+        # Quick check of what already exists to avoid redundant task queueing
         main_manifest = await asyncio.to_thread(self.uploader.list_all_items, main_id)
         client_manifest = await asyncio.to_thread(self.uploader.list_all_items, client_id)
 
         tasks_to_queue = []
         chapters_to_unlock = []
 
-        # 🟢 SPEED FIX 2: Async worker for concurrent execution
-        async def setup_chapter(idx):
+        for idx in selected_indices:
             ch_data = all_chapters[idx]
             task = self._make_task(idx, ch_data, title, url, scan_group, interaction, series_id, req_id)
             folder_name = task.folder_name
             
-            target_id = None
-            is_queued = False
+            # Pass top-level IDs so the worker knows where to put things
+            task.main_folder_id = main_id
+            task.client_folder_id = client_id
+            task.series_title_id = drive_series_id
+            task.final_folder_name = folder_name
+            
             is_locked = ch_data.get('is_locked', "jumptoon.com" in url)
             
+            # Check if this chapter is already finished
             main_existing_id = main_manifest.get(folder_name)
             if main_existing_id:
-                target_id = main_existing_id
+                # If it's in MAIN but not the client folder, create the shortcut now (fast)
                 if folder_name not in client_manifest:
                     await asyncio.to_thread(self.uploader.create_shortcut, main_existing_id, client_id, folder_name)
-            else:
-                temp_name = f"[Uploading] {folder_name}"
-                pre_id = main_manifest.get(temp_name) or await asyncio.to_thread(self.uploader.create_folder, temp_name, main_id)
-                
-                # We NO LONGER call make_public here. (Saves 1 slow API call per chapter)
-                
-                if folder_name not in client_manifest:
-                    await asyncio.to_thread(self.uploader.create_shortcut, pre_id, client_id, folder_name)
-                
-                task.pre_created_folder_id = pre_id
+                # Skip queueing if it already exists in MAIN
+                continue
+            
+            # Check if it's currently being uploaded by another worker
+            temp_name = f"[Uploading] {folder_name}"
+            if temp_name in main_manifest:
+                # Task is already active or failed halfway, we can re-queue it
+                task.pre_created_folder_id = main_manifest[temp_name]
                 task.final_folder_name = folder_name
-                target_id = pre_id
-                is_queued = True
-                
-            return task, target_id, is_queued, is_locked
+            
+            tasks_to_queue.append(task)
+            if is_locked:
+                chapters_to_unlock.append(task)
 
-        # 🟢 Execute all 10+ chapter setups simultaneously
-        results = await asyncio.gather(*(setup_chapter(idx) for idx in selected_indices))
-        
-        target_id_for_link = None
-        for task, target_id, is_queued, is_locked in results:
-            target_id_for_link = target_id
-            if is_queued:
-                tasks_to_queue.append(task)
-                if is_locked:
-                    chapters_to_unlock.append(task)
-
-        # 3. PHASE 3 UNLOCK
+        # 2. PHASE 3 UNLOCK
         if chapters_to_unlock:
             if view_ref: 
                 view_ref.purchase_count = len(chapters_to_unlock)
@@ -98,10 +90,11 @@ class BatchController:
         else:
             if view_ref: view_ref.phases["purchase"] = "done"
 
-        # 4. FINAL LINK
-        link_target = target_id_for_link if len(selected_indices) == 1 else client_id
+        # 3. FINAL LINK
+        # For batches, we link to the Client folder. For single, we'd ideally link to the chapter, 
+        # but since we haven't created it yet, we link to the Client folder as a reliable fallback.
         if view_ref:
-            view_ref.final_link = await asyncio.to_thread(self.uploader.get_share_link, link_target)
+            view_ref.final_link = await asyncio.to_thread(self.uploader.get_share_link, client_id)
             view_ref.phases["analyze"] = "done"
             view_ref.trigger_refresh()
 
