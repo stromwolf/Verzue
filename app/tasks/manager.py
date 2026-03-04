@@ -166,17 +166,26 @@ class TaskQueue:
                 try:
                     await EventBus.emit("task_started", {"req_id": task.req_id, "title": task.title})
                     
-                    # 🟢 TELEMETRY START: Snapshot memory before the task
-                    process = psutil.Process(os.getpid())
-                    mem_before = process.memory_info().rss / (1024 * 1024)
+                    # 🟢 TELEMETRY START: Get main process + all child processes (Stitchers)
+                    def get_tree_mem():
+                        try:
+                            p = psutil.Process(os.getpid())
+                            mem = p.memory_info().rss
+                            for child in p.children(recursive=True):
+                                mem += child.memory_info().rss
+                            return mem / (1024 * 1024)
+                        except Exception:
+                            return 0
+                            
+                    mem_before = get_tree_mem()
                     
                     await self.worker.process_task(task)
                     
-                    # 🟢 TELEMETRY END: Snapshot memory after the task
-                    mem_after = process.memory_info().rss / (1024 * 1024)
-                    ram_used = max(0, mem_after - mem_before) # Prevent negative if GC runs
+                    # 🟢 TELEMETRY END
+                    mem_after = get_tree_mem()
+                    ram_used = max(0, mem_after - mem_before)
                     
-                    logger.info(f"📊 [Telemetry] Worker {worker_id} used ~{ram_used:.2f} MB for '{task.title}'")
+                    logger.info(f"📊 [Telemetry] Worker {worker_id} (Main + Stitcher) spiked by ~{ram_used:.2f} MB for '{task.title}'")
                     
                     await EventBus.emit("task_completed", {"req_id": task.req_id, "title": task.title})
                     
