@@ -162,49 +162,56 @@ class JumptoonApiScraper(BaseScraper):
         # 🟢 FIX: Remove the flawed ID-based sort completely. 
         # By enforcing page order above, the list is already in the exact visual order presented by the website!
         
-        # --- 🔍 POSTER DEBUGGER START ---
-        import os
-        import requests
+        # 4. Extract High-Res Poster directly from Next.js JSON state
         image_url = None
         
-        # Clean HTML and find all Jumptoon asset links
-        clean_text = res.text.replace('\\/', '/').replace('\\"', '"').replace('\\u0026', '&')
-        all_urls = re.findall(rf'(https://assets\.jumptoon\.com/series/{series_id}/[^"\s\\]+)', clean_text)
-        unique_urls = list(set(all_urls))
-        
-        logger.info(f"🔍 DEBUG: Found {len(unique_urls)} images. Downloading locally...")
-        
-        # Create a folder to hold the test images
-        os.makedirs("debug_posters", exist_ok=True)
-        
-        for i, url in enumerate(unique_urls):
-            url = url.rstrip("}").rstrip("]")
+        try:
+            # Step 1: Remove Next.js forward-slash escaping (https:\/\/ -> https://)
+            # This was the root cause of all previous regex failures!
+            clean_text = res.text.replace('\\/', '/')
             
-            # Force max resolution
-            if 'width=' in url:
-                test_url = re.sub(r'width=\d+', 'width=3840', url)
-            else:
-                sep = '&' if '?' in url else '?'
-                test_url = f"{url}{sep}width=3840"
+            # Step 2: Look for the exact vertical poster key
+            if 'seriesThumbnailV2ImageUrl' in clean_text:
+                # Step 3: Isolate the string immediately after the key
+                chunk = clean_text.split('seriesThumbnailV2ImageUrl')[1][:300]
                 
-            try:
-                # Download and save the image locally
-                img_res = requests.get(test_url, timeout=10)
-                if img_res.status_code == 200:
-                    # Extract the unique image ID for the filename
-                    file_id = test_url.split('/')[-1].split('?')[0]
-                    file_path = f"debug_posters/{i}_{file_id}.png"
+                # Step 4: Find where the http link starts
+                start_idx = chunk.find('http')
+                if start_idx != -1:
+                    # Step 5: Find where the link ends (either a quote or a backslash from Next.js escaping)
+                    end_quote = chunk.find('"', start_idx)
+                    end_slash = chunk.find('\\', start_idx)
                     
-                    with open(file_path, "wb") as f:
-                        f.write(img_res.content)
-            except Exception as e:
-                pass
-                
-        logger.info("✅ DEBUG: All images saved to the 'debug_posters' folder!")
-        
-        # Temporary fallback to keep bot running
-        image_url = unique_urls[0] if unique_urls else None
-        # --- 🔍 POSTER DEBUGGER END ---
+                    if end_quote != -1 and end_slash != -1:
+                        end_idx = min(end_quote, end_slash)
+                    else:
+                        end_idx = max(end_quote, end_slash)
+                        
+                    if end_idx != -1:
+                        raw_url = chunk[start_idx:end_idx]
+                        
+                        # Clean any leftover HTML entities
+                        raw_url = raw_url.replace('&amp;', '&').replace('\\u0026', '&')
+                        
+                        # Force 4K resolution for the Discord embed
+                        if 'width=' in raw_url:
+                            image_url = re.sub(r'width=\d+', 'width=3840', raw_url)
+                        else:
+                            sep = '&' if '?' in raw_url else '?'
+                            image_url = f"{raw_url}{sep}width=3840"
+        except Exception:
+            pass
+
+        # Fallback to OG Image meta tag just in case the series truly has no vertical poster
+        if not image_url:
+            og_img = soup.find("meta", property="og:image")
+            if og_img:
+                image_url = og_img["content"]
+                if 'width=' in image_url:
+                    image_url = re.sub(r'width=\d+', 'width=3840', image_url)
+                else:
+                    sep = '&' if '?' in image_url else '?'
+                    image_url += f"{sep}width=3840"
 
         return title, len(all_chapters), all_chapters, image_url, series_id
 
