@@ -162,7 +162,21 @@ class DashboardCog(commands.Cog):
                 elif custom_id.startswith("btn_cancel_"):
                     if view.service_type == "mecha": view.bot.task_queue.scraper_registry.browser.dec_session()
                     UniversalDashboard.active_views.pop(req_id, None)
-                    payload = {"type": 7, "data": {"content": "❌ **Dashboard Closed**", "components": [], "flags": 0}}
+                    
+                    # 🟢 FIX: Must keep the 32768 flag and use a Text Display component (Type 10) instead of standard content!
+                    payload = {
+                        "type": 7, 
+                        "data": {
+                            "flags": 32768, 
+                            "components": [
+                                {
+                                    "type": 10, 
+                                    "content": "❌ **Dashboard Closed**"
+                                }
+                            ]
+                        }
+                    }
+                    
                     route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
                     await self.bot.http.request(route, json=payload)
 
