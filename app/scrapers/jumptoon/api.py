@@ -162,26 +162,29 @@ class JumptoonApiScraper(BaseScraper):
         # 🟢 FIX: Remove the flawed ID-based sort completely. 
         # By enforcing page order above, the list is already in the exact visual order presented by the website!
         
-        # 4. Extract High-Res Poster directly from the series page (Saves 1 HTTP Request!)
+        # 4. Extract High-Res Poster directly from Next.js JSON state (Fastest Method)
         image_url = None
         
-        # Method A: Find the exact poster image tag via BeautifulSoup using the series_id
-        poster_img = soup.find("img", src=re.compile(rf'assets\.jumptoon\.com/series/{series_id}/'))
+        # Unescape the Next.js JSON payload (\", \/, \u0026 -> ", /, &)
+        clean_html = res.text.replace('\\"', '"').replace('\\/', '/').replace('\\u0026', '&')
         
-        if poster_img:
-            raw_url = poster_img.get("src", "")
-            # Fix HTML escaping (&amp; -> &)
-            raw_url = raw_url.replace("&amp;", "&")
-            
-            # Force max resolution
+        # Priority 1: ThumbnailV2, Priority 2: HeroImage, Priority 3: SignboardLarge
+        img_match = re.search(r'"seriesThumbnailV2ImageUrl":"(https://assets\.jumptoon\.com/series/[^"]+)"', clean_html)
+        if not img_match:
+            img_match = re.search(r'"seriesHeroImageUrl":"(https://assets\.jumptoon\.com/series/[^"]+)"', clean_html)
+        if not img_match:
+            img_match = re.search(r'"seriesSignboardLargeImageUrl":"(https://assets\.jumptoon\.com/series/[^"]+)"', clean_html)
+
+        if img_match:
+            raw_url = img_match.group(1)
+            # Force max resolution (width=3840) for Discord
             if 'width=' in raw_url:
                 image_url = re.sub(r'width=\d+', 'width=3840', raw_url)
             else:
                 sep = '&' if '?' in raw_url else '?'
                 image_url = f"{raw_url}{sep}width=3840"
-                
-        # Method B: Fallback to standard OG Image meta tag
-        if not image_url:
+        else:
+            # Absolute fallback to OG Image meta tag
             og_img = soup.find("meta", property="og:image")
             if og_img:
                 image_url = og_img["content"]
