@@ -132,18 +132,15 @@ class UniversalDashboard:
                 }]
             })
 
-            # 🟢 Row 2: Action Buttons (With Invisible Spacer to push ✖️ to the right)
+            # 🟢 Row 2: Action Buttons (Combined)
             inner_components.append({
                 "type": 1,
                 "components": [
                     {"type": 2, "style": 1, "label": "Select Chapters", "custom_id": f"btn_select_{self.req_id}"},
                     {"type": 2, "style": 3, "label": "Start", "custom_id": f"btn_start_{self.req_id}", "disabled": len(self.selected_indices) == 0},
                     
-                    # The Spacer Hack: Uses U+3164 Invisible Characters to push the next button right
-                    {"type": 2, "style": 2, "label": "ㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤ", "custom_id": f"spacer_{self.req_id}", "disabled": True},
-                    
-                    # The Close Button on the far right
-                    {"type": 2, "style": 2, "emoji": {"name": "✖️"}, "custom_id": f"btn_cancel_{self.req_id}"}
+                    # The Close Button (Style 4 makes it Red!)
+                    {"type": 2, "style": 4, "emoji": {"name": "✖️"}, "custom_id": f"btn_cancel_{self.req_id}"}
                 ]
             })
 
