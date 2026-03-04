@@ -162,29 +162,33 @@ class JumptoonApiScraper(BaseScraper):
         # 🟢 FIX: Remove the flawed ID-based sort completely. 
         # By enforcing page order above, the list is already in the exact visual order presented by the website!
         
-        # 4. Extract High-Res Poster directly from Next.js JSON state (Fastest Method)
+        # 4. Extract High-Res Poster directly from Next.js JSON state (Bulletproof Method)
         image_url = None
         
-        # Unescape the Next.js JSON payload (\", \/, \u0026 -> ", /, &)
-        clean_html = res.text.replace('\\"', '"').replace('\\/', '/').replace('\\u0026', '&')
+        # This regex directly parses the raw text without relying on string replacements.
+        # \\?" handles the Next.js JSON escaping, and [^"]+ safely grabs the URL up to the closing quote.
+        patterns = [
+            r'\\?"seriesThumbnailV2ImageUrl\\?"\s*:\s*\\?"(https?://[^"]+)',
+            r'\\?"seriesHeroImageUrl\\?"\s*:\s*\\?"(https?://[^"]+)',
+            r'\\?"seriesSignboardLargeImageUrl\\?"\s*:\s*\\?"(https?://[^"]+)'
+        ]
         
-        # Priority 1: ThumbnailV2, Priority 2: HeroImage, Priority 3: SignboardLarge
-        img_match = re.search(r'"seriesThumbnailV2ImageUrl":"(https://assets\.jumptoon\.com/series/[^"]+)"', clean_html)
-        if not img_match:
-            img_match = re.search(r'"seriesHeroImageUrl":"(https://assets\.jumptoon\.com/series/[^"]+)"', clean_html)
-        if not img_match:
-            img_match = re.search(r'"seriesSignboardLargeImageUrl":"(https://assets\.jumptoon\.com/series/[^"]+)"', clean_html)
-
-        if img_match:
-            raw_url = img_match.group(1)
-            # Force max resolution (width=3840) for Discord
-            if 'width=' in raw_url:
-                image_url = re.sub(r'width=\d+', 'width=3840', raw_url)
-            else:
-                sep = '&' if '?' in raw_url else '?'
-                image_url = f"{raw_url}{sep}width=3840"
-        else:
-            # Absolute fallback to OG Image meta tag
+        for pattern in patterns:
+            img_match = re.search(pattern, res.text)
+            if img_match:
+                # Clean the captured string (remove trailing backslashes, unescape slashes/ampersands)
+                raw_url = img_match.group(1).rstrip('\\').replace('\\/', '/').replace('\\u0026', '&')
+                
+                # Force max resolution for Discord embed
+                if 'width=' in raw_url:
+                    image_url = re.sub(r'width=\d+', 'width=3840', raw_url)
+                else:
+                    sep = '&' if '?' in raw_url else '?'
+                    image_url = f"{raw_url}{sep}width=3840"
+                break
+                
+        # Absolute fallback to OG Image meta tag
+        if not image_url:
             og_img = soup.find("meta", property="og:image")
             if og_img:
                 image_url = og_img["content"]
