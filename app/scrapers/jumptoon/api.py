@@ -162,45 +162,39 @@ class JumptoonApiScraper(BaseScraper):
         # 🟢 FIX: Remove the flawed ID-based sort completely. 
         # By enforcing page order above, the list is already in the exact visual order presented by the website!
         
-        # 4. Extract High-Res Poster directly from Next.js JSON state
+        # --- 🔍 POSTER DEBUGGER START ---
         image_url = None
         
-        # Normalize Next.js escaping so we can parse it safely
+        # 1. Clean the raw HTML to make URLs readable
         clean_text = res.text.replace('\\/', '/').replace('\\"', '"').replace('\\u0026', '&')
         
-        # Look for the exact keys in order of best quality
-        for key in ["seriesThumbnailV2ImageUrl", "seriesHeroImageUrl", "seriesSignboardLargeImageUrl"]:
-            key_idx = clean_text.find(key)
-            if key_idx != -1:
-                # Find the start of the URL right after our key
-                url_start = clean_text.find('https://', key_idx)
+        # 2. Brute-force find EVERY Jumptoon asset link for this specific series
+        # This regex looks for: https://assets.jumptoon.com/series/{series_id}/(anything until a quote or space)
+        all_urls = re.findall(rf'(https://assets\.jumptoon\.com/series/{series_id}/[^"\s\\]+)', clean_text)
+        
+        # 3. Deduplicate the list so we don't spam the console
+        unique_urls = list(set(all_urls))
+        
+        # 4. Print them all to the terminal!
+        logger.info(f"==================================================")
+        logger.info(f"🔍 DEBUG: Found {len(unique_urls)} unique image links for {series_id}")
+        for i, url in enumerate(unique_urls):
+            # Clean up trailing artifacts just in case
+            url = url.rstrip("}").rstrip("]")
+            
+            # Force high-res for testing
+            if 'width=' in url:
+                test_url = re.sub(r'width=\d+', 'width=3840', url)
+            else:
+                sep = '&' if '?' in url else '?'
+                test_url = f"{url}{sep}width=3840"
                 
-                # Make sure the URL actually belongs to this key 
-                # (Prevents grabbing a random URL if this specific key is set to "null")
-                if url_start != -1 and (url_start - key_idx) < 60:
-                    # Find the closing quote of the URL
-                    url_end = clean_text.find('"', url_start)
-                    if url_end != -1:
-                        raw_url = clean_text[url_start:url_end]
-                        
-                        # Force 4K resolution
-                        if 'width=' in raw_url:
-                            image_url = re.sub(r'width=\d+', 'width=3840', raw_url)
-                        else:
-                            sep = '&' if '?' in raw_url else '?'
-                            image_url = f"{raw_url}{sep}width=3840"
-                        break
-                        
-        # Fallback to OG Image meta tag
-        if not image_url:
-            og_img = soup.find("meta", property="og:image")
-            if og_img:
-                image_url = og_img["content"]
-                if 'width=' in image_url:
-                    image_url = re.sub(r'width=\d+', 'width=3840', image_url)
-                else:
-                    sep = '&' if '?' in image_url else '?'
-                    image_url += f"{sep}width=3840"
+            logger.info(f"🖼️ [Image {i}] -> {test_url}")
+        logger.info(f"==================================================")
+        
+        # Temporary fallback just so the bot doesn't crash while we test
+        image_url = unique_urls[0] if unique_urls else None
+        # --- 🔍 POSTER DEBUGGER END ---
 
         return title, len(all_chapters), all_chapters, image_url, series_id
 
