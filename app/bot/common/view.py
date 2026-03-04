@@ -132,20 +132,14 @@ class UniversalDashboard:
                 }]
             })
 
-            # 🟢 Row 2: Select Chapters Button
+            # 🟢 Row 2: Action Buttons (Combined)
             inner_components.append({
                 "type": 1,
                 "components": [
-                    {"type": 2, "style": 1, "label": "Select Chapters", "custom_id": f"btn_select_{self.req_id}"}
-                ]
-            })
-
-            # 🟢 Row 3: Start and Cancel Buttons (Moved Down)
-            inner_components.append({
-                "type": 1,
-                "components": [
+                    {"type": 2, "style": 1, "label": "Select Chapters", "custom_id": f"btn_select_{self.req_id}"},
                     {"type": 2, "style": 3, "label": "Start", "custom_id": f"btn_start_{self.req_id}", "disabled": len(self.selected_indices) == 0},
-                    {"type": 2, "style": 4, "label": "Cancel", "custom_id": f"btn_cancel_{self.req_id}"}
+                    # ✖️ Native Discord X icon (Style 2 is gray/secondary for that window-close feel)
+                    {"type": 2, "style": 2, "emoji": {"name": "✖️"}, "custom_id": f"btn_cancel_{self.req_id}"}
                 ]
             })
 
