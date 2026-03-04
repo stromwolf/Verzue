@@ -31,8 +31,19 @@ class DashboardCog(commands.Cog):
                         "type": 17, # CONTAINER
                         "components": [
                             {
-                                "type": 10, # TEXT DISPLAY
-                                "content": f"# Dashboard of {scan_name}"
+                                "type": 9, # 🟢 SECTION COMPONENT
+                                "components": [
+                                    {
+                                        "type": 10, # TEXT DISPLAY
+                                        "content": f"# Dashboard of {scan_name}"
+                                    }
+                                ],
+                                "accessory": { # 🟢 PINS TO THE FAR RIGHT
+                                    "type": 2, 
+                                    "style": 4, 
+                                    "emoji": {"name": "✖️"}, 
+                                    "custom_id": "btn_close_main_dash"
+                                }
                             },
                             {
                                 "type": 14, # SEPARATOR
@@ -140,6 +151,19 @@ class DashboardCog(commands.Cog):
                     logger.warning("[Dashboard] Modal launch timed out.")
                 except discord.HTTPException as e:
                     if e.code != 40060: logger.error(f"Modal launch error: {e}")
+
+            # 🟢 NEW: Handle Main Dashboard Close Button
+            elif custom_id == "btn_close_main_dash":
+                # 1. Acknowledge silently
+                payload = {"type": 6}
+                route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
+                await self.bot.http.request(route, json=payload)
+                
+                # 2. Delete message
+                try:
+                    await interaction.message.delete()
+                except Exception:
+                    pass
 
             # 5. Handle Universal Dashboard V2 Native Interactions
             elif any(custom_id.startswith(prefix) for prefix in ["btn_select_", "btn_start_", "btn_cancel_", "page_select_", "modal_select_"]):
