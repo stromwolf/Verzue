@@ -165,22 +165,23 @@ class JumptoonApiScraper(BaseScraper):
         # 4. Extract High-Res Poster directly from the series page (Saves 1 HTTP Request!)
         image_url = None
         
-        # 🟢 Unescape the JSON payload hiding in the Next.js script tags
-        clean_html = res.text.replace('\\/', '/').replace('\\u0026', '&')
+        # Method A: Find the exact poster image tag via BeautifulSoup using the series_id
+        poster_img = soup.find("img", src=re.compile(rf'assets\.jumptoon\.com/series/{series_id}/'))
         
-        # Search the raw state for the primary series asset
-        poster_match = re.search(rf'(https://assets\.jumptoon\.com/series/{series_id}/[a-zA-Z0-9_-]+\.(?:png|jpg|jpeg|webp)[^\s"\'\\]*)', clean_html)
-        
-        if poster_match:
-            raw_url = poster_match.group(1)
-            # Force highest resolution possible by manipulating the URL parameters
+        if poster_img:
+            raw_url = poster_img.get("src", "")
+            # Fix HTML escaping (&amp; -> &)
+            raw_url = raw_url.replace("&amp;", "&")
+            
+            # Force max resolution
             if 'width=' in raw_url:
                 image_url = re.sub(r'width=\d+', 'width=3840', raw_url)
             else:
                 sep = '&' if '?' in raw_url else '?'
                 image_url = f"{raw_url}{sep}width=3840"
-        else:
-            # Fallback to OG Image meta tag
+                
+        # Method B: Fallback to standard OG Image meta tag
+        if not image_url:
             og_img = soup.find("meta", property="og:image")
             if og_img:
                 image_url = og_img["content"]
