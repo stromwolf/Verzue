@@ -83,6 +83,8 @@ class DashboardCog(commands.Cog):
                 interaction_token=interaction.token
             )
             await self.bot.http.request(route, json=payload)
+        except discord.NotFound:
+            pass # 🟢 Silently ignore "Unknown Interaction" on double-clicks
         except Exception as e:
             logger.error(f"Failed to send V2 Dashboard: {e}")
 
@@ -125,7 +127,10 @@ class DashboardCog(commands.Cog):
                         ]
                     }
                 }
-                await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=modal_payload)
+                try:
+                    await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=modal_payload)
+                except discord.NotFound:
+                    logger.warning("Modal launch timed out.")
 
             # --- Universal Dashboard Navigation & Actions ---
             elif any(custom_id.startswith(p) for p in ["btn_open_menu_", "mode_select_", "page_select_", "btn_start_", "btn_cancel_"]):
@@ -242,7 +247,10 @@ class DashboardCog(commands.Cog):
             inner = row.get("component", {})
             if inner.get("custom_id") == "url_input": url = inner.get("value", "")
 
-        await interaction.response.send_message(f"🔍 **Analyzing {platform} Link:**\n`{url}`\n*Fetching metadata, please wait...*")
+        try:
+            await interaction.response.send_message(f"🔍 **Analyzing {platform} Link:**\n`{url}`\n*Fetching metadata, please wait...*")
+        except discord.NotFound:
+            logger.warning("Interaction expired before Analyze message could send.")
         
         try:
             req_id = str(uuid.uuid4())[:8].upper()
