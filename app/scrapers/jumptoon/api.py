@@ -103,6 +103,13 @@ class JumptoonApiScraper(BaseScraper):
         if og_title:
             title = re.sub(r'\s*([-|]|–)\s*(全話一覧|ジャンプTOON|Jumptoon).*', '', og_title["content"]).strip()
 
+        # 🟢 FIX: High-Res Vertical Poster extraction from Next.js JSON state
+        image_url = None
+        clean_json = res.text.replace('\\/', '/').replace('\\"', '"')
+        img_match = re.search(r'seriesThumbnailV2ImageUrl":"(https?://[^"]+)"', clean_json)
+        if img_match:
+            image_url = img_match.group(1).split('?')[0] + "?auto=avif-webp&width=3840"
+
         # 2. Max Page (30 items per page)
         max_page = 1
         page_text = soup.get_text()
@@ -117,11 +124,15 @@ class JumptoonApiScraper(BaseScraper):
             try:
                 p_res = self.session.get(f"{base_series_url}?page={p_num}", timeout=15)
                 p_soup = BeautifulSoup(p_res.text, 'html.parser')
-                # Find only real episode links, skip generic 'Read' buttons
-                links = p_soup.find_all('a', href=re.compile(r'/episodes/\d+'))
+                
+                # Find episode containers
+                ep_blocks = p_soup.find_all('li', class_=re.compile(r'_1p60izvxk|_1pbij870'))
                 
                 results = []
-                for link in links:
+                for block in ep_blocks:
+                    link = block.find('a', href=re.compile(r'/episodes/\d+'))
+                    if not link: continue
+                    
                     href = link['href']
                     cid = href.strip('/').split('/')[-1]
                     if not cid.isdigit(): continue
@@ -129,43 +140,34 @@ class JumptoonApiScraper(BaseScraper):
                     raw_text = link.get_text(" ", strip=True)
                     if "はじめから" in raw_text or "最新話" in raw_text: continue
                     
-                    # 🟢 SMART LOCK DETECTION (Jumptoon V4)
-                    # We check the 'link' AND its parent container for status indicators.
-                    container = link.find_parent(['li', 'div']) or link
-                    container_text = container.get_text(" ", strip=True)
+                    # 🟢 DETECTION: "UP" Badge (Latest Chapter)
+                    container_text = block.get_text(" ", strip=True)
+                    is_new = block.find('b', string="UP") is not None or "_1lh9u4ig" in block.decode()
                     
-                    # 'alt="無料"' is the icon for completely free chapters
-                    is_free_icon = container.find('img', alt=re.compile(r'無料|free')) is not None
-                    # '初回無料' (Initial Free) requires a visit/click
+                    # Lock Detection
+                    is_free_icon = block.find('img', alt=re.compile(r'無料|free')) is not None
                     needs_click = "初回" in container_text and "無料" in container_text
-                    
                     is_locked = needs_click or not is_free_icon
 
                     results.append({
                         'id': cid,
-                        'title': raw_text.replace("無料", "").replace("初回", "").strip(),
+                        'title': raw_text.replace("無料", "").replace("初回", "").replace("UP", "").strip(),
                         'url': urljoin(self.BASE_URL, href),
-                        'is_locked': is_locked
+                        'is_locked': is_locked,
+                        'is_new': is_new
                     })
                 return results
             except: return []
 
-        # 🟢 FIX: Use map() to enforce strict chronological page order
+        # Use map() to enforce strict chronological page order
         with ThreadPoolExecutor(max_workers=5) as exe:
-            # exe.map guarantees the results are returned in the exact order of the input (Page 1, then Page 2, etc.)
             for page_results in exe.map(fetch_page, range(1, max_page + 1)):
                 for item in page_results:
                     if item['id'] not in seen_ids:
                         seen_ids.add(item['id'])
                         all_chapters.append(item)
 
-        # 🟢 FIX: Remove the flawed ID-based sort completely. 
-        # By enforcing page order above, the list is already in the exact visual order presented by the website!
-        
-        # 4. Fetch High-Res Poster from Search (The Reliable Way)
-        image_url = self._fetch_poster_via_search(title, series_id)
-
-        # If Search fails, absolute fallback to OG Image
+        # Fallback to OG Image if JSON mining fails
         if not image_url:
             og_img = soup.find("meta", property="og:image")
             if og_img:

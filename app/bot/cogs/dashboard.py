@@ -166,7 +166,7 @@ class DashboardCog(commands.Cog):
                     pass
 
             # 5. Handle Universal Dashboard V2 Native Interactions
-            elif any(custom_id.startswith(prefix) for prefix in ["btn_select_", "btn_start_", "btn_cancel_", "page_select_", "modal_select_"]):
+            elif any(custom_id.startswith(prefix) for prefix in ["btn_select_", "btn_start_", "btn_cancel_", "page_select_", "modal_select_", "btn_open_menu_", "mode_select_"]):
                 req_id = custom_id.split("_")[-1]
                 
                 from app.bot.common.view import UniversalDashboard
@@ -181,6 +181,85 @@ class DashboardCog(commands.Cog):
                     val = interaction.data.get("values", ["1"])[0]
                     view.page = int(val)
                     await view.update_view(interaction)
+
+                # 🟢 NEW: Toggle the Selection Mode Menu
+                elif custom_id.startswith("btn_open_menu_"):
+                    view.show_selection_menu = True
+                    await view.update_view(interaction)
+
+                # 🟢 Handle Selection Mode (Radio Group / Dropdown)
+                elif custom_id.startswith("mode_select_"):
+                    choice = interaction.data.get("values", [None])[0]
+                    view.show_selection_menu = False # Close menu after picking
+                    
+                    if choice == "all":
+                        view.selected_indices = set(range(len(view.all_chapters)))
+                        await view.update_view(interaction)
+                    
+                    elif choice == "latest":
+                        # Find the index of the chapter with is_new=True
+                        new_idx = next((i for i, ch in enumerate(view.all_chapters) if ch.get('is_new')), None)
+                        if new_idx is not None:
+                            view.selected_indices = {new_idx}
+                            await view.update_view(interaction)
+                        else:
+                            await interaction.response.send_message("❌ No new chapter detected.", ephemeral=True)
+                    
+                    elif choice == "custom":
+                        # Launch Selection Modal
+                        sel_count = len(view.selected_indices)
+                        total_chapters = len(view.all_chapters)
+                        current_range = ""
+                        def_radio = "select"
+                        if sel_count == total_chapters and total_chapters > 0:
+                            current_range = f"1-{total_chapters}"
+                            def_radio = "sr"
+                        elif sel_count > 0:
+                            idxs = sorted(list(view.selected_indices))
+                            ranges, s, p = [], idxs[0], idxs[0]
+                            for i in idxs[1:]:
+                                if i == p + 1: p = i
+                                else:
+                                    ranges.append(f"{s+1}-{p+1}" if s != p else f"{s+1}")
+                                    s = p = i
+                            ranges.append(f"{s+1}-{p+1}" if s != p else f"{s+1}")
+                            current_range = ", ".join(ranges)
+                        
+                        modal_payload = {
+                            "type": 9,
+                            "data": {
+                                "custom_id": f"modal_select_{req_id}",
+                                "title": "Select Chapters",
+                                "components": [
+                                    {
+                                        "type": 18,
+                                        "label": "Selection Method",
+                                        "component": {
+                                            "type": 21,
+                                            "custom_id": "method_radio",
+                                            "options": [
+                                                {"value": "sr", "label": "SR", "description": "Selects all available chapters", "default": def_radio == "sr"},
+                                                {"value": "select", "label": "Select", "description": "Use the custom range box below", "default": def_radio == "select"}
+                                            ]
+                                        }
+                                    },
+                                    {
+                                        "type": 18,
+                                        "label": "Enter Custom Range (If SR isn't chosen.)",
+                                        "description": "e.g., 1-5, 8, 11-20",
+                                        "component": {
+                                            "type": 4,
+                                            "custom_id": "range_input",
+                                            "style": 1,
+                                            "required": False,
+                                            "value": current_range
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                        route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
+                        await self.bot.http.request(route, json=modal_payload)
 
                 # B. Cancel Extraction
                 elif custom_id.startswith("btn_cancel_"):
