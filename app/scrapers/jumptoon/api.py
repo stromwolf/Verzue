@@ -89,6 +89,17 @@ class JumptoonApiScraper(BaseScraper):
         if img_match:
             image_url = img_match.group(1).split('?')[0] + "?auto=avif-webp&width=3840"
 
+        # 🟢 SAFETY FALLBACK: If V2 is missing, grab the default meta image
+        if not image_url:
+            og_img = soup.find("meta", property="og:image")
+            if og_img:
+                image_url = og_img["content"]
+                if 'width=' in image_url:
+                    image_url = re.sub(r'width=\d+', 'width=3840', image_url)
+                else:
+                    sep = '&' if '?' in image_url else '?'
+                    image_url += f"{sep}width=3840"
+
         # 🟢 CHAPTERS: Extract with "UP" Badge detection
         all_chapters = []
         episodes_data = re.findall(

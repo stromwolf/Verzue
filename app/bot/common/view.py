@@ -95,23 +95,28 @@ class UniversalDashboard:
             desc += f"\n**Selected:** {sel_count} ({sel_text})"
 
         # 3. COMPONENT ASSEMBLY
-        inner_components = []
+        # 5. FOOTER SECTION
+        inner_components.append({"type": 14, "spacing": 1})
+        footer_text = f"-# R-ID: {self.req_id} | S-ID: {self.series_id}"
         
-        # Header Section (With Vertical Poster Accessory)
-        # Note: Accessory field is ONLY added if image_url exists to prevent 400 errors.
-        header_section = {
-            "type": 9, # SECTION
-            "components": [{"type": 10, "content": header_text}]
-        }
-        if self.image_url:
-            header_section["accessory"] = {
-                "type": 11, # MEDIA
-                "media": {"url": self.image_url}
-            }
-        inner_components.append(header_section)
-        
-        inner_components.append({"type": 14, "spacing": 1}) # Separator
-        inner_components.append({"type": 10, "content": desc}) # Main Body Text
+        # 🟢 FIX: Only use a Section if we are attaching the Cancel Button
+        if not self.processing_mode:
+            inner_components.append({
+                "type": 9,
+                "components": [{"type": 10, "content": footer_text}],
+                "accessory": {
+                    "type": 2, "style": 4, "emoji": {"name": "✖️"}, "custom_id": f"btn_cancel_{self.req_id}"
+                }
+            })
+        else:
+            inner_components.append({"type": 10, "content": footer_text})
+
+        # Final V2 Container Wrapper
+        return [{
+            "type": 17, # CONTAINER
+            "accent_color": self.color if self.phases.get("download") != "done" else 0x2ecc71,
+            "components": inner_components
+        }]
         
         # 4. INTERACTIVE ELEMENTS (Selection Mode & Navigation)
         if not self.processing_mode:

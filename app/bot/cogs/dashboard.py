@@ -242,7 +242,7 @@ class DashboardCog(commands.Cog):
             inner = row.get("component", {})
             if inner.get("custom_id") == "url_input": url = inner.get("value", "")
 
-        await interaction.response.send_message(f"🔍 **Analyzing {platform} Link...**", ephemeral=True)
+        await interaction.response.send_message(f"🔍 **Analyzing {platform} Link:**\n`{url}`\n*Fetching metadata, please wait...*")
         
         try:
             req_id = str(uuid.uuid4())[:8].upper()
