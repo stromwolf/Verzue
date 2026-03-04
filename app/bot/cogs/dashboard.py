@@ -191,8 +191,29 @@ class DashboardCog(commands.Cog):
                         view.active_tasks = actual_tasks
                         view.trigger_refresh()
 
-                # D. Launch Selection Modal
+                # D. Launch Selection Modal (Stateful Pre-fill)
                 elif custom_id.startswith("btn_select_"):
+                    sel_count = len(view.selected_indices)
+                    total_chapters = len(view.all_chapters)
+                    
+                    current_range = ""
+                    def_radio = "select"
+                    
+                    # Pre-fill logic based on previous selections
+                    if sel_count == total_chapters and total_chapters > 0:
+                        current_range = f"1-{total_chapters}"
+                        def_radio = "sr"
+                    elif sel_count > 0:
+                        idxs = sorted(list(view.selected_indices))
+                        ranges, s, p = [], idxs[0], idxs[0]
+                        for i in idxs[1:]:
+                            if i == p + 1: p = i
+                            else:
+                                ranges.append(f"{s+1}-{p+1}" if s != p else f"{s+1}")
+                                s = p = i
+                        ranges.append(f"{s+1}-{p+1}" if s != p else f"{s+1}")
+                        current_range = ", ".join(ranges)
+                    
                     modal_payload = {
                         "type": 9,
                         "data": {
@@ -206,20 +227,21 @@ class DashboardCog(commands.Cog):
                                         "type": 21, # Radio Group
                                         "custom_id": "method_radio",
                                         "options": [
-                                            {"value": "sr", "label": "SR", "description": "Selects all available chapters"},
-                                            {"value": "select", "label": "Select", "description": "Use the custom range box below"}
+                                            {"value": "sr", "label": "SR", "description": "Selects all available chapters", "default": def_radio == "sr"},
+                                            {"value": "select", "label": "Select", "description": "Use the custom range box below", "default": def_radio == "select"}
                                         ]
                                     }
                                 },
                                 {
                                     "type": 18,
-                                    "label": "Custom Range (Only if 'Select' chosen)",
+                                    "label": "Enter Custom Range (If SR isn't chosen.)",
+                                    "description": "e.g., 1-5, 8, 11-20",
                                     "component": {
                                         "type": 4, # Text Input
                                         "custom_id": "range_input",
                                         "style": 1,
                                         "required": False,
-                                        "value": f"1-{len(view.all_chapters)}"
+                                        "value": current_range # 🟢 Injects the previously selected range!
                                     }
                                 }
                             ]
@@ -240,7 +262,8 @@ class DashboardCog(commands.Cog):
                 if not view:
                     return await interaction.response.send_message("❌ Session expired or invalid.", ephemeral=True)
                 
-                method, range_val = "sr", ""
+                method, range_val = "select", ""
+                
                 for row in interaction.data.get("components", []):
                     inner = row.get("component", {})
                     cid = inner.get("custom_id")
@@ -248,19 +271,22 @@ class DashboardCog(commands.Cog):
                     elif cid == "range_input": range_val = inner.get("value", "")
 
                 view.selected_indices.clear()
+                
                 if method == "sr":
                     view.selected_indices.update(range(len(view.all_chapters)))
-                else:
-                    parts = range_val.replace(" ", "").split(",")
-                    for p in parts:
-                        if "-" in p:
-                            try:
+                elif range_val.strip():
+                    # Parse custom range
+                    try:
+                        parts = range_val.replace(" ", "").split(",")
+                        for p in parts:
+                            if "-" in p:
                                 s, e = map(int, p.split("-"))
                                 view.selected_indices.update(k-1 for k in range(s, e+1) if 1 <= k <= len(view.all_chapters))
-                            except: pass
-                        elif p.isdigit():
-                            k = int(p)
-                            if 1 <= k <= len(view.all_chapters): view.selected_indices.add(k-1)
+                            elif p.isdigit():
+                                k = int(p)
+                                if 1 <= k <= len(view.all_chapters): view.selected_indices.add(k-1)
+                    except Exception as e:
+                        pass # Ignore malformed text input
                             
                 await view.update_view(interaction)
 
