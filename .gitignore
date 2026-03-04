@@ -19,3 +19,4 @@ config/secrets.py
 
 # VS Code
 .vscode/
+bot.pid

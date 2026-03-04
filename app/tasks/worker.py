@@ -11,7 +11,6 @@ from app.core.events import EventBus
 logger = logging.getLogger("TaskWorker")
 
 # Create a single global Process Pool with exactly 1 worker.
-# Since you have 2 cores: Core 1 runs the bot, Core 2 runs this worker.
 PROCESS_POOL = ProcessPoolExecutor(max_workers=1)
 
 class TaskWorker:
@@ -23,6 +22,13 @@ class TaskWorker:
         start_time = time.time()
         logger.info(f"🚀 STARTING TASK: [{task.series_title}] - {task.title}")
         
+        # 🟢 THE FORK: Start the Google Drive Folder creation IMMEDIATELY in the background
+        # We wrap it in asyncio.create_task so it runs concurrently with scraping!
+        drive_folder_task = None
+        if self.uploader and not task.pre_created_folder_id:
+            logger.info("☁️ [Parallel Track] Initiating Google Drive folder sync...")
+            drive_folder_task = asyncio.create_task(self._ensure_drive_folder(task))
+
         safe_series = "".join([c for c in task.series_title if c.isalnum() or c in " -_"]).strip()
         task_dir_name = f"{safe_series}_{task.id}"
         raw_dir, final_dir = Settings.DOWNLOAD_DIR / f"raw_{task_dir_name}", Settings.DOWNLOAD_DIR / f"final_{task_dir_name}"
@@ -35,7 +41,8 @@ class TaskWorker:
             scraper = self.registry.get_scraper(task.url, is_smartoon=task.is_smartoon)
             logger.info(f"🔍 STAGE 1/3: Engine: {scraper.__class__.__name__}")
             
-            # Scraping remains in a thread (for now) as it relies on sync requests/playwright
+            # --- LOCAL DOWNLOAD TRACK ---
+            # Scraping blocks the thread but frees the async loop so Drive API can run
             await asyncio.to_thread(scraper.scrape_chapter, task, str(raw_dir))
             
             valid_imgs = [f for f in os.listdir(raw_dir) if f.lower().endswith(('.png', '.webp', '.jpg'))]
@@ -52,8 +59,6 @@ class TaskWorker:
                 seed_string = task.series_id_key
 
             loop = asyncio.get_running_loop()
-            
-            # Pack the function and arguments to send across the process boundary
             stitch_func = partial(
                 ImageStitcher.stitch_folder, 
                 str(raw_dir), 
@@ -61,14 +66,18 @@ class TaskWorker:
                 15000, 
                 episode_id=seed_string
             )
-            
-            # Execute on Core 2. The bot event loop on Core 1 remains 100% free!
             await loop.run_in_executor(PROCESS_POOL, stitch_func)
             
+            # --- STAGE 3: UPLOADING ---
             task.status = TaskStatus.UPLOADING
             if self.uploader:
-                if task.pre_created_folder_id: await self._fast_upload(task, final_dir)
-                else: await self._handle_upload_hierarchy(task, final_dir)
+                # 🟢 THE MERGE POINT: Wait for the Drive folder task to finish if it's still running
+                # Usually, it finishes long before Stage 1 & 2 are done, returning instantly!
+                if drive_folder_task:
+                    logger.info("⏳ Synchronizing with Google Drive...")
+                    task.pre_created_folder_id = await drive_folder_task
+                
+                await self._fast_upload(task, final_dir)
             
             elapsed = time.time() - start_time
             logger.info(f"🏁 TASK FINISHED in {elapsed:.2f}s")
@@ -81,6 +90,27 @@ class TaskWorker:
             raise e
         finally:
             if self.uploader: self._clean_dirs(raw_dir, final_dir)
+
+    async def _ensure_drive_folder(self, task: ChapterTask):
+        """Runs concurrently in a thread to create Drive folders without blocking."""
+        def sync_create():
+            # Assume GDRIVE_ROOT_FOLDER_ID is in your Settings. Adjust if named differently.
+            root_id = getattr(Settings, "GDRIVE_ROOT_FOLDER_ID", "root")
+            
+            # 1. Check/Create Series Folder
+            series_id = self.uploader.find_folder(task.series_title, root_id)
+            if not series_id:
+                series_id = self.uploader.create_folder(task.series_title, root_id)
+                
+            # 2. Check/Create Chapter Folder
+            chapter_id = self.uploader.find_folder(task.title, series_id)
+            if not chapter_id:
+                chapter_id = self.uploader.create_folder(task.title, series_id)
+                
+            logger.info(f"☁️ [Parallel Track] Folder '{task.title}' is ready! ID: {chapter_id}")
+            return chapter_id
+            
+        return await asyncio.to_thread(sync_create)
 
     async def _fast_upload(self, task, local_path):
         files = sorted([f for f in os.listdir(local_path) if f.endswith('.jpg')])
@@ -98,78 +128,8 @@ class TaskWorker:
                     shutil.rmtree(path)
                     break
                 except PermissionError:
-                    # Windowsがファイルハンドルを解放するまで待機
                     logger.warning(f"⚠️ Directory locked ({path}), retrying cleanup in 2s... (Attempt {attempt+1})")
                     time.sleep(2)
                 except Exception as e:
                     logger.warning(f"Could not clean {path}: {e}")
                     break
-
-
-# --- EXECUTION BLOCK (No indentation at the start of this line) ---
-if __name__ == "__main__":
-    from app.core.logger import setup_logging
-    import json
-    import psutil
-    
-    # Setup logger for the worker terminal
-    setup_logging("WorkerMain")
-    
-    async def run_worker():
-        logger.info("👷 Background Worker starting up...")
-        
-        # 1. Import and Initialize Services
-        from app.services.redis_manager import RedisManager
-        from app.scrapers.registry import ScraperRegistry
-        from app.services.browser.driver import BrowserService
-        from app.services.gdrive.client import GDriveClient
-        from app.services.gdrive.uploader import GDriveUploader
-        
-        redis = RedisManager()
-        browser = BrowserService(headless=True) # Workers should run headless
-        registry = ScraperRegistry(browser)
-        
-        try:
-            gdrive = GDriveClient()
-            uploader = GDriveUploader(gdrive)
-            logger.info("☁️ GDrive connected for worker.")
-        except Exception as e:
-            logger.warning(f"⚠️ GDrive connection failed: {e}")
-            uploader = None
-            
-        worker = TaskWorker(registry, uploader)
-        queue_name = "verzue:task_queue" 
-        
-        MIN_RAM_MB = 600  # Set your safety limit (e.g., 600 MB free)
-        logger.info(f"💾 RAM Manager active. Minimum required: {MIN_RAM_MB}MB")
-        
-        logger.info(f"🎧 Listening to Redis queue '{queue_name}' for tasks...")
-        
-        # 2. Continuous Polling Loop
-        while True:
-            try:
-                # Check actual system memory available
-                mem = psutil.virtual_memory()
-                available_ram_mb = mem.available / (1024 * 1024)
-                
-                if available_ram_mb < MIN_RAM_MB:
-                    logger.warning(f"⚠️ Low Memory ({available_ram_mb:.0f}MB free). Waiting 10s before checking queue...")
-                    await asyncio.sleep(10)
-                    continue # Skips the rest of the loop and checks again 
-
-                result = await redis.client.blpop(queue_name, timeout=1)
-                if not result:
-                    continue 
-                    
-                _, task_json = result
-                task_dict = json.loads(task_json)
-                task = ChapterTask(**task_dict)
-                
-                await worker.process_task(task)
-                
-            except Exception as e:
-                logger.error(f"❌ Worker loop error: {e}")
-                await asyncio.sleep(5) 
-
-    # Execute the async loop
-    asyncio.run(run_worker())
