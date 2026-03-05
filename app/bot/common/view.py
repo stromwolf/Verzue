@@ -91,12 +91,14 @@ class UniversalDashboard:
             for i, ch in enumerate(display_chapters):
                 real_idx = start_idx + i
                 new_tag = "✨ " if ch.get('is_new') else ""
-                sel = "✅" if real_idx in self.selected_indices else "⬛"
+                sel = "✅" if real_idx in self.selected_indices else str(real_idx + 1)
                 notation = ch.get('notation', f"{real_idx+1:02d}")
-                title_val = ch.get('title', 'Ch')
-                clean_t = title_val.replace(' ', ' - ', 1)[:35]
+                title_val = ch.get('title', 'Ch').strip()
                 
-                desc += f"**{new_tag}{sel} {'🔒' if ch.get('is_locked') else '🔓'} `{notation}`** | {clean_t}\n"
+                # Truncate title safely
+                clean_t = title_val[:40] + "..." if len(title_val) > 40 else title_val
+                
+                desc += f"`{new_tag}{sel}` | {notation} - {clean_t}\n"
             
             desc += f"\n**Selected:** {sel_count} ({sel_text})"
 

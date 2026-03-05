@@ -128,9 +128,16 @@ class DashboardCog(commands.Cog):
                     }
                 }
                 try:
-                    await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=modal_payload)
-                except discord.NotFound:
-                    logger.warning("Modal launch timed out.")
+                    await self.bot.http.request(
+                        discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                        json=modal_payload
+                    )
+                except discord.HTTPException as e:
+                    # 🟢 Mute "Already acknowledged" (40060) and "Unknown interaction" (10062) 
+                    if e.code in [40060, 10062]: 
+                        pass
+                    else:
+                        logger.error(f"Modal launch error: {e}")
 
             # --- Universal Dashboard Navigation & Actions ---
             elif any(custom_id.startswith(p) for p in ["btn_open_menu_", "mode_select_", "page_select_", "btn_start_", "btn_cancel_"]):

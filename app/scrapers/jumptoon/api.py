@@ -74,54 +74,96 @@ class JumptoonApiScraper(BaseScraper):
         if total_loaded > 0:
             logger.info(f"[Jumptoon] ✅ Multi-Account Sync: {total_loaded} cookies active from {files_found} sources.")
 
+
+    def _fetch_poster_via_search(self, title: str, series_id: str):
+        try:
+            from urllib.parse import quote
+            encoded_title = quote(title)
+            # 🟢 FIX 1: Use path routing to avoid Next.js redirect loops
+            search_url = f"{self.BASE_URL}/search/{encoded_title}"
+            
+            # 🟢 FIX 2: Use an unauthenticated session. Jumptoon's search API 
+            # throws a 500 error if hit with expired or certain auth cookies.
+            fresh_session = requests.Session(impersonate="chrome120")
+            fresh_session.headers.update({
+                'User-Agent': self.session.headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'),
+                'Accept-Language': 'ja,en-US;q=0.9',
+            })
+            
+            res = fresh_session.get(search_url, timeout=30, allow_redirects=True, max_redirects=5)
+            
+            # 🟢 Search PosterのHTMLから対象シリーズの画像リンクを直接抽出 
+            img_match = re.search(rf'https://assets\.jumptoon\.com/series/{series_id}/[^"\'\s\\]+\.(?:png|jpg|webp|jpeg)', res.text)
+            if img_match:
+                clean_url = img_match.group(0).split('?')[0]
+                return f"{clean_url}?auto=avif-webp&width=3840"
+        except Exception as e:
+            logger.error(f"Search poster fetch failed for {series_id}: {e}")
+            
+        return None
+
     def get_series_info(self, url: str):
         match = re.search(r'jumptoon\.com/series/([a-zA-Z0-9]+)', url)
         if not match: raise ScraperError("Invalid Jumptoon URL.")
         series_id = match.group(1)
         
-        res = self.session.get(f"{self.BASE_URL}/series/{series_id}/episodes/?page=1", timeout=15)
+        # Fix URL: use the main series path to avoid Next.js redirect loops, and set max_redirects=5
+        # as Jumptoon embeds Next.js JSON payloads entirely on the series landing page now.
+        res = self.session.get(f"{self.BASE_URL}/series/{series_id}", timeout=30, allow_redirects=True, max_redirects=5)
         soup = BeautifulSoup(res.text, 'html.parser')
-
-        # 🟢 CORRECT POSTER: Use the specific vertical V2 key from JSON
-        image_url = None
         clean_json = res.text.replace('\\/', '/').replace('\\"', '"')
-        img_match = re.search(r'seriesThumbnailV2ImageUrl":"(https?://[^"]+)"', clean_json)
-        if img_match:
-            image_url = img_match.group(1).split('?')[0] + "?auto=avif-webp&width=3840"
 
-        # 🟢 SAFETY FALLBACK: If V2 is missing, grab the default meta image
-        if not image_url:
-            og_img = soup.find("meta", property="og:image")
-            if og_img:
-                image_url = og_img["content"]
-                if 'width=' in image_url:
-                    image_url = re.sub(r'width=\d+', 'width=3840', image_url)
-                else:
-                    sep = '&' if '?' in image_url else '?'
-                    image_url += f"{sep}width=3840"
+        # 🟢 1. タイトルの取得
+        title_tag = soup.find("h1")
+        title = title_tag.get_text(strip=True) if title_tag else "Unknown"
 
-        # 🟢 CHAPTERS: Extract with "UP" Badge detection
-        all_chapters = []
-        episodes_data = re.findall(
-            r'\\?"id\\?":\\?"(\d+)\\?",\\?"number\\?":\\?"(\d+)\\?",\\?"notation\\?":\\?"([^"]+)\\?",\\?"title\\?":\\?"([^"]+)\\?".*?\\?"isNew\\?":\s*(true|false)', 
-            res.text
-        )
+        # 🟢 2. 検索ページを経由した確実なポスター取得
+        image_url = self._fetch_poster_via_search(title, series_id)
         
-        for ep_id, num, notation, title, is_new_str in episodes_data:
-            is_new = is_new_str.lower() == "true"
-            # Lock detection logic
-            is_locked = f'\\"id\\":\\"{ep_id}\\",\\"isPurchased\\":false' in res.text
+        if not image_url:
+            og_img = soup.find("meta", attrs={"property": "og:image"})
+            if og_img:
+                image_url = og_img.get("content", "").split('?')[0] + "?auto=avif-webp&width=3840"
+
+        # 🟢 3. JSONペイロードからのチャプター抽出
+        all_chapters = []
+        seen_ids = set()
+
+        # extract JSON blocks containing episode details
+        pattern = r'\"id\":\"(\d+)\"(?:(?:(?!\"id\":).)*?)\"notation\":\"([^\"]+)\"(?:(?:(?!\"id\":).)*?)\"title\":\"([^\"]*)\"'
+        matches = re.findall(pattern, clean_json)
+
+        for ep_id, notation, ch_title in matches:
+            if ep_id in seen_ids:
+                continue
+            seen_ids.add(ep_id)
+
+            # Look for the immediate properties to check if locked
+            segment_idx = clean_json.find(f'"id":"{ep_id}"')
+            if segment_idx != -1:
+                segment = clean_json[segment_idx:segment_idx+400]
+                is_free = '"offerType":"FREE"' in segment
+                is_purchased = '"isPurchased":true' in segment
+                is_locked = not (is_free or is_purchased)
+            else:
+                is_locked = True
+
             all_chapters.append({
                 'id': ep_id,
-                'title': title.replace("UP", "").strip(),
-                'notation': notation,
+                'title': ch_title.strip(),
+                'notation': notation.strip(),
                 'is_locked': is_locked,
-                'is_new': is_new
+                'is_new': False
             })
 
-        title = soup.find("h1").get_text(strip=True) if soup.find("h1") else "Unknown"
-        return title, len(all_chapters), all_chapters, image_url, series_id
+        # Sort the chapters by notation number to ensure correct ordering
+        def extract_num(notat):
+            m = re.search(r'\d+', notat)
+            return int(m.group()) if m else 0
+        all_chapters.sort(key=lambda x: extract_num(x['notation']))
 
+        return title, len(all_chapters), all_chapters, image_url, series_id
+    
     def scrape_chapter(self, task, output_dir):
         logger.info(f"[Jumptoon] 🕷️  EXTRACTING: {task.title}")
         from requests.adapters import HTTPAdapter
@@ -180,7 +222,7 @@ class JumptoonApiScraper(BaseScraper):
             self._download_image_robust(dl_session, item['url'], item['file'], output_dir, item['seed'])
 
         with ThreadPoolExecutor(max_workers=5) as executor:
-            list(executor.map(download_worker, image_data))
+            list(executor.map(l̥download_worker, image_data))
                 
         return output_dir
 
