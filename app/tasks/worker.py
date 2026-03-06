@@ -63,7 +63,7 @@ class TaskWorker:
                 ImageStitcher.stitch_folder, 
                 str(raw_dir), 
                 str(final_dir), 
-                15000, 
+                12000, 
                 episode_id=seed_string
             )
             await loop.run_in_executor(PROCESS_POOL, stitch_func)

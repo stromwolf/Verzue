@@ -1,19 +1,22 @@
 import os, json, logging
 from PIL import Image
 from .optimizer import ImageOptimizer
+from .smart_detector import find_best_cut
 from app.core.logger import logger 
 
 class ImageStitcher:
     @staticmethod
-    def stitch_folder(input_dir: str, output_dir: str, max_slice_height: int = 15000, target_width: int = 720, episode_id=None):
+    def stitch_folder(input_dir: str, output_dir: str, max_slice_height: int = 12000, target_width: int = 720, episode_id=None):
         """
-        Ultra-Low RAM Stitcher with Mecha/Jumptoon support.
-        Calculates canvas sizes mathematically before loading pixels into RAM.
+        Standard SmartStitch (All-in-Memory) implementation for maximum speed.
+        
+        Loads all images, combines them into one large canvas, and then slices
+        them in one pass using vectorized detection.
         """
         ImageOptimizer.deduplicate(input_dir)
         if not os.path.exists(output_dir): os.makedirs(output_dir)
 
-        # 🟢 STEP 1: LOAD METADATA
+        # ─── STEP 1: LOAD METADATA ───
         math_path = os.path.join(input_dir, "math.json")
         math_data_raw = []
         seeds_map = {}
@@ -21,23 +24,22 @@ class ImageStitcher:
             try:
                 with open(math_path, 'r') as f:
                     math_data_raw = json.load(f)
-                # Check for Jumptoon seeds
                 if math_data_raw and 'seed' in math_data_raw[0]:
                     seeds_map = {item['file']: item.get('seed') for item in math_data_raw}
             except Exception as e:
                 logger.error(f"Error loading math.json: {e}")
 
-        # 🟢 STEP 2: THE MATH PASS
-        # Determine absolute positions and scaled sizes without loading pixels fully.
-        processed_meta = []
+        # ─── STEP 2: LOAD & PREPARE ALL IMAGES ───
+        # Note: We load them all into memory for maximum speed as requested.
+        prepared_images = []
+        image_boundaries = []
+        current_y = 0
         
         # Strategy A: Mecha coordinate-perfect
         if math_data_raw and 'y' in math_data_raw[0]:
-            logger.info("🧵 [Stitcher] Math Pass: Using coordinate-perfect data.")
+            logger.info("[Stitcher] Mode: All-in-Memory (Coordinate-Perfect)")
             math_data_raw.sort(key=lambda x: x.get('y', 0))
             
-            # Find the reference width for scaling. 
-            # We probe the first existing image to determine the scale factor.
             ref_width = 0
             for entry in math_data_raw:
                 p = os.path.join(input_dir, entry['file'])
@@ -45,7 +47,6 @@ class ImageStitcher:
                     with Image.open(p) as img:
                         ref_width = img.width
                     break
-            
             if not ref_width: ref_width = target_width
             scale_factor = target_width / ref_width
             start_y = math_data_raw[0]['y']
@@ -54,120 +55,105 @@ class ImageStitcher:
                 path = os.path.join(input_dir, entry['file'])
                 if not os.path.exists(path): continue
                 
-                with Image.open(path) as img:
-                    img_w, img_h = img.size
-                
+                img = Image.open(path).convert("RGB")
+                img_w, img_h = img.size
                 sw = target_width
                 sh = int(img_h * (target_width / img_w))
                 abs_y = int((entry['y'] - start_y) * scale_factor)
                 
-                processed_meta.append({
-                    "path": path,
-                    "filename": entry['file'],
-                    "abs_y": abs_y,
-                    "scaled_w": sw,
-                    "scaled_h": sh,
-                    "unscramble": False
-                })
+                if sw != img_w or sh != img_h:
+                    img = img.resize((sw, sh), Image.Resampling.LANCZOS)
+                
+                prepared_images.append((img, abs_y))
+                image_boundaries.append(abs_y + sh)
         
         # Strategy B: Sequential (Jumptoon/Fallback)
         else:
-            logger.info(f"🧵 [Stitcher] Math Pass: Sequential. Unscramble={'ON' if (episode_id or seeds_map) else 'OFF'}")
+            logger.info(f"[Stitcher] Mode: All-in-Memory (Sequential). Unscramble={'ON' if (episode_id or seeds_map) else 'OFF'}")
             files = sorted([f for f in os.listdir(input_dir) if f.lower().endswith(('.png', '.jpg', '.webp'))])
-            current_abs_y = 0
-            for f in files:
+            
+            for i, f in enumerate(files):
+                if i % 10 == 0 or i == len(files) - 1:
+                    logger.info(f"   [Stitcher] Loading image {i+1}/{len(files)}...")
+                
                 path = os.path.join(input_dir, f)
                 try:
-                    with Image.open(path) as img:
-                        img_w, img_h = img.size
-                    
-                    # For Jumptoon, width changes after unscrambling.
                     seed = seeds_map.get(f) or episode_id
-                    
-                    # Jumptoon v2 reduces width (block_l=51 -> split_w=20)
-                    if seed and img_w >= 1000:
-                        num_blocks = img_w // 51
-                        img_w = num_blocks * 20
-                    
-                    sw = target_width
-                    sh = int(img_h * (target_width / img_w))
-                    
-                    processed_meta.append({
-                        "path": path,
-                        "filename": f,
-                        "abs_y": current_abs_y,
-                        "scaled_w": sw,
-                        "scaled_h": sh,
-                        "seed": seed,
-                        "unscramble": bool(seed)
-                    })
-                    current_abs_y += sh
-                except Exception:
-                    continue
-
-        if not processed_meta: return
-
-        # 🟢 STEP 3: PRE-CALCULATE SLICES
-        slices = []
-        current_slice_items = []
-        slice_start_y = 0
-        
-        for item in processed_meta:
-            item_bottom_rel = (item['abs_y'] + item['scaled_h']) - slice_start_y
-            
-            if item_bottom_rel > max_slice_height and current_slice_items:
-                slice_h = max(i['abs_y'] + i['scaled_h'] for i in current_slice_items) - slice_start_y
-                slices.append({
-                    "items": current_slice_items,
-                    "height": slice_h,
-                    "start_y": slice_start_y
-                })
-                current_slice_items = [item]
-                slice_start_y = item['abs_y']
-            else:
-                current_slice_items.append(item)
-
-        if current_slice_items:
-            slice_h = max(i['abs_y'] + i['scaled_h'] for i in current_slice_items) - slice_start_y
-            slices.append({
-                "items": current_slice_items,
-                "height": slice_h,
-                "start_y": slice_start_y
-            })
-
-        # 🟢 STEP 4: LAZY RENDER PASS
-        for idx, s_data in enumerate(slices):
-            slice_filename = f"{idx+1:02d}.jpg"
-            slice_path = os.path.join(output_dir, slice_filename)
-            
-            canvas = Image.new('RGB', (target_width, s_data['height']), (255, 255, 255))
-            
-            for item in s_data['items']:
-                try:
-                    # Load & Process Image
-                    if item.get('unscramble'):
-                        img = ImageOptimizer.unscramble_jumptoon_v2(item['path'], item['seed'])
+                    if seed:
+                        img = ImageOptimizer.unscramble_jumptoon_v2(path, seed)
                     else:
-                        img = Image.open(item['path']).convert("RGB")
+                        img = Image.open(path).convert("RGB")
                     
                     if not img: continue
                     
-                    # Resize to target width while keeping ratio
-                    resized = img.resize((item['scaled_w'], item['scaled_h']), Image.Resampling.LANCZOS)
+                    img_w, img_h = img.size
                     
-                    # Paste relative to slice start
-                    paste_y = item['abs_y'] - s_data['start_y']
-                    canvas.paste(resized, (0, paste_y))
+                    # Jumptoon v2 width correction
+                    effective_w = img_w
+                    if seed and img_w >= 1000:
+                        effective_w = (img_w // 51) * 20
                     
-                    img.close()
-                    del resized
+                    sw = target_width
+                    sh = int(img_h * (target_width / effective_w))
+                    
+                    if img.width != sw or img.height != sh:
+                        img = img.resize((sw, sh), Image.Resampling.LANCZOS)
+                    
+                    prepared_images.append((img, current_y))
+                    current_y += sh
+                    image_boundaries.append(current_y)
                 except Exception as e:
-                    logger.error(f"Failed to process image {item['filename']}: {e}")
+                    logger.error(f"Failed to load {f}: {e}")
+                    continue
 
-            # Save Slice
-            canvas.save(slice_path, "JPEG", quality=90, optimize=True)
-            canvas.close()
-            del canvas
-            logger.info(f"   🧵 Saved Slice {slice_filename} ({target_width}x{s_data['height']})")
+        if not prepared_images: return
 
+        # ─── STEP 3: COMBINE INTO LARGE CANVAS ───
+        total_h = image_boundaries[-1] if image_boundaries else 0
+        logger.info(f"   [Stitcher] Creating large canvas: {target_width}x{total_h}px")
+        combined_img = Image.new('RGB', (target_width, total_h), (255, 255, 255))
+        
+        for img, y in prepared_images:
+            combined_img.paste(img, (0, y))
+            img.close() # Free source image memory
+        prepared_images.clear()
+
+        # ─── STEP 4: DETECT & SLICE (One Pass) ───
+        slice_idx = 0
+        curr_y = 0
+        buffer_zone = 4000 # Search window beyond target_height
+        
+        while curr_y < total_h:
+            slice_idx += 1
+            
+            # If we're near the end, just take the rest
+            if curr_y + max_slice_height >= total_h:
+                cut_y = total_h
+                cut_type = "Final"
+            else:
+                # Find best cut in the curr_y + target -> curr_y + target + buffer zone
+                search_start = curr_y + max_slice_height
+                search_end = min(search_start + buffer_zone, total_h)
+                
+                cut_y = find_best_cut(combined_img, search_start, search_end, 
+                                     image_boundaries=image_boundaries)
+                
+                if cut_y is None or cut_y <= curr_y:
+                    cut_y = search_start
+                    cut_type = "Hard"
+                else:
+                    cut_type = f"Smart (+{cut_y - search_start}px)"
+
+            # Crop and save
+            slice_path = os.path.join(output_dir, f"{slice_idx:02d}.jpg")
+            slice_img = combined_img.crop((0, curr_y, target_width, cut_y))
+            slice_img.save(slice_path, "JPEG", quality=90, optimize=True)
+            logger.info(f"   [Stitcher] Slice {slice_idx:02d}: {target_width}x{cut_y-curr_y} ({cut_type})")
+            slice_img.close()
+            
+            curr_y = cut_y
+            if curr_y >= total_h: break
+
+        combined_img.close()
+        logger.info(f"[Stitcher] Done: {slice_idx} slices saved.")
         return output_dir
