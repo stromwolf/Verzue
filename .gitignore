@@ -20,3 +20,9 @@ config/secrets.py
 # VS Code
 .vscode/
 bot.pid
+
+# Gemini and internal scripts
+.gemini/
+scrape_html.py
+scrape_css.py
+test_scraper.py
