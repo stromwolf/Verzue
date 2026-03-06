@@ -14,16 +14,36 @@ class JumptoonLCG:
         return self.state
 
 class ImageOptimizer:
+    # Jumptoon Scanning Constants
+    JUMPTOON_BLOCK_L = 51
+    JUMPTOON_SPLIT_W = 20
+    JUMPTOON_PADDING_W = 15
+
+    @staticmethod
+    def get_jumptoon_effective_width(img_w: int) -> int:
+        """
+        Calculates what the width of a Jumptoon image WOULD BE after unscrambling.
+        If the image is already narrow (clean), returns the original width.
+        """
+        # Scrambled images are always >= 1000px wide for Jumptoon v2.
+        # They are also always a multiple of 51.
+        if img_w >= 1000 and img_w % ImageOptimizer.JUMPTOON_BLOCK_L == 0:
+            num_blocks = img_w // ImageOptimizer.JUMPTOON_BLOCK_L
+            return num_blocks * ImageOptimizer.JUMPTOON_SPLIT_W
+        return img_w
+
     @staticmethod
     def unscramble_jumptoon_v2(img_path, seed_string):
         try:
             with Image.open(img_path) as src:
                 src = src.convert("RGB")
                 w, h = src.size
-                if w < 1000: return src.copy() # Resolution Guard
+                
+                # Check if it's actually scrambled (width multiple of 51 and >= 1000)
+                if w < 1000 or (w % ImageOptimizer.JUMPTOON_BLOCK_L != 0):
+                    return src.copy()
 
-                split_w, padding_w, block_l = 20, 15, 51
-                num_blocks = w // block_l
+                num_blocks = w // ImageOptimizer.JUMPTOON_BLOCK_L
                 
                 # 1. Generate Shuffle
                 d = list(range(num_blocks))
@@ -32,20 +52,22 @@ class ImageOptimizer:
                     target = lcg.next() % i
                     d[target], d[i - 1] = d[i - 1], d[target]
 
-                # 2. Generate Inverse Map (THE TEST_3 LOGIC)
+                # 2. Generate Inverse Map
                 p = [0] * num_blocks
                 for original_pos, scrambled_pos in enumerate(d):
                     p[scrambled_pos] = original_pos
 
                 # 3. Reconstruct
-                canvas = Image.new("RGB", (num_blocks * split_w, h))
+                canvas = Image.new("RGB", (num_blocks * ImageOptimizer.JUMPTOON_SPLIT_W, h))
                 for i in range(num_blocks):
-                    src_x = p[i] * block_l + padding_w
-                    dest_x = i * split_w
-                    strip = src.crop((src_x, 0, src_x + split_w, h))
+                    src_x = p[i] * ImageOptimizer.JUMPTOON_BLOCK_L + ImageOptimizer.JUMPTOON_PADDING_W
+                    dest_x = i * ImageOptimizer.JUMPTOON_SPLIT_W
+                    strip = src.crop((src_x, 0, src_x + ImageOptimizer.JUMPTOON_SPLIT_W, h))
                     canvas.paste(strip, (dest_x, 0))
                 return canvas
-        except: return None
+        except Exception as e:
+            logger.error(f"Unscramble failed: {e}")
+            return None
 
     @staticmethod
     def deduplicate(input_dir):

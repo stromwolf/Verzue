@@ -88,10 +88,7 @@ class ImageStitcher:
                     
                     img_w, img_h = img.size
                     
-                    # Jumptoon v2 width correction
-                    effective_w = img_w
-                    if seed and img_w >= 1000:
-                        effective_w = (img_w // 51) * 20
+                    effective_w = ImageOptimizer.get_jumptoon_effective_width(img_w) if seed else img_w
                     
                     sw = target_width
                     sh = int(img_h * (target_width / effective_w))
