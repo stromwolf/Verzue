@@ -26,3 +26,4 @@ bot.pid
 scrape_html.py
 scrape_css.py
 test_scraper.py
+test_stitcher.py
