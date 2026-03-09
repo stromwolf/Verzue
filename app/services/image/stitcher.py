@@ -142,10 +142,11 @@ class ImageStitcher:
                     cut_type = f"Smart (+{cut_y - search_start}px)"
 
             # Crop and save
-            slice_path = os.path.join(output_dir, f"{slice_idx:02d}.jpg")
+            slice_path = os.path.join(output_dir, f"{slice_idx:02d}.webp")
             slice_img = combined_img.crop((0, curr_y, target_width, cut_y))
-            slice_img.save(slice_path, "JPEG", quality=90, optimize=True)
-            logger.info(f"   [Stitcher] Slice {slice_idx:02d}: {target_width}x{cut_y-curr_y} ({cut_type})")
+            # 🟢 Lossless WebP conversion as requested
+            slice_img.save(slice_path, "WEBP", lossless=True)
+            logger.info(f"   [Stitcher] Slice {slice_idx:02d}.webp: {target_width}x{cut_y-curr_y} ({cut_type})")
             slice_img.close()
             
             curr_y = cut_y

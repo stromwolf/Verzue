@@ -2,15 +2,26 @@ import re
 import json
 import logging
 import math
+import time
 import urllib.parse
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from bs4 import BeautifulSoup
 from io import BytesIO
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from bs4 import BeautifulSoup
 
 try:
     from PIL import Image
 except ImportError:
     raise ImportError("Pillow is required for Piccoma unscrambling. Run: pip install Pillow")
+
+try:
+    from pycasso import Canvas
+except ImportError:
+    Canvas = None # Handle in robust method
 
 try:
     from curl_cffi import requests as crequests
@@ -23,103 +34,26 @@ from app.models.chapter import TaskStatus
 
 logger = logging.getLogger("PiccomaApi")
 
-# --- CUSTOM PRNG FOR UNSCRAMBLING ---
-WIDTH = 256
-CHUNKS = 6
-DIGITS = 52
-START_DENOM = WIDTH ** CHUNKS
-SIGNIFICANCE = 2 ** DIGITS
-OVERFLOW = SIGNIFICANCE * 2
-MASK = WIDTH - 1
+# --- DD TRANSFORMATION (Match pyccoma-0.7.2) ---
+def dd(input_string):
+    result_bytearray = bytearray()
+    for index, byte in enumerate(bytes(input_string, 'utf-8')):
+        if index < 3:
+            byte = byte + (1 - 2 * (byte % 2))
+        elif 2 < index < 6 or index == 8:
+            pass
+        elif index < 10:
+            byte = byte + (1 - 2 * (byte % 2))
+        elif 12 < index < 15 or index == 16:
+            byte = byte + (1 - 2 * (byte % 2))
+        elif index == len(input_string[:-1]) or index == len(input_string[:-2]):
+            byte = byte + (1 - 2 * (byte % 2))
+        else:
+            pass
+        result_bytearray.append(byte)
+    return str(result_bytearray, 'utf-8')
 
-class ARC4:
-    def __init__(self, key):
-        self.i = 0
-        self.j = 0
-        self.S = list(range(WIDTH))
-        keylen = len(key)
-        if not keylen:
-            key = [1]
-            keylen = 1
-        
-        j = 0
-        for i in range(WIDTH):
-            t = self.S[i]
-            j = (j + key[i % keylen] + t) & MASK
-            self.S[i] = self.S[j]
-            self.S[j] = t
 
-    def g(self, count):
-        r = 0
-        for _ in range(count):
-            self.i = (self.i + 1) & MASK
-            t = self.S[self.i]
-            self.j = (self.j + t) & MASK
-            self.S[self.i], self.S[self.j] = self.S[self.j], self.S[self.i]
-            r = r * WIDTH + self.S[(self.S[self.i] + self.S[self.j]) & MASK]
-        return r
-
-def mixkey(seed):
-    stringseed = str(seed)
-    key = []
-    smear = 0
-    j = 0
-    while j < len(stringseed):
-        idx = MASK & j
-        while len(key) <= idx:
-            key.append(0)
-        val = key[idx]
-        smear ^= (val * 19)
-        key[idx] = MASK & (smear + ord(stringseed[j]))
-        j += 1
-    return key
-
-def prng_generator(seed):
-    key = mixkey(seed)
-    arc4 = ARC4(key)
-    
-    def random_func():
-        n = arc4.g(CHUNKS)
-        d = START_DENOM
-        x = 0
-        while n < SIGNIFICANCE:
-            n = (n + x) * WIDTH
-            d *= WIDTH
-            x = arc4.g(1)
-        while n >= OVERFLOW:
-            n /= 2
-            d /= 2
-            x = int(x / 2)
-        return (n + x) / d
-    return random_func
-
-def shuffle_seed(arr, seed):
-    size = len(arr)
-    rng = prng_generator(seed)
-    resp = []
-    keys = list(range(size))
-    for _ in range(size):
-        r = int(rng() * len(keys))
-        g = keys[r]
-        keys.pop(r)
-        resp.append(arr[g])
-    return resp
-
-def get_seed(url):
-    if not url.startswith('http'):
-        url = 'https:' + url
-    parsed = urllib.parse.urlparse(url)
-    qs = urllib.parse.parse_qs(parsed.query)
-    
-    checksum = qs.get('q', [url.split('/')[-2]])[0]
-    expires = qs.get('expires', [''])[0]
-    
-    if expires:
-        total = sum(int(x) for x in expires if x.isdigit())
-        ch = total % len(checksum)
-        if ch > 0:
-            checksum = checksum[-ch:] + checksum[:-ch]
-    return checksum
 
 
 class PiccomaApiScraper(BaseScraper):
@@ -130,6 +64,73 @@ class PiccomaApiScraper(BaseScraper):
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         })
         self.base_url = "https://piccoma.com"
+        self.region = "jp" # Default
+        self.master_seed = None
+        self._load_cookies()
+
+    def _load_cookies(self):
+        """Loads and deduplicates cookies from piccoma secrets directory."""
+        jt_dir = Settings.SECRETS_DIR / "piccoma"
+        if not jt_dir.exists(): return
+        
+        cookie_paths = sorted(list(jt_dir.glob("*.json")))
+        
+        cookie_dict = {}
+        for path in cookie_paths:
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                clist = data if isinstance(data, list) else [{"name": k, "value": v} for k, v in data.items()]
+                for c in clist:
+                    name, value = c.get('name'), c.get('value')
+                    if name and value:
+                        cookie_dict[name] = value
+            except Exception: continue
+            
+        for name, value in cookie_dict.items():
+            domain = '.piccoma.com' if self.region == 'jp' else '.fr.piccoma.com'
+            self.session.cookies.set(name, value, domain=domain)
+        
+        if cookie_dict:
+            logger.debug(f"[Piccoma] 🍪 Loaded {len(cookie_dict)} deduplicated cookies.")
+
+    def is_session_valid(self):
+        """Checks if the current Piccoma session is still authenticated."""
+        try:
+            # Hit the favorites page which requires auth
+            test_url = f"{self.base_url}/web/product/favorite"
+            res = self.session.get(test_url, timeout=15, allow_redirects=False)
+            # If we get a 200, we are good. If 302, we are likely redirected to login.
+            return res.status_code == 200
+        except Exception:
+            return False
+
+    def _get_regional_checksum(self, url):
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query)
+        
+        if self.region == "fr":
+            # FR uses 'q' parameter
+            return qs.get('q', [''])[0]
+        else:
+            # JP uses path segment before filename (Episode ID)
+            # Match pyccoma: img_url.split('/')[-2]
+            return url.split('?')[0].split('/')[-2]
+
+    def _calculate_pyccoma_seed(self, url):
+        checksum = self._get_regional_checksum(url)
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query)
+        expires = qs.get('expires', [''])[0]
+        
+        # Match pyccoma.Scraper.get_seed literal loop:
+        # for num in expiry_key: checksum = checksum[-int(num):] + checksum[:len(checksum)-int(num)]
+        for num in expires:
+            if num.isdigit():
+                n = int(num)
+                if n != 0:
+                    checksum = checksum[-n:] + checksum[:len(checksum)-n]
+        return checksum
 
     def get_series_info(self, url: str):
         match = re.search(r'/web/product/(\d+)', url)
@@ -137,10 +138,12 @@ class PiccomaApiScraper(BaseScraper):
             raise ScraperError("Invalid Piccoma URL")
         
         series_id = match.group(1)
-        if "jp.piccoma.com" in url:
-            self.base_url = "https://jp.piccoma.com"
-
-        # 1. Fetch Series Page for Title
+        if "jp.piccoma" in url or "piccoma.com/web" in url:
+            self.base_url = "https://piccoma.com"
+            self.region = "jp"
+        elif "fr.piccoma" in url or "piccoma.com/fr" in url:
+            self.base_url = "https://fr.piccoma.com"
+            self.region = "fr"
         res = self.session.get(f"{self.base_url}/web/product/{series_id}")
         if res.status_code != 200:
             raise ScraperError("Failed to fetch Piccoma series page")
@@ -149,8 +152,20 @@ class PiccomaApiScraper(BaseScraper):
         title_elem = soup.select_one('h1.PCM-productTitle')
         title = title_elem.text.strip() if title_elem else f"Piccoma_{series_id}"
         
-        og_img = soup.find("meta", property="og:image")
-        image_url = og_img["content"] if og_img else None
+        # Extract series poster
+        thumb_img = soup.select_one('img.PCM-productThum_img')
+        if thumb_img and thumb_img.get('src'):
+            image_url = thumb_img['src']
+            if image_url.startswith('//'):
+                image_url = 'https:' + image_url
+            if 'cover_x2' in image_url:
+                # Route through proxy to fix application/octet-stream Content-Type for Discord
+                image_url = f"https://wsrv.nl/?url={urllib.parse.quote(image_url)}"
+        else:
+            og_img = soup.find("meta", property="og:image")
+            image_url = og_img["content"] if og_img else None
+            if image_url and 'cover_x2' in image_url:
+                image_url = f"https://wsrv.nl/?url={urllib.parse.quote(image_url)}"
 
         # 2. Fetch Chapters (Episodes / Volumes)
         all_chapters = []
@@ -166,7 +181,7 @@ class PiccomaApiScraper(BaseScraper):
                 ep_title = title_node.text.strip() if title_node else f"Episode {ep_id}"
                 
                 # Check lock status based on button icons/classes
-                is_locked = not bool(item.select_one('.PCM-epList_freeBtn')) 
+                is_locked = not bool(item.select_one('.PCM-epList_status_free')) 
                 
                 all_chapters.append({
                     'id': str(ep_id),
@@ -201,42 +216,82 @@ class PiccomaApiScraper(BaseScraper):
         
         if not pdata:
             # Fallback for older/different formats
-            match = re.search(r'window\._pdata_\s*=\s*(\{.*?\});', res.text, re.DOTALL)
+            match = re.search(r'var\s+_pdata_\s*=\s*(\{.*?\})\s*(?:var\s+|</script>)', res.text, re.DOTALL)
             if match:
-                pdata = json.loads(match.group(1))
+                pdata_str = match.group(1)
+                try:
+                    pdata = json.loads(pdata_str)
+                except json.JSONDecodeError:
+                    # _pdata_ is a JS object literal natively, so we must clean it for python evaluation
+                    import ast
+                    clean_str = pdata_str.replace('true', 'True').replace('false', 'False').replace('null', 'None')
+                    try:
+                        pdata = ast.literal_eval(clean_str)
+                    except Exception as e:
+                        logger.error(f"Failed to literal_eval _pdata_: {e}")
+                        # Extreme fallback: Regex extract only what we need
+                        pdata = {'img': [], 'isScrambled': False}
+                        scrambled_match = re.search(r"['\"]isScrambled['\"]\s*:\s*(true|false)", pdata_str, re.IGNORECASE)
+                        if scrambled_match:
+                            pdata['isScrambled'] = scrambled_match.group(1).lower() == 'true'
+                        
+                        slice_match = re.search(r"['\"]sliceSize['\"]\s*:\s*(\d+)", pdata_str)
+                        if slice_match:
+                            pdata['sliceSize'] = int(slice_match.group(1))
+                            
+                        paths = re.findall(r"['\"]path['\"]\s*:\s*['\"]([^'\"]+)['\"]", pdata_str)
+                        if paths:
+                            pdata['img'] = [{'path': p} for p in paths]
         
         if not pdata:
             raise ScraperError("Could not extract chapter data. Chapter might be strictly locked.")
 
         images_data = pdata.get('img', pdata.get('contents', []))
         is_scrambled = pdata.get('isScrambled', False)
+        slice_size = pdata.get('sliceSize', 50)  # Default for Piccoma is 50
+        
+        logger.info(f"   [Piccoma] is_scrambled: {is_scrambled} (sliceSize: {slice_size})")
 
         valid_images = [img for img in images_data if img.get('path')]
         if not valid_images:
             raise ScraperError("No images found. Chapter requires purchase.")
 
-        import requests
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
+        # Match pyccoma: Calculate seed ONCE per chapter using the first page
+        first_url = valid_images[0]['path']
+        self.master_seed = self._calculate_pyccoma_seed(first_url)
+        logger.debug(f"   [Piccoma] Master Seed: {self.master_seed} (Region: {self.region})")
 
+        # Use a session with retries for robust downloads
         dl_session = requests.Session()
-        retry = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500])
-        dl_session.mount("https://", HTTPAdapter(max_retries=retry))
+        retry_strategy = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500])
+        dl_session.mount("https://", HTTPAdapter(max_retries=retry_strategy))
 
         logger.info(f"   Mapped {len(valid_images)} pages.")
+        
         task.status = TaskStatus.DOWNLOADING
+        total_pages = len(valid_images)
+        downloaded = 0
+        lock = threading.Lock()
         
         def process_piccoma(args):
+            nonlocal downloaded
             img_data, i = args
             time.sleep(0.3) # 🟢 Standardized pacing
-            self._download_and_unscramble_robust(dl_session, img_data, i+1, output_dir, is_scrambled)
+            self._download_and_unscramble_robust(dl_session, img_data, i+1, output_dir, is_scrambled, slice_size, task.chapter_str)
+            
+            with lock:
+                downloaded += 1
+                # Progress on same line
+                print(f"\r[INFO ] [{task.req_id}] -    Downloading: {downloaded}/{total_pages}", end="", flush=True)
 
         with ThreadPoolExecutor(max_workers=5) as executor:
             list(executor.map(process_piccoma, [(img, i) for i, img in enumerate(valid_images)]))
+        
+        print() # Newline after progress
             
         return output_dir
 
-    def _download_and_unscramble_robust(self, dl_session, img_data, idx, out_dir, is_scrambled):
+    def _download_and_unscramble_robust(self, dl_session, img_data, idx, out_dir, is_scrambled, slice_size, chapter_str="1"):
         url = img_data['path']
         if not url.startswith('http'): url = 'https:' + url
         
@@ -244,71 +299,25 @@ class PiccomaApiScraper(BaseScraper):
         res.raise_for_status()
             
         out_path = f"{out_dir}/page_{idx:03d}.png"
-        if is_scrambled:
-            seed = get_seed(url)
-            unscrambled_bytes = self._unscramble_image(res.content, seed)
-            with open(out_path, "wb") as f: f.write(unscrambled_bytes)
+        
+        # Match pyccoma: Unscrambling is triggered by an UPPERCASE seed
+        seed = self.master_seed
+        if seed and seed.isupper():
+            logger.debug(f"   [Piccoma] P{idx}: Unscrambling triggered (Seed: {seed})")
+            try:
+                # Use pycasso.Canvas exactly as pyccoma does
+                img_io = BytesIO(res.content)
+                
+                canvas = Canvas(img_io, (50, 50), dd(seed))
+                unscrambled = canvas.export(
+                    mode="scramble",
+                    format="png"
+                )
+                with open(out_path, "wb") as f: f.write(unscrambled.getvalue())
+                logger.info(f"   [Piccoma] P{idx}: Unscrambled successfully.")
+            except Exception as e:
+                logger.error(f"   [Piccoma] P{idx}: Unscrambling failed: {e}", exc_info=True)
+                with open(out_path, "wb") as f: f.write(res.content)
         else:
+            logger.debug(f"   [Piccoma] P{idx}: Saving raw (No scrambling detected).")
             with open(out_path, "wb") as f: f.write(res.content)
-
-    def _unscramble_image(self, image_bytes, seed):
-        img = Image.open(BytesIO(image_bytes))
-        canvas = Image.new('RGBA', (img.width, img.height))
-        slice_size = 50
-
-        # Calculate slices
-        total_parts = math.ceil(img.width / slice_size) * math.ceil(img.height / slice_size)
-        vertical_slices = math.ceil(img.width / slice_size)
-        
-        slices = {}
-        for i in range(total_parts):
-            row = i // vertical_slices
-            col = i - row * vertical_slices
-            x = col * slice_size
-            y = row * slice_size
-            width = slice_size if (x + slice_size <= img.width) else (img.width - x)
-            height = slice_size if (y + slice_size <= img.height) else (img.height - y)
-            
-            key = f"{width}-{height}"
-            if key not in slices:
-                slices[key] = []
-            slices[key].append({"x": x, "y": y, "width": width, "height": height})
-
-        # Process each group of identically sized blocks
-        for key, group_slices in slices.items():
-            # Get group boundaries
-            t = group_slices[0]['y']
-            cols = next((i for i, s in enumerate(group_slices) if s['y'] != t), len(group_slices))
-            
-            group_x = group_slices[0]['x']
-            group_y = group_slices[0]['y']
-            
-            shuffle_ind = list(range(len(group_slices)))
-            shuffle_ind = shuffle_seed(shuffle_ind, seed)
-
-            for i in range(len(group_slices)):
-                s = shuffle_ind[i]
-                row = s // cols
-                col = s - row * cols
-                
-                target_x = col * group_slices[i]['width']
-                target_y = row * group_slices[i]['height']
-                
-                src_box = (
-                    group_slices[i]['x'],
-                    group_slices[i]['y'],
-                    group_slices[i]['x'] + group_slices[i]['width'],
-                    group_slices[i]['y'] + group_slices[i]['height']
-                )
-                region = img.crop(src_box)
-                
-                dst_pos = (
-                    int(group_x + target_x),
-                    int(group_y + target_y)
-                )
-                canvas.paste(region, dst_pos)
-        
-        out_io = BytesIO()
-        # Convert to RGB before saving as WebP or JPEG
-        canvas.convert("RGB").save(out_io, format='WEBP')
-        return out_io.getvalue()

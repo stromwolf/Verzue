@@ -79,7 +79,8 @@ if __name__ == "__main__":
     print("1. MechaComic (JP)")
     print("2. Jumptoon (Next.js)")
     print("3. KakaoPage (KR)")
-    print("4. Tencent AC.QQ (CN)") # 🟢 ADD THIS
+    print("4. Tencent AC.QQ (CN)")
+    print("5. Piccoma (JP/FR)")
     print("q. Quit")
     
     choice = input("\nSelect target: ").lower()
@@ -90,8 +91,10 @@ if __name__ == "__main__":
         run_login("https://jumptoon.com/", "Jumptoon", "jumptoon")
     elif choice == "3":
         run_login("https://page.kakao.com/", "KakaoPage", "kakao")
-    elif choice == "4": # 🟢 ADD THIS BLOCK
+    elif choice == "4":
         run_login("https://ac.qq.com/login", "Tencent AC.QQ", "acqq")
+    elif choice == "5":
+        run_login("https://piccoma.com/web/acc/signin", "Piccoma", "piccoma")
     elif choice == "q":
         sys.exit()
     else:

@@ -116,9 +116,22 @@ class TaskWorker:
         return await asyncio.to_thread(sync_create)
 
     async def _fast_upload(self, task, local_path):
-        files = sorted([f for f in os.listdir(local_path) if f.endswith('.jpg')])
-        for f in files:
-            await asyncio.to_thread(self.uploader.upload_file, os.path.join(local_path, f), f, task.pre_created_folder_id)
+        # 🟢 UPDATE (09 March 2026): Upload the LAST file first, then the rest sequentially.
+        files = sorted([f for f in os.listdir(local_path) if f.lower().endswith('.webp')])
+        
+        if files:
+            last_file = files[-1]
+            remaining_files = files[:-1]
+            
+            logger.info(f"🚀 [Priority] Uploading last page first: {last_file}")
+            await asyncio.to_thread(self.uploader.upload_file, os.path.join(local_path, last_file), last_file, task.pre_created_folder_id)
+            
+            if remaining_files:
+                logger.info(f"🚀 Sequentially uploading remaining {len(remaining_files)} files (Order: 1, 2, 3)...")
+                for f in remaining_files:
+                    full_path = os.path.join(local_path, f)
+                    await asyncio.to_thread(self.uploader.upload_file, full_path, f, task.pre_created_folder_id)
+            
         if task.final_folder_name:
             await asyncio.to_thread(self.uploader.rename_file, task.pre_created_folder_id, task.final_folder_name)
 

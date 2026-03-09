@@ -2,32 +2,38 @@ import logging
 import time
 import threading
 import io
+import os
 from googleapiclient.http import MediaIoBaseUpload
 from googleapiclient.errors import HttpError
 from .client import GDriveClient
 
 logger = logging.getLogger("GDriveUploader")
 
+# 🟢 UPDATE (08 March 2026): Google Drive API Quotas
+# - Queries: 12,000 / 60s (200/sec)
+# - Sustained Writes: ~3 / sec (CRITICAL)
+# - Daily Upload Limit: 750 GB
+
 class GDriveUploader:
     def __init__(self, client: GDriveClient):
         self.client = client
-        self.service = client.get_service()
-        # 🟢 CRITICAL: 並列アップロード時のSSL通信ソケット破損を防ぐスレッドロック
-        # Serializes API calls to prevent httplib2 socket corruption
-        self._api_lock = threading.Lock()
+        # 🟢 SEMAPHORE: Increased to 5 as requested.
+        # Note: 3/sec is the recommended sustained limit, 5/sec may trigger 
+        # transient 403 errors which are handled by our exponential backoff.
+        self._write_semaphore = threading.Semaphore(5)
 
     def find_folder(self, name: str, parent_id: str):
         """Finds ONLY folders (Shared Drive Compatible)."""
         safe_name = name.replace("'", "\\'")
         query = f"mimeType='application/vnd.google-apps.folder' and name='{safe_name}' and '{parent_id}' in parents and trashed=false"
         try:
-            with self._api_lock:
-                results = self.service.files().list(
-                    q=query, 
-                    fields="files(id)", 
-                    supportsAllDrives=True, 
-                    includeItemsFromAllDrives=True
-                ).execute()
+            # Metadata reads don't need the write semaphore (Limit: 200/sec)
+            results = self.client.get_service().files().list(
+                q=query, 
+                fields="files(id)", 
+                supportsAllDrives=True, 
+                includeItemsFromAllDrives=True
+            ).execute()
             files = results.get('files', [])
             return files[0]['id'] if files else None
         except Exception as e:
@@ -39,13 +45,12 @@ class GDriveUploader:
         safe_name = name.replace("'", "\\'")
         query = f"name='{safe_name}' and '{parent_id}' in parents and trashed=false"
         try:
-            with self._api_lock:
-                results = self.service.files().list(
-                    q=query, 
-                    fields="files(id)", 
-                    supportsAllDrives=True, 
-                    includeItemsFromAllDrives=True
-                ).execute()
+            results = self.client.get_service().files().list(
+                q=query, 
+                fields="files(id)", 
+                supportsAllDrives=True, 
+                includeItemsFromAllDrives=True
+            ).execute()
             files = results.get('files', [])
             return files[0]['id'] if files else None
         except Exception as e:
@@ -59,15 +64,14 @@ class GDriveUploader:
         try:
             page_token = None
             while True:
-                with self._api_lock:
-                    results = self.service.files().list(
-                        q=query, 
-                        fields="nextPageToken, files(id, name)", 
-                        pageSize=1000,
-                        includeItemsFromAllDrives=True, 
-                        supportsAllDrives=True, 
-                        pageToken=page_token
-                    ).execute()
+                results = self.client.get_service().files().list(
+                    q=query, 
+                    fields="nextPageToken, files(id, name)", 
+                    pageSize=1000,
+                    includeItemsFromAllDrives=True, 
+                    supportsAllDrives=True, 
+                    pageToken=page_token
+                ).execute()
                 
                 for f in results.get('files', []):
                     items_map[f['name']] = f['id']
@@ -89,8 +93,8 @@ class GDriveUploader:
         
         for attempt in range(3):
             try:
-                with self._api_lock:
-                    folder = self.service.files().create(
+                with self._write_semaphore:
+                    folder = self.client.get_service().files().create(
                         body=metadata, 
                         fields='id', 
                         supportsAllDrives=True
@@ -105,21 +109,29 @@ class GDriveUploader:
 
     def upload_file(self, file_path, file_name, parent_id):
         """Uploads file with SSL-error protection and GUARANTEED file handle release."""
+        import mimetypes
+        
+        # 🟢 Dynamic mimetype detection
+        mime_type, _ = mimetypes.guess_type(file_name)
+        if not mime_type:
+            if file_name.lower().endswith('.webp'):
+                mime_type = 'image/webp'
+            else:
+                mime_type = 'image/jpeg'
+
         for attempt in range(5):
             try:
                 metadata = {'name': file_name, 'parents': [parent_id]}
-                # 🟢 CRITICAL: with open() を使うことで、アップロード成功/失敗に関わらず確実にWindowsのファイルロックを解除する
-                # Using MediaIoBaseUpload with a file stream ensures we control the handle lifecycle.
                 with open(file_path, 'rb') as f:
-                    media = MediaIoBaseUpload(f, mimetype='image/jpeg', resumable=True)
-                    with self._api_lock:
-                        self.service.files().create(
+                    media = MediaIoBaseUpload(f, mimetype=mime_type, resumable=True)
+                    with self._write_semaphore:
+                        self.client.get_service().files().create(
                             body=metadata, 
                             media_body=media, 
                             fields='id', 
                             supportsAllDrives=True
                         ).execute()
-                logger.info(f"⬆️ Uploaded {file_name}")
+                logger.debug(f"⬆️ Uploaded {file_name} ({mime_type})")
                 return
             except Exception as e:
                 err_msg = str(e)
@@ -140,8 +152,8 @@ class GDriveUploader:
             'parents': [parent_id], 'shortcutDetails': {'targetId': target_id}
         }
         try:
-            with self._api_lock:
-                file = self.service.files().create(
+            with self._write_semaphore:
+                file = self.client.get_service().files().create(
                     body=metadata, 
                     fields='id', 
                     supportsAllDrives=True
@@ -155,8 +167,8 @@ class GDriveUploader:
     def rename_file(self, file_id, new_name):
         """Renames file with Shared Drive support."""
         try:
-            with self._api_lock:
-                self.service.files().update(
+            with self._write_semaphore:
+                self.client.get_service().files().update(
                     fileId=file_id, 
                     body={'name': new_name}, 
                     supportsAllDrives=True
@@ -168,12 +180,11 @@ class GDriveUploader:
     def get_share_link(self, file_id):
         """Fetches link with Shared Drive support."""
         try:
-            with self._api_lock:
-                file = self.service.files().get(
-                    fileId=file_id, 
-                    fields='webViewLink', 
-                    supportsAllDrives=True
-                ).execute()
+            file = self.client.get_service().files().get(
+                fileId=file_id, 
+                fields='webViewLink', 
+                supportsAllDrives=True
+            ).execute()
             return file.get('webViewLink')
         except Exception as e:
             logger.error(f"Failed to get link for {file_id}: {e}")
@@ -183,8 +194,8 @@ class GDriveUploader:
         """Sets permissions with Shared Drive support."""
         try:
             permission = {'role': 'reader', 'type': 'anyone'}
-            with self._api_lock:
-                self.service.permissions().create(
+            with self._write_semaphore:
+                self.client.get_service().permissions().create(
                     fileId=file_id, 
                     body=permission, 
                     supportsAllDrives=True

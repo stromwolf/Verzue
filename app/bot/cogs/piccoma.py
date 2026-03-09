@@ -13,7 +13,7 @@ class PiccomaCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="piccoma", description="Coming Soon")
+    @app_commands.command(name="piccoma", description="Extract chapters from Piccoma")
     async def piccoma(self, interaction: discord.Interaction, url: str):
         """
         Phase 1: Intelligence.
@@ -61,7 +61,10 @@ class PiccomaCog(commands.Cog):
             view = UniversalDashboard(self.bot, ctx_data, "piccoma")
             view.interaction = interaction
             
-            await interaction.followup.send(embed=view.build_live_embed(), view=view)
+            # Send the dashboard using the V2 raw HTTP route
+            payload_data = {"flags": 32768, "components": view.build_v2_payload()}
+            route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+            await self.bot.http.request(route, json=payload_data)
             logger.info(f"✅ Dashboard launched for '{title}'")
 
         except Exception as e:

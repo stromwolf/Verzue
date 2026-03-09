@@ -71,7 +71,8 @@ class BatchController:
                 task.final_folder_name = folder_name
             
             tasks_to_queue.append(task)
-            if is_locked:
+            # Only send to unlocker if it's explicitly locked AND supported
+            if is_locked and ("mechacomic.jp" in url):
                 chapters_to_unlock.append(task)
 
         # 2. PHASE 3 UNLOCK
@@ -84,28 +85,55 @@ class BatchController:
             await self.unlocker.unlock_batch(chapters_to_unlock, view_ref=view_ref)
             
             if "jumptoon.com" in url:
-                self.bot.task_queue.scraper_registry.jumptoon._load_cookies()
+                try: self.bot.task_queue.scraper_registry.jumptoon._load_cookies_initial()
+                except: pass
             
             if view_ref: view_ref.phases["purchase"] = "done"
         else:
             if view_ref: view_ref.phases["purchase"] = "done"
 
         # 3. FINAL LINK
-        # For batches, we link to the Client folder. For single, we'd ideally link to the chapter, 
-        # but since we haven't created it yet, we link to the Client folder as a reliable fallback.
+        # 🟢 If single chapter, link to the chapter folder. If bulk, link to the client folder.
         if view_ref:
-            view_ref.final_link = await asyncio.to_thread(self.uploader.get_share_link, client_id)
+            if len(selected_indices) == 1:
+                # For single tasks, we want the DIRECT folder link if possible.
+                idx = list(selected_indices)[0]
+                ch_data = all_chapters[idx]
+                folder_name = self._make_task(idx, ch_data, title, url, scan_group, interaction, series_id, req_id).folder_name
+                
+                main_existing_id = main_manifest.get(folder_name)
+                if main_existing_id:
+                    view_ref.final_link = await asyncio.to_thread(self.uploader.get_share_link, main_existing_id)
+                else:
+                    # Will be updated by monitor_tasks once the folder is created by the worker
+                    view_ref.final_link = None
+            else:
+                view_ref.final_link = await asyncio.to_thread(self.uploader.get_share_link, client_id)
+            
             view_ref.phases["analyze"] = "done"
             view_ref.trigger_refresh()
 
         return tasks_to_queue
 
     def _make_task(self, idx, ch, title, url, group, interaction, sid, req_id):
+        ch_url = ch.get('url')
+        if not ch_url:
+            if "jumptoon.com" in url and 'id' in ch:
+                if sid is not None and sid != "None":
+                    ch_url = f"https://jumptoon.com/series/{sid}/episodes/{ch['id']}/"
+                else:
+                    ch_url = f"{url.rstrip('/')}/episodes/{ch['id']}/"
+            else:
+                ch_url = url
+
+        # 🟢 Use notation (e.g. 第1話) for Jumptoon if available
+        chapter_str = ch.get('notation') or ch.get('number_text') or str(idx + 1)
+
         return ChapterTask(
-            id=idx+1, title=ch.get('title', ''), chapter_str=ch.get('number_text', str(idx+1)),
-            url=ch['url'], series_title=title, requester_id=interaction.user.id, channel_id=interaction.channel_id,
+            id=idx+1, title=ch.get('title', ''), chapter_str=chapter_str,
+            url=ch_url, series_title=title, requester_id=interaction.user.id, channel_id=interaction.channel_id,
             guild_id=interaction.guild.id if interaction.guild else 0, guild_name=interaction.guild.name if interaction.guild else "DM",
-            scan_group=group, series_id_key=str(sid), episode_id=str(ch['id']), is_smartoon=True, req_id=req_id
+            scan_group=group, series_id_key=str(sid), episode_id=str(ch.get('id', '')), is_smartoon=True, req_id=req_id
         )
 
     def _create_local_tasks(self, idxs, chs, title, url, group, interaction, sid, req_id):

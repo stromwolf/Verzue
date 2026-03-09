@@ -30,7 +30,7 @@ class CustomFormatter(logging.Formatter):
     
     def get_fmt(self, req_id):
         # Professional Prefix: [INFO] [R-ID] - Message
-        prefix = f" [{req_id}]" if req_id and req_id != "None" else " " * 11
+        prefix = f" [{req_id}]" if req_id and req_id != "None" else ""
         return f"[%(levelname)-5s]{prefix} - %(message)s"
 
     def format(self, record):

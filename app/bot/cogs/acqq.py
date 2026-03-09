@@ -50,7 +50,9 @@ class AcQqCog(commands.Cog):
             view = UniversalDashboard(self.bot, ctx_data, "smartoon")
             view.interaction = interaction
             
-            await interaction.followup.send(embed=view.build_live_embed(), view=view)
+            payload_data = {"flags": 32768, "components": view.build_v2_payload()}
+            route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+            await self.bot.http.request(route, json=payload_data)
             logger.info(f"✅ Dashboard launched for '{title}'")
 
         except Exception as e:

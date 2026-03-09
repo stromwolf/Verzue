@@ -84,6 +84,7 @@ class MechaCog(commands.Cog):
                     'url': url,
                     'title': title,
                     'chapters': chapter_list,
+                    'total_chapters': total_chapters,
                     'image_url': image_url,
                     'series_id': series_id,
                     'req_id': req_id,
@@ -94,7 +95,9 @@ class MechaCog(commands.Cog):
                 view = UniversalDashboard(self.bot, ctx_data, "mecha")
                 view.interaction = interaction
                 
-                await interaction.followup.send(embed=view.build_live_embed(), view=view)
+                payload_data = {"flags": 32768, "components": view.build_v2_payload()}
+                route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+                await self.bot.http.request(route, json=payload_data)
                 logger.info(f"✅ Dashboard active for '{title}'")
 
                 # 8. SPECULATIVE WARMUP (Parallel Action)

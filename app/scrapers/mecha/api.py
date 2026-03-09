@@ -5,7 +5,7 @@ import math
 import time
 import binascii
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin, urlparse, parse_qs
 from bs4 import BeautifulSoup
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -84,86 +84,154 @@ class MechaApiScraper(BaseScraper):
         session.cookies.update(cookie_dict)
         logger.info(f"   🍪 Force-Injected {len(cookie_dict)} cookies (Flat Dictionary).")
 
+    def _parse_page_chapters(self, soup, seen_ids):
+        """Parses chapter list items from a BeautifulSoup page object."""
+        page_items = []
+        for item in soup.find_all('li', class_='p-chapterList_item'):
+            chk = item.find('input', {'name': 'chapter_ids[]'})
+            if not chk: continue
+
+            cid = chk.get('value')
+            if cid in seen_ids: continue
+
+            # Strip icon/stats divs before reading chapter number
+            no_elem = item.find('dt', class_='p-chapterList_no')
+            num_text = f"Ch.{cid}"
+            if no_elem:
+                icons = no_elem.find('div', class_='p-chapterList_icons')
+                if icons:
+                    icons.decompose()
+                num_text = no_elem.get_text(strip=True)
+
+            name_elem = item.find('dd', class_='p-chapterList_name')
+            title_text = name_elem.get_text(strip=True) if name_elem else ""
+
+            is_locked = True
+            btn_area = item.find('div', class_='p-chapterList_btnArea')
+            if btn_area and ("無料" in btn_area.get_text() or "読む" in btn_area.get_text()):
+                is_locked = False
+
+            seen_ids.add(cid)
+            page_items.append({
+                'id': cid, 'number_text': num_text, 'title_text': title_text,
+                'title': f"{num_text} {title_text}", 'url': f"{self.BASE_URL}/chapters/{cid}",
+                'is_locked': is_locked
+            })
+        return page_items
+
     def get_series_info(self, url: str):
-        # Local session just for this lookup
+        """Fast startup: fetches Page 1 + last page only (Jumptoon-style lazy loading)."""
         session = self._create_stateless_session()
-        
+
         base_series_url = url.split('?')[0]
-        target_start_url = f"{base_series_url}?page=1"
-        
-        response = session.get(target_start_url)
+        logger.info(f"[Mecha] 🔍 Fetching series metadata: {base_series_url}")
+
+        # 1. Fetch Page 1
+        response = session.get(f"{base_series_url}?page=1")
         if response.status_code != 200:
             raise ScraperError(f"Series page returned {response.status_code}")
 
         soup = BeautifulSoup(response.text, 'html.parser')
-        
+
+        # 2. Extract Title
         title = "Unknown Title"
         og_t = soup.find("meta", property="og:title")
         if og_t: title = og_t["content"].split("|")[0].split("-")[0].split("–")[0].strip()
-        
-        title = re.sub(r'【.*?】', '', title) 
+        title = re.sub(r'【.*?】', '', title)
         title = re.sub(r'\s*([-|–]\s*(めちゃコミック|MechaComic)).*', '', title, flags=re.IGNORECASE).strip()
-        
+        logger.info(f"[Mecha] 📖 Title: {title}")
+
+        # 3. Extract Poster
         image_url = None
         img_tag = soup.select_one("div.p-bookInfo_jacket img.jacket_image_l")
-        if img_tag: image_url = img_tag.get('src')
+        if img_tag:
+            raw = img_tag.get('src', '')
+            image_url = raw.split('?')[0] if raw else None
 
+        # 4. Determine total chapter count + max page
+        # HTML contains a span like "／31話へ" inside .p-search_chapterNo
+        total_chapters_reported = 0
         max_page = 1
         try:
             count_el = soup.select_one("div.p-search_chapterNo span")
             if count_el:
-                max_page = math.ceil(int(re.search(r'(\d+)', count_el.get_text()).group(1)) / 10)
-        except: pass
+                m = re.search(r'(\d+)', count_el.get_text())
+                if m:
+                    total_chapters_reported = int(m.group(1))
+                    max_page = math.ceil(total_chapters_reported / 10)
+        except Exception:
+            pass
 
+        # Fallback: count via pagination links
+        if max_page == 1:
+            try:
+                last_link = soup.select("div.p-tmpPage .pagination a")[-1]
+                href = last_link.get('href', '')
+                pm = re.search(r'page=(\d+)', href)
+                if pm:
+                    max_page = int(pm.group(1))
+            except Exception:
+                pass
+
+        logger.info(f"[Mecha] 📊 Reported chapters: {total_chapters_reported} | Pages: {max_page}")
+
+        # 5. Parse Page 1 chapters
         all_chapters = []
         seen_ids = set()
+        p1_chaps = self._parse_page_chapters(soup, seen_ids)
+        all_chapters.extend(p1_chaps)
+        logger.info(f"[Mecha] 🚀 Page 1: {len(p1_chaps)} chapters parsed.")
 
-        def fetch_page(p_num):
-            res = session.get(f"{base_series_url}?page={p_num}")
-            p_soup = BeautifulSoup(res.text, 'html.parser')
-            page_items = []
-            
-            for item in p_soup.find_all('li', class_='p-chapterList_item'):
-                chk = item.find('input', {'name': 'chapter_ids[]'})
-                if not chk: continue
-                
-                cid = chk.get('value')
-                # 1. チャプター番号の取得（不要なアイコン・統計データを削除）
-                no_elem = item.find('dt', class_='p-chapterList_no')
-                num_text = f"Ch.{cid}"
-                if no_elem:
-                    # 邪魔な「6.8万」や「131」が入っているdivタグを丸ごと削除
-                    icons = no_elem.find('div', class_='p-chapterList_icons')
-                    if icons:
-                        icons.decompose()
-                    num_text = no_elem.get_text(strip=True)
+        # 6. Pre-fetch the LAST page so the latest chapters are immediately visible
+        if max_page > 1:
+            logger.info(f"[Mecha] ⏩ Pre-fetching final page ({max_page}) for latest chapters...")
+            try:
+                res_last = session.get(f"{base_series_url}?page={max_page}", timeout=30)
+                if res_last.status_code == 200:
+                    last_soup = BeautifulSoup(res_last.text, 'html.parser')
+                    last_chaps = self._parse_page_chapters(last_soup, seen_ids)
+                    all_chapters.extend(last_chaps)
+                    logger.info(f"[Mecha] ✅ Final page: {len(last_chaps)} chapters added.")
+            except Exception as e:
+                logger.warning(f"[Mecha] ⚠️ Could not pre-fetch final page: {e}")
 
-                # 2. タイトルの取得（純粋なテキストのみ取得）
-                name_elem = item.find('dd', class_='p-chapterList_name')
-                title_text = name_elem.get_text(strip=True) if name_elem else ""
+        # Sort by chapter number
+        def _sort_key(ch):
+            m = re.search(r'\d+', ch['number_text'])
+            return int(m.group()) if m else 9999
+        all_chapters.sort(key=_sort_key)
 
-                is_locked = True
-                btn_area = item.find('div', class_='p-chapterList_btnArea')
-                if btn_area and ("無料" in btn_area.get_text() or "読む" in btn_area.get_text()): 
-                    is_locked = False
+        series_id = base_series_url.split('/')[-1]
+        return title, total_chapters_reported, all_chapters, image_url, series_id
 
-                page_items.append({
-                    'id': cid, 'number_text': num_text, 'title_text': title_text,
-                    'title': f"{num_text} {title_text}", 'url': f"{self.BASE_URL}/chapters/{cid}",
-                    'is_locked': is_locked
-                })
-            return page_items
+    def fetch_more_chapters(self, base_series_url: str, target_page: int, seen_ids: set, skip_pages: list = None):
+        """Fetches pages 2..target_page sequentially (mirrors JumptoonApiScraper.fetch_more_chapters)."""
+        skip_pages = skip_pages or []
+        logger.info(f"[Mecha] 🕷️ Fetching additional chapters up to page {target_page} for {base_series_url}")
+        session = self._create_stateless_session()
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(fetch_page, p) for p in range(1, max_page + 1)]
-            for f in as_completed(futures):
-                for item in f.result():
-                    if item['id'] not in seen_ids:
-                        seen_ids.add(item['id'])
-                        all_chapters.append(item)
-
-        all_chapters.sort(key=lambda x: int(re.search(r'\d+', x['number_text']).group()) if re.search(r'\d+', x['number_text']) else 999)
-        return title, len(all_chapters), all_chapters, image_url, base_series_url.split('/')[-1]
+        new_chapters = []
+        for page_num in range(2, target_page + 1):
+            if page_num in skip_pages:
+                logger.info(f"[Mecha] ⏩ Skipping page {page_num} (already fetched).")
+                continue
+            try:
+                res = session.get(f"{base_series_url}?page={page_num}", timeout=30)
+                if res.status_code == 200:
+                    p_soup = BeautifulSoup(res.text, 'html.parser')
+                    chaps = self._parse_page_chapters(p_soup, seen_ids)
+                    if not chaps:
+                        logger.info(f"[Mecha] 🛑 No new chapters on page {page_num}, stopping.")
+                        break
+                    new_chapters.extend(chaps)
+                    logger.info(f"[Mecha] 📄 Page {page_num}: {len(chaps)} chapters fetched.")
+                else:
+                    logger.warning(f"[Mecha] ❌ Page {page_num} returned {res.status_code}, stopping.")
+                    break
+            except Exception as e:
+                logger.error(f"[Mecha] ❌ Failed to fetch page {page_num}: {e}")
+                break
+        return new_chapters
 
     def fast_purchase(self, task):
         """Phase 3 Fast Path: High-Speed API Purchase (Bypasses Selenium)"""

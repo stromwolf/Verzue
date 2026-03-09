@@ -27,7 +27,8 @@ class MechaBot(commands.Bot):
         # Removed all individual site cogs!
         extensions = [
             "app.bot.cogs.admin",
-            "app.bot.cogs.dashboard" 
+            "app.bot.cogs.dashboard",
+            "app.bot.cogs.subscriptions"
         ]
         
         for ext in extensions:
@@ -53,6 +54,10 @@ class MechaBot(commands.Bot):
 
         # 5. Start the internal worker loops in the background!
         asyncio.create_task(self.task_queue.start_worker(num_workers=2))
+
+        # 6. Start the Auto-Download Poller
+        from app.tasks.poller import AutoDownloadPoller
+        self.auto_poller = AutoDownloadPoller(self)
 
         # Sync Slash Commands
         try:

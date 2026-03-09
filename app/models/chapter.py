@@ -52,6 +52,11 @@ class ChapterTask:
         
         clean_title = "".join([c for c in self.title if c.isalnum() or c in " -_().話"]).strip()
 
+        # 🟢 Jumptoon Special Handling: Use "第1話 - Title" format
+        if "jumptoon.com" in self.url:
+            title_sep = f" - {clean_title}" if clean_title else ""
+            return f"{self.chapter_str}{title_sep}"
+
         if self.is_smartoon:
             return f"{seq_idx} - {clean_title}"
         else:

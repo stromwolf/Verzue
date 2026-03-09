@@ -10,6 +10,7 @@ from app.services.browser.driver import BrowserService
 from app.services.gdrive.client import GDriveClient
 from app.tasks.manager import TaskQueue
 from app.bot.main import MechaBot
+from app.bot.helper_bot import HelperBot
 
 async def heartbeat():
     """Keeps the event loop active to prevent container sleep/throttling."""
@@ -54,8 +55,18 @@ async def main():
     # ... start queue and bot ...
     bot = MechaBot(token=Settings.DISCORD_TOKEN, task_queue=queue)
     
+    # 3. Init Helper Bot
+    helper_bot = None
+    if Settings.HELPER_TOKEN:
+        logger.info("🤖 Starting Secondary Helper Bot (Slash Commands)...")
+        helper_bot = HelperBot(token=Settings.HELPER_TOKEN, main_bot=bot)
+
     try:
-        await bot.start_bot()
+        tasks = [bot.start_bot()]
+        if helper_bot:
+            tasks.append(helper_bot.start_bot())
+            
+        await asyncio.gather(*tasks)
     except asyncio.CancelledError:
         # This catches the Ctrl+C interrupt gracefully
         logger.info("👋 Shutdown signal received.")
@@ -64,7 +75,9 @@ async def main():
     finally:
         logger.info("🛑 Disconnecting from Discord...")
         await bot.close() # 🟢 CRITICAL: This gracefully closes the websocket and aiohttp sessions!
-        
+        if helper_bot:
+            await helper_bot.close()
+            
         logger.info("🧹 Cleaning up background tasks...")
         current_task = asyncio.current_task()
         for task in asyncio.all_tasks():
