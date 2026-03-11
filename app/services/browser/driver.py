@@ -1,217 +1,158 @@
 import logging
 import base64
-import time
-import threading
+import asyncio
 import re
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from config.settings import Settings
-from .utils import BrowserUtils
 
 logger = logging.getLogger("BrowserService")
 
 class BrowserService:
     def __init__(self, headless: bool = None):
-        self.driver = None
+        self.playwright = None
+        self.browser: Browser = None
+        self.context: BrowserContext = None
         self.default_headless = headless if headless is not None else Settings.HEADLESS
-        self.active_sessions = 0 # TRACKS ACTIVE DASHBOARDS
-        self.tab_handles = [] 
+        self.active_sessions = 0
         
-        # 🛡️ Thread Safety: Reentrant lock for managing driver access across threads
-        self._lock = threading.RLock() 
+        # 🟢 Playwright is natively async; we don't need a threading Lock anymore.
+        # Instead, we ensure the browser is initialized before use.
+        self._init_lock = asyncio.Lock()
 
-    def inc_session(self):
-        self.active_sessions += 1
-        logger.info(f"➕ Browser Session Added ({self.active_sessions} total)")
+    async def start(self, headless: bool = None):
+        """Initializes the Playwright engine and the main persistent context."""
+        async with self._init_lock:
+            if self.browser:
+                return
 
-    def dec_session(self):
-        self.active_sessions = max(0, self.active_sessions - 1)
-        logger.info(f"➖ Browser Session Removed ({self.active_sessions} total)")
-        if self.active_sessions == 0:
-            logger.info("🧹 Zero active sessions. Stopping browser...")
-            self.stop()
-
-    def start(self, headless: bool = None):
-        with self._lock:
-            if self.driver:
-                try:
-                    self.driver.current_url
-                    return 
-                except: self.driver = None
-
+            self.playwright = await async_playwright().start()
             is_headless = headless if headless is not None else self.default_headless
-            opts = Options()
-            opts.page_load_strategy = 'eager'
-            if is_headless: opts.add_argument("--headless=new")
 
-            # 🟢 FORCE CHROME 120 USER AGENT
-            STATIC_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            opts.add_argument(f"user-agent={STATIC_UA}")
+            # 🟢 Use Persistent Context for session stickiness (cookies, etc.)
+            logger.info("🌐 Launching Playwright Chromium (Persistent Context)...")
+            self.context = await self.playwright.chromium.launch_persistent_context(
+                user_data_dir=str(Settings.BROWSER_PROFILE_DIR),
+                headless=is_headless,
+                channel="chrome", # Use installed Chrome if possible
+                viewport={"width": 1920, "height": 1080},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox"
+                ]
+            )
+            self.browser = self.context.browser
+            logger.info("🌐 Browser Service Online (Playwright).")
 
-            opts.add_argument(f"--user-data-dir={Settings.BROWSER_PROFILE_DIR}") # PERSISTENT IDENTITY
-            opts.add_argument("--profile-directory=Default") # Use the default profile
-            opts.add_argument("--disable-gpu")
-            opts.add_argument("--no-sandbox")
-            opts.add_argument("--disable-blink-features=AutomationControlled")
-            opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-            
-            if Settings.BINARY_LOCATION: opts.binary_location = Settings.BINARY_LOCATION
-            
-            # Use explicit location if provided, otherwise use webdriver_manager
-            if Settings.DRIVER_LOCATION:
-                service = ChromeService(executable_path=Settings.DRIVER_LOCATION)
-            else:
-                driver_path = ChromeDriverManager().install()
-                service = ChromeService(executable_path=driver_path)
+    async def stop(self):
+        async with self._init_lock:
+            if self.context:
+                await self.context.close()
+            if self.playwright:
+                await self.playwright.stop()
+            self.browser = None
+            self.context = None
+            self.playwright = None
+            logger.info("🛑 Browser Service Shutdown.")
 
-            try:
-                self.driver = webdriver.Chrome(service=service, options=opts)
-                self.driver.set_window_size(1920, 1080)
-                
-                # INITIALIZE 1 SINGLE TAB
-                self.tab_handles = [self.driver.current_window_handle]
-                
-                logger.info(f"🌐 Browser Started with 1 active tab (PID: {self.driver.service.process.pid})")
-            except Exception as e:
-                logger.error(f"Browser Init Failed: {e}")
-                raise e
+    async def get_new_page(self) -> Page:
+        """Creates a new page within the shared persistent context."""
+        if not self.context:
+            await self.start()
+        return await self.context.new_page()
 
-    def stop(self):
-        with self._lock:
-            if self.driver:
-                try: self.driver.quit()
-                except: pass
-                self.driver = None
-                self.tab_handles = []
+    async def run_isolated_handshake(self, url: str, cookie_list: list, selectors: list):
+        """
+        Performs an async handshake to solve Cloudflare/Bot-Detections.
+        Unlike Selenium, this can run concurrently with other pages!
+        """
+        if not self.context:
+            await self.start()
 
-    def ensure_tab(self, index: int):
-        """Dynamically creates tabs up to the requested index (max 3 total)."""
-        with self._lock:
-            if not self.driver: return False
-            
-            while len(self.tab_handles) <= index and len(self.tab_handles) < 3:
-                old_handles = set(self.driver.window_handles)
-                self.driver.execute_script("window.open('about:blank', '_blank');")
-                
-                new_handles = list(set(self.driver.window_handles) - old_handles)
-                if new_handles:
-                    self.tab_handles.append(new_handles[0])
-                    logger.info(f"📄 Created new tab on-demand. Total open tabs: {len(self.tab_handles)}")
-                else:
-                    break 
-                    
-            return index < len(self.tab_handles)
-
-    def switch_to_tab(self, index: int):
-        with self._lock:
-            if not self.driver or index >= len(self.tab_handles): return False
-            try:
-                self.driver.switch_to.window(self.tab_handles[index])
-                return True
-            except Exception as e:
-                logger.error(f"Failed to switch to tab {index}: {e}")
-                return False
-
-    def run_on_tab(self, index: int, callback):
-        """Thread-safe execution of a callback on a specific tab."""
-        with self._lock:
-            if not self.ensure_tab(index): return None
-            if not self.switch_to_tab(index): return None
-            return callback(self.driver)
-
-    def warmup(self):
-        with self._lock:
-            if not self.driver: self.start()
-
-    def enable_mobile(self, enabled=True):
-        with self._lock:
-            if not self.driver: return
-            if enabled:
-                self.driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 3, "mobile": True})
-                self.driver.execute_cdp_cmd("Emulation.setTouchEmulationEnabled", {"enabled": True})
-            else:
-                self.driver.execute_cdp_cmd("Emulation.clearDeviceMetricsOverride", {})
-                self.driver.execute_cdp_cmd("Emulation.setTouchEmulationEnabled", {"enabled": False})
-
-    def fetch_blob(self, uri):
-        # NOT LOCKED: Assumes caller handles context.
-        if not uri or not uri.startswith("blob:"): return None
-        script = "var uri=arguments[0];var callback=arguments[1];var xhr=new XMLHttpRequest();xhr.responseType='blob';xhr.onload=function(){var reader=new FileReader();reader.onloadend=function(){callback(reader.result.split(',')[1]);};reader.readAsDataURL(xhr.response);};xhr.open('GET',uri);xhr.send();"
+        page = await self.get_new_page()
         try:
-            res = self.driver.execute_async_script(script, uri)
-            return base64.b64decode(res) if res else None
-        except: return None
+            logger.info(f"🛡️ [Handshake] Navigating to {url}...")
+            
+            # 1. Set Cookies
+            domain = "mechacomic.jp"
+            formatted_cookies = []
+            for c in cookie_list:
+                formatted_cookies.append({
+                    'name': c['name'], 
+                    'value': c['value'], 
+                    'domain': c.get('domain', f".{domain}"),
+                    'path': c.get('path', '/')
+                })
+            
+            if formatted_cookies:
+                await self.context.add_cookies(formatted_cookies)
 
-    # =========================================================
-    # ISOLATED HANDSHAKE (Thread-Safe)
-    # =========================================================
-    def run_isolated_handshake(self, url: str, cookie_list: list, selectors: list):
-        with self._lock:
-            logger.info(f"🛡️ [Handshake] Acquiring Browser Lock for {url}")
-            if not self.driver:
-                self.start()
+            # 2. Go to URL
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(3000)
 
-            try:
-                # 1. Ensure tab 1 exists and switch to it
-                if not self.ensure_tab(1):
-                    logger.error("Failed to ensure tab 1 for handshake")
-                    return None, None
-                
-                self.switch_to_tab(1)
-                
-                # 2. クッキーを設定するために軽量なページを開く
-                domain = "https://mechacomic.jp"
-                self.driver.get(domain + "/robots.txt")
-                self.driver.delete_all_cookies()
-                
-                for c in cookie_list:
-                    cookie_dict = {'name': c['name'], 'value': c['value']}
-                    if 'domain' in c: cookie_dict['domain'] = c['domain']
-                    if 'path' in c: cookie_dict['path'] = c['path']
-                    try:
-                        self.driver.add_cookie(cookie_dict)
-                    except Exception as e:
-                        logger.debug(f"Failed to add cookie {c.get('name')}: {e}")
+            # 3. Handle Interactions (Select/Click)
+            viewer_url = None
+            for sel in selectors:
+                try:
+                    button = page.locator(sel).first
+                    if await button.is_visible(timeout=2000):
+                        label = await button.get_attribute("value") or await button.inner_text()
+                        logger.info(f"   👆 [Handshake] Clicking: '{label.strip()}'")
+                        await button.click()
+                        await page.wait_for_timeout(3000)
+                        break
+                except:
+                    continue
 
-                # 3. 目的のチャプターURLに移動
-                self.driver.get(url)
-                time.sleep(3) 
+            # 4. Check for Viewer URL
+            current_url = page.url
+            if "contents_vertical" in current_url:
+                viewer_url = current_url
+            else:
+                content = await page.content()
+                match = re.search(r'\"(https?://mechacomic\.jp/viewer\?.*?contents_vertical=.*?)\"', content)
+                if match:
+                    viewer_url = match.group(1).replace('\\/', '/')
 
-                # 4. 「無料で読む」や「購入」ボタンを探してクリック
-                clicked = False
-                for sel in selectors:
-                    try:
-                        btns = self.driver.find_elements(By.CSS_SELECTOR, sel)
-                        if btns and btns[0].is_displayed() and btns[0].is_enabled():
-                            label = btns[0].get_attribute("value") or btns[0].text
-                            logger.info(f"   👆 [Handshake] Clicking button: '{label}'")
-                            self.driver.execute_script("arguments[0].click();", btns[0])
-                            time.sleep(3) 
-                            clicked = True
-                            break
-                    except: pass
+            # 5. Extract Session Cookies
+            new_cookies = await self.context.cookies()
+            
+            logger.info(f"🏁 [Handshake] Complete. Viewer Found: {bool(viewer_url)}")
+            return new_cookies, viewer_url
 
-                # 5. ビュワー（閲覧画面）のURLを取得できたか確認
-                viewer_url = None
-                html = self.driver.page_source
-                current_url = self.driver.current_url
-                
-                if "contents_vertical" in current_url:
-                    viewer_url = current_url
-                else:
-                    match = re.search(r'\"(https?://mechacomic\.jp/viewer\?.*?contents_vertical=.*?)\"', html)
-                    if match:
-                        viewer_url = match.group(1).replace('\\/', '/')
+        except Exception as e:
+            logger.error(f"❌ [Handshake] Playwright Error: {e}")
+            return None, None
+        finally:
+            await page.close()
 
-                # 6. 新しく更新されたクッキー（セッション維持用）を取得
-                new_cookies = self.driver.get_cookies()
-                
-                logger.info(f"🏁 [Handshake] Complete. Viewer URL Found: {bool(viewer_url)}")
-                return new_cookies, viewer_url
+    async def fetch_blob(self, page: Page, uri: str):
+        """Fetches a blob URI from the page context and returns bytes."""
+        if not uri or not uri.startswith("blob:"):
+            return None
+        
+        try:
+            # Playwright can evaluate script to fetch blob and return as base64
+            script = """
+                async (uri) => {
+                    const response = await fetch(uri);
+                    const blob = await response.blob();
+                    return new Promise((resolve) => {
+                        const reader = new FileReader();
+                        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+                        reader.readAsDataURL(blob);
+                    });
+                }
+            """
+            b64_data = await page.evaluate(script, uri)
+            return base64.b64decode(b64_data) if b64_data else None
+        except Exception as e:
+            logger.debug(f"Failed to fetch blob {uri}: {e}")
+            return None
 
-            except Exception as e:
-                logger.error(f"❌ [Handshake] Error during browser fallback: {e}")
-                return None, None
+    # REPLACEMENTS FOR LEGACY SELENIUM METHODS (To avoid crashes during migration)
+    def enable_mobile(self, enabled=True): pass 
+    def warmup(self): pass
+    def inc_session(self): self.active_sessions += 1
+    def dec_session(self): self.active_sessions = max(0, self.active_sessions - 1)

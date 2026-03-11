@@ -29,7 +29,7 @@ def save_account_cookies(new_cookies, platform, account_name):
     
     return target_path
 
-def run_login(target_url, site_name, platform):
+def run_login(target_url, site_name, platform, fresh_session=False):
     logger.info(f"🚀 Launching Stealth Browser for {site_name}...")
     
     options = uc.ChromeOptions()
@@ -39,8 +39,16 @@ def run_login(target_url, site_name, platform):
     static_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     options.add_argument(f"--user-agent={static_ua}")
     
-    # PERSISTENT IDENTITY: Use the same profile folder as the main bot
-    user_profile = str(Settings.BROWSER_PROFILE_DIR)
+    # PERSISTENT IDENTITY: Use site-specific profile folders
+    if fresh_session:
+        logger.info("🆕 Using a FRESH (Temporary) session...")
+        user_profile = None # Let uc handle temp directory
+    else:
+        # Isolate profiles by platform to prevent login interference
+        platform_profile = Settings.BROWSER_PROFILE_DIR / platform
+        platform_profile.mkdir(parents=True, exist_ok=True)
+        user_profile = str(platform_profile)
+        logger.info(f"💾 Using PERSISTENT profile at: {user_profile}")
     
     try:
         driver = uc.Chrome(options=options, user_data_dir=user_profile, version_main=144, use_subprocess=True)
@@ -72,10 +80,18 @@ def run_login(target_url, site_name, platform):
         try:
             driver.quit()
         except: pass
-        sys.exit(0)
 
 if __name__ == "__main__":
     print("Verzue Service Login Utility")
+    print("-" * 30)
+    print("Session Type:")
+    print("  p. Persistent (Remembers previous logins)")
+    print("  f. Fresh (Starts clean - use this to log into a new account)")
+    
+    session_choice = input("\nSelect session type [p/f] (default: p): ").lower() or "p"
+    is_fresh = session_choice == "f"
+
+    print("\nTargets:")
     print("1. MechaComic (JP)")
     print("2. Jumptoon (Next.js)")
     print("3. KakaoPage (KR)")
@@ -85,16 +101,17 @@ if __name__ == "__main__":
     
     choice = input("\nSelect target: ").lower()
     
-    if choice == "1":
-        run_login("https://mechacomic.jp/login", "MechaComic", "mecha")
-    elif choice == "2":
-        run_login("https://jumptoon.com/", "Jumptoon", "jumptoon")
-    elif choice == "3":
-        run_login("https://page.kakao.com/", "KakaoPage", "kakao")
-    elif choice == "4":
-        run_login("https://ac.qq.com/login", "Tencent AC.QQ", "acqq")
-    elif choice == "5":
-        run_login("https://piccoma.com/web/acc/signin", "Piccoma", "piccoma")
+    targets = {
+        "1": ("https://mechacomic.jp/login", "MechaComic", "mecha"),
+        "2": ("https://jumptoon.com/", "Jumptoon", "jumptoon"),
+        "3": ("https://page.kakao.com/", "KakaoPage", "kakao"),
+        "4": ("https://ac.qq.com/login", "Tencent AC.QQ", "acqq"),
+        "5": ("https://piccoma.com/web/acc/signin", "Piccoma", "piccoma")
+    }
+
+    if choice in targets:
+        url, name, plat = targets[choice]
+        run_login(url, name, plat, fresh_session=is_fresh)
     elif choice == "q":
         sys.exit()
     else:

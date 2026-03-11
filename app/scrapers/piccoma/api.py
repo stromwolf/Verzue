@@ -12,7 +12,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
-
+from config.settings import Settings
+ 
 try:
     from PIL import Image
 except ImportError:
@@ -174,24 +175,166 @@ class PiccomaApiScraper(BaseScraper):
         ep_res = self.session.get(f"{self.base_url}/web/product/{series_id}/episodes?etype=E")
         if ep_res.status_code == 200:
             ep_soup = BeautifulSoup(ep_res.text, 'html.parser')
-            items = ep_soup.select('ul.PCM-epList li a[data-episode_id]')
-            for item in items:
-                ep_id = item['data-episode_id']
-                title_node = item.select_one('div.PCM-epList_title h2')
+            # 🟢 Check for the "UP" tag on the list item (li)
+            li_items = ep_soup.select('ul.PCM-epList li')
+            for li in li_items:
+                link = li.select_one('a[data-episode_id]')
+                if not link: continue
+                
+                ep_id = link['data-episode_id']
+                title_node = link.select_one('div.PCM-epList_title h2')
                 ep_title = title_node.text.strip() if title_node else f"Episode {ep_id}"
                 
                 # Check lock status based on button icons/classes
-                is_locked = not bool(item.select_one('.PCM-epList_status_free')) 
+                is_locked = not bool(link.select_one('.PCM-epList_status_free'))
+                
+                # 🟢 Check for "UP" tag (PCM-stt_up class on li)
+                is_new = 'PCM-stt_up' in li.get('class', [])
                 
                 all_chapters.append({
                     'id': str(ep_id),
                     'title': ep_title,
                     'number_text': str(len(all_chapters) + 1),
                     'url': f"{self.base_url}/web/viewer/{series_id}/{ep_id}",
-                    'is_locked': is_locked
+                    'is_locked': is_locked,
+                    'is_new': is_new
                 })
 
         return title, len(all_chapters), all_chapters, image_url, str(series_id)
+
+    def _load_available_accounts(self):
+        """Loads and deduplicates cookies from piccoma secrets directory."""
+        jt_dir = Settings.SECRETS_DIR / "piccoma"
+        if not jt_dir.exists(): return []
+        
+        cookie_paths = sorted(list(jt_dir.glob("*.json")))
+        
+        accounts = []
+        for path in cookie_paths:
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                clist = data if isinstance(data, list) else [{"name": k, "value": v} for k, v in data.items()]
+                if any(c.get('name') == 'p_session' for c in clist): # Piccoma session cookie
+                    accounts.append({'cookies': clist, 'name': path.name})
+            except Exception: continue
+        return accounts
+
+    def _apply_session_cookies(self, session, cookie_list):
+        session.cookies.clear()
+        domain = '.piccoma.com' if self.region == 'jp' else '.fr.piccoma.com'
+        for c in cookie_list:
+            if c.get('name') and c.get('value'):
+                session.cookies.set(c['name'], c['value'], domain=domain)
+        logger.info(f"   🍪 Injected {len(cookie_list)} cookies.")
+
+    def fast_purchase(self, task):
+        """High-Speed API Purchase for Piccoma."""
+        match = re.search(r'/web/viewer/(\d+)/(\d+)', task.url)
+        if not match:
+            logger.error(f"[Piccoma API] Invalid URL for purchase: {task.url}")
+            return False, None
+        
+        series_id, episode_id = match.groups()
+        accounts = self._load_available_accounts()
+        
+        # Determine base URL if not already set
+        if "fr.piccoma" in task.url:
+            self.base_url = "https://fr.piccoma.com"
+            self.region = "fr"
+        else:
+            self.base_url = "https://piccoma.com"
+            self.region = "jp"
+
+        for acc in accounts:
+            logger.info(f"[Piccoma API] ⚡ Attempting purchase with account: {acc['name']}")
+            self._apply_session_cookies(self.session, acc['cookies'])
+            
+            # 1. Fetch the viewer page to check if it's already unlocked or find purchase triggers
+            try:
+                res = self.session.get(task.url, timeout=15)
+                if res.status_code != 200: continue
+                
+                # 🟢 IMPROVED DETECTION: Coin vs Wait-Free vs Already Unlocked
+                
+                # 1. Check if already unlocked (will have _pdata_ with img list)
+                if '_pdata_' in res.text and '"img":[' in res.text:
+                    logger.info(f"[Piccoma API] ✅ Episode {episode_id} is already unlocked.")
+                    return True, acc['cookies']
+                
+                soup = BeautifulSoup(res.text, 'html.parser')
+                
+                # 2. Look for "Wait Until Free" button (User's TikTok log showed .btn-waitfree)
+                wait_free_btn = soup.select_one('.btn-waitfree, a[data-gtm-event="CLK_VIEWER_WAITFREE_BUTTON"]')
+                
+                if wait_free_btn:
+                    logger.info(f"[Piccoma API] ⏳ Wait-Free button detected for E.{episode_id}. Attempting unlock...")
+                    
+                    # Based on user analysis, a standard redirect/GET might trigger it.
+                    # We'll hit the URL again to confirm.
+                    self.session.get(task.url, timeout=15)
+                    time.sleep(1)
+                    final_res = self.session.get(task.url, timeout=15)
+                    
+                    if '_pdata_' in final_res.text and '"img":[' in final_res.text:
+                        logger.info(f"[Piccoma API] 🟢 Wait-Free unlock successful via GET trigger.")
+                        return True, acc['cookies']
+                    
+                    # Fallback: Try a POST if it's part of a form
+                    wf_form = wait_free_btn.find_parent('form')
+                    if wf_form:
+                         action = urljoin(self.base_url, wf_form.get('action', ''))
+                         if action:
+                            logger.info(f"[Piccoma API] 📤 Submitting Wait-Free form to {action}")
+                            self.session.post(action, timeout=15)
+                            final_res = self.session.get(task.url, timeout=15)
+                            if '_pdata_' in final_res.text and '"img":[' in final_res.text:
+                                return True, acc['cookies']
+                
+                # 3. Look for standard Purchase button
+                purchase_btn = soup.select_one('a[data-user_access="require"], .PCM-viewer2ReadBtn[data-user_access="require"]')
+                
+                if purchase_btn:
+                    pid = purchase_btn.get('data-product_id', series_id)
+                    eid = purchase_btn.get('data-episode_id', episode_id)
+                    
+                    # Piccoma's web purchase API is often a POST to /web/episode/buy
+                    buy_url = f"{self.base_url}/web/episode/buy"
+                    payload = {
+                        "episode_id": eid,
+                        "product_id": pid,
+                        "ticket_type": "RT03" # Default ticket type often seen in pdata or requests
+                    }
+                    
+                    # CSRF usually handled via cookies or a meta tag if it were a form, 
+                    # but Piccoma's API calls often just need the session cookie.
+                    headers = {
+                        "Referer": task.url,
+                        "Origin": self.base_url,
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    logger.info(f"[Piccoma API] 📤 Submitting purchase request for E.{eid}...")
+                    buy_res = self.session.post(buy_url, json=payload, headers=headers, timeout=15)
+                    
+                    if buy_res.status_code == 200:
+                        buy_data = buy_res.json()
+                        if buy_data.get('status') == 'success' or buy_data.get('code') == 200:
+                            logger.info(f"[Piccoma API] 🟢 Purchase successful for E.{eid}!")
+                            return True, acc['cookies']
+                        else:
+                            logger.warning(f"[Piccoma API] ❌ Purchase rejected: {buy_data.get('message', 'Unknown error')}")
+                    else:
+                        logger.warning(f"[Piccoma API] ❌ Purchase request failed: {buy_res.status_code}")
+                else:
+                    logger.warning(f"[Piccoma API] 🔒 No purchase button found on viewer page.")
+                    
+            except Exception as e:
+                logger.error(f"[Piccoma API] ❌ Error during purchase attempt: {e}")
+                continue
+                
+        return False, None
 
     def scrape_chapter(self, task, output_dir):
         # Match series_id and chapter_id from the task URL
@@ -281,8 +424,13 @@ class PiccomaApiScraper(BaseScraper):
             
             with lock:
                 downloaded += 1
-                # Progress on same line
-                print(f"\r[INFO ] [{task.req_id}] -    Downloading: {downloaded}/{total_pages}", end="", flush=True)
+                percent = int((downloaded / total_pages) * 100)
+                bar_length = 20
+                filled_length = int(bar_length * downloaded // total_pages)
+                bar = '▰' * filled_length + '▱' * (bar_length - filled_length)
+                import sys
+                sys.stdout.write(f"\r[INFO] [{task.req_id}] - Downloading: [{task.service}] {bar} {downloaded}/{total_pages} ({percent}%)")
+                sys.stdout.flush()
 
         with ThreadPoolExecutor(max_workers=5) as executor:
             list(executor.map(process_piccoma, [(img, i) for i, img in enumerate(valid_images)]))

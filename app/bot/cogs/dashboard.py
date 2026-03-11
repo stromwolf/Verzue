@@ -6,7 +6,9 @@ import re
 import uuid
 import asyncio
 import math
+import time
 from config.settings import Settings
+from app.models.chapter import TaskStatus
 
 logger = logging.getLogger("Dashboard")
 
@@ -150,7 +152,7 @@ class DashboardCog(commands.Cog):
                 await self.launch_subscribe_modal(interaction, platform, url)
 
             # --- Universal Dashboard Navigation & Actions ---
-            elif any(custom_id.startswith(p) for p in ["btn_open_menu_", "mode_select_", "page_select_", "btn_start_", "btn_cancel_"]):
+            elif any(custom_id.startswith(p) for p in ["btn_open_menu_", "mode_select_", "page_select_", "btn_start_", "btn_cancel_", "btn_clear_", "btn_error_retry_"]):
                 req_id = custom_id.split("_")[-1]
                 from app.bot.common.view import UniversalDashboard
                 view = UniversalDashboard.active_views.get(req_id)
@@ -166,7 +168,55 @@ class DashboardCog(commands.Cog):
                 view.interaction = interaction
                 view.last_interaction_time = time.time() # 🔄 Reset session timer on every interaction
 
-                # A. Open Selection Sub-Menu (The Radio Group Modal)
+                # NEW: Error Retry Logic
+                if custom_id.startswith("btn_error_retry_"):
+                    # 1. Immediate Ephemeral Feedback
+                    apology = (
+                        "We apologize for the inconvenience. I'll re-download this chapter and get back to you soon."
+                    )
+                    await interaction.response.send_message(apology, ephemeral=True)
+                    view.retry_active = True # 🟡 Flag for monitor_tasks to send fresh notification
+                    
+                    # 2. Forensic Deletion (Remove existing folders on Drive)
+                    uploader = self.bot.task_queue.uploader
+                    if uploader:
+                        logger.info(f"[{req_id}] 🗑️ Retrying: Deleting existing Drive assets...")
+                        for task in view.active_tasks:
+                            # Search for folder in MAIN
+                            folder_name = task.folder_name
+                            main_id = task.main_folder_id or Settings.GDRIVE_ROOT_ID
+                            existing_id = uploader.find_folder(folder_name, main_id)
+                            if existing_id: uploader.delete_file(existing_id)
+                            
+                            # Search for [Uploading] version
+                            temp_name = f"[Uploading] {folder_name}"
+                            temp_id = uploader.find_folder(temp_name, main_id)
+                            if temp_id: uploader.delete_file(temp_id)
+
+                    # 3. Reset View State
+                    view.processing_mode = True
+                    view.phases["download"] = "loading"
+                    view.final_link = None
+                    view.trigger_refresh()
+                    
+                    # 4. Re-queue tasks
+                    new_tasks = []
+                    for t in view.active_tasks:
+                        # Reset task object
+                        t.status = TaskStatus.QUEUED
+                        t.pre_created_folder_id = None
+                        new_tasks.append(await self.bot.task_queue.add_task(t))
+                    
+                    view.active_tasks = new_tasks
+                    asyncio.create_task(view.monitor_tasks())
+                    return
+
+                # A. Clear Selections (Cancel SR)
+                if custom_id.startswith("btn_clear_"):
+                    view.selected_indices.clear()
+                    return await view.update_view(interaction)
+
+                # B. Open Selection Sub-Menu (The Radio Group Modal)
                 if custom_id.startswith("btn_open_menu_"):
                     new_ch = next((ch for ch in view.all_chapters if ch.get('is_new')), None)
                     if new_ch:
@@ -242,28 +292,40 @@ class DashboardCog(commands.Cog):
 
                 # C. Page Navigation
                 elif custom_id.startswith("page_select_"):
+                    # 🟢 DEFER IMMEDIATELY: Lazy loading can take > 3 seconds
+                    await interaction.response.defer(ephemeral=True)
                     view.page = int(interaction.data.get("values", ["1"])[0])
                     
                     # --- NEW LOGIC FOR DYNAMIC JUMPTOON SCALING ---
                     req_ch_index = view.page * view.per_page
                     if req_ch_index > len(view.all_chapters) and getattr(view, 'total_chapters', 0) > len(view.all_chapters):
-                        if view.service_type == "jumptoon":
+                        if view.service_type in ["jumptoon", "mecha"]:
                             scraper = self.bot.task_queue.scraper_registry.get_scraper(view.url)
-                            target_jt_page = math.ceil(req_ch_index / 30)
-                            last_jt_page = math.ceil(getattr(view, 'total_chapters', 0) / 30)
+                            
+                            # 🟢 Dynamic Math: Jumptoon (30/pg) vs Mecha (10/pg)
+                            pg_size = 30 if view.service_type == "jumptoon" else 10
+                            target_jt_page = math.ceil(req_ch_index / pg_size)
+                            last_jt_page = math.ceil(getattr(view, 'total_chapters', 0) / pg_size)
+                            
                             try:
-                                logger.info(f"[{req_id}] ⚡ Lazy Loading: Fetching up to Jumptoon page {target_jt_page}...")
+                                logger.info(f"[{req_id}] ⚡ Lazy Loading: Fetching up to {view.service_type} page {target_jt_page}...")
                                 seen_ids = {ch['id'] for ch in view.all_chapters}
-                                # Run blocking network request in thread
-                                skip_pages = [last_jt_page] if last_jt_page > 1 else []
-                                new_chaps = await asyncio.to_thread(scraper.fetch_more_chapters, view.series_id, target_jt_page, seen_ids, skip_pages)
+                                
+                                # 🟢 Handle both Async and Sync Scrapers
+                                if asyncio.iscoroutinefunction(scraper.fetch_more_chapters):
+                                    new_chaps = await scraper.fetch_more_chapters(view.url, target_jt_page, seen_ids, [last_jt_page] if last_jt_page > 1 else [])
+                                else:
+                                    new_chaps = await asyncio.to_thread(scraper.fetch_more_chapters, view.url, target_jt_page, seen_ids, [last_jt_page] if last_jt_page > 1 else [])
+                                
                                 if new_chaps:
                                     view.all_chapters.extend(new_chaps)
                                     logger.info(f"[{req_id}] ✅ Lazy Loading: Added {len(new_chaps)} new chapters to memory.")
                             except Exception as e:
                                 logger.error(f"[{req_id}] ❌ Lazy Loading failed: {e}")
 
-                    await view.update_view(interaction)
+                    # 🟢 Trigger Refresh: Don't pass 'interaction' here because we already deferred!
+                    # Passing None forces the view to use the PATCH /webhooks route.
+                    await view.update_view()
 
                 # D. Cancel Session
                 elif custom_id.startswith("btn_cancel_"):
@@ -440,7 +502,21 @@ class DashboardCog(commands.Cog):
             
             scraper = self.bot.task_queue.scraper_registry.get_scraper(url, is_smartoon=("mecha" in platform.lower()))
             logger.info(f"[{req_id}] 🚀 Handoff: Extraction starting for {platform}...")
-            data = await asyncio.to_thread(scraper.get_series_info, url)
+            
+            # 🟢 Handle both Async and Sync Scrapers
+            if asyncio.iscoroutinefunction(scraper.get_series_info):
+                data = await scraper.get_series_info(url)
+            else:
+                try:
+                    data = await asyncio.to_thread(scraper.get_series_info, url)
+                except Exception as e:
+                    if platform == "mecha":
+                        logger.warning(f"[Dashboard] Mecha API failed ({e}), falling back to Web Scraper...")
+                        web_scraper = self.bot.task_queue.scraper_registry.web_scraper
+                        data = await web_scraper.get_series_info(url)
+                    else:
+                        raise e
+                
             logger.info(f"[{req_id}] ✅ Handoff: Metadata retrieved successfully.")
             title, total_chapters, chapter_list, image_url, series_id = data
             
@@ -567,7 +643,12 @@ class DashboardCog(commands.Cog):
             
             # Fetch Metadata (using existing scraper logic exactly as dashboard does)
             scraper = self.bot.task_queue.scraper_registry.get_scraper(url, is_smartoon=("mecha" in platform.lower()))
-            data = await asyncio.to_thread(scraper.get_series_info, url)
+            
+            if asyncio.iscoroutinefunction(scraper.get_series_info):
+                data = await scraper.get_series_info(url)
+            else:
+                data = await asyncio.to_thread(scraper.get_series_info, url)
+                
             title, total_chapters, chapter_list, image_url, series_id = data
 
             # Check Global Singularity rule
@@ -692,6 +773,16 @@ class DashboardCog(commands.Cog):
                     }]
                 }]
             }
+            try:
+                route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+                await self.bot.http.request(route, json=error_payload)
+            except: pass
+
+            try:
+                route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+                await self.bot.http.request(route, json=error_payload)
+            except: pass
+
             try:
                 route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
                 await self.bot.http.request(route, json=error_payload)

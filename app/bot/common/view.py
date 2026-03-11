@@ -37,6 +37,11 @@ class UniversalDashboard:
         # Register to global router
         UniversalDashboard.active_views[self.req_id] = self
 
+        # 🟢 BACKGROUND SCAN: Fetch remaining chapters for Jumptoon/Mecha
+        self._full_scan_task = None
+        if self.service_type in ["jumptoon", "mecha"] and self.total_chapters > len(self.all_chapters):
+            self._full_scan_task = asyncio.create_task(self._perform_full_scan())
+
     async def _auto_timeout_loop(self):
         """Background loop to clear memory if abandoned for >30 minutes."""
         timeout_seconds = 1800  # 30 mins (as requested)
@@ -95,25 +100,23 @@ class UniversalDashboard:
         
         desc = ""
         if self.processing_mode:
-            if self.phases["analyze"] == "done": desc += f"{ICONS['tick']} Analyzed.\n"
+            if self.phases["analyze"] == "done": desc += "✅ Analyzed.\n"
             else:
                 icon = ICONS["load"] if self.phases["analyze"] == "loading" else ICONS["wait"]
-                stat = f"Analyzing... ({self.sub_status})" if self.sub_status else "Analyzing..."
-                desc += f"{icon} {stat}\n"
+                desc += f"{icon} Analyzing...\n"
             
             if self.phases["analyze"] == "done":
-                if self.phases["purchase"] == "done": desc += f"{ICONS['tick']} Purchased.\n"
+                if self.phases["purchase"] == "done": desc += "✅ Purchased.\n"
                 else:
                     icon = ICONS["load"] if self.phases["purchase"] == "loading" else ICONS["wait"]
-                    count_str = f" [{getattr(self, 'purchase_count', 0)}]" if getattr(self, 'purchase_count', 0) > 0 else ""
-                    desc += f"{icon} Auto-Purchasing{count_str}...\n"
+                    desc += f"{icon} Purchasing...\n"
                     unlocker = self.bot.task_queue.scraper_registry.unlocker
                     active_info = [f"-> `Ch.{stats['task'].id:02d}`: {stats.get('progress', 0)}% | {stats['task'].purchase_status}" for stats in unlocker.worker_stats.values() if stats.get("view") == self and stats.get("task")]
                     if active_info: desc += "\n".join(active_info) + "\n"
             
             if self.phases["purchase"] == "done":
                 if self.phases["download"] == "loading":
-                    desc += f"{ICONS['load']} Processing [{len(self.active_tasks)}] chapters...\n"
+                    desc += f"{ICONS['load']} Downloading chapters...\n"
                     comp = sum(1 for t in self.active_tasks if t.status == TaskStatus.COMPLETED)
                     if comp: desc += f"-> **{comp}** chapters completed.\n"
                     for t in self.active_tasks:
@@ -121,9 +124,9 @@ class UniversalDashboard:
                             desc += f"-> `{t.chapter_str}`: {ICONS['load']} {t.status.value}...\n"
                             break
                 elif self.phases["download"] == "done":
-                    desc += f"{ICONS['tick']} Download Completed."
+                    desc += "✅ Download Completed.\n"
 
-            if self.final_link: desc += f"\n\n📂 **Destination:** [Open Google Drive]({self.final_link})"
+            if self.final_link: desc += f"\n📂 Destination: [Open Google Drive]({self.final_link})"
             desc += f"\n\n**Selected:** {sel_count} ({sel_text})"
         else:
             desc += "### **Chapter List**\n"
@@ -155,11 +158,26 @@ class UniversalDashboard:
         
         # 1. Header Section
         if self.image_url:
-            inner_components.append({
-                "type": 9,
-                "components": [{"type": 10, "content": header_text}],
-                "accessory": {"type": 11, "media": {"url": self.image_url}}
-            })
+            if self.phases.get("download") == "done":
+                # HERO STYLE: Large Banner for Completion (Using Media Gallery type 12)
+                inner_components.append({
+                    "type": 12, # Media Gallery
+                    "items": [{
+                        "media": {
+                            "url": self.image_url,
+                            "width": 1024,
+                            "height": 1024
+                        }
+                    }]
+                })
+                inner_components.append({"type": 10, "content": header_text})
+            else:
+                # POSTER STYLE: Right-side Thumbnail for Selection/Processing
+                inner_components.append({
+                    "type": 9, # Section
+                    "components": [{"type": 10, "content": header_text}],
+                    "accessory": {"type": 11, "media": {"url": self.image_url}}
+                })
         else:
             inner_components.append({"type": 10, "content": header_text})
         
@@ -190,12 +208,19 @@ class UniversalDashboard:
             })
 
             # Row 2: Always display action buttons
+            action_buttons = [
+                {"type": 2, "style": 1, "label": "Select Chapters", "custom_id": f"btn_open_menu_{self.req_id}"}
+            ]
+            
+            if len(self.selected_indices) > 1:
+                label = "Cancel SR" if len(self.selected_indices) == len(self.all_chapters) else "Cancel"
+                action_buttons.append({"type": 2, "style": 4, "label": label, "custom_id": f"btn_clear_{self.req_id}"})
+                
+            action_buttons.append({"type": 2, "style": 3, "label": "Start", "custom_id": f"btn_start_{self.req_id}", "disabled": len(self.selected_indices) == 0})
+
             inner_components.append({
                 "type": 1,
-                "components": [
-                    {"type": 2, "style": 1, "label": "Select Chapters", "custom_id": f"btn_open_menu_{self.req_id}"},
-                    {"type": 2, "style": 3, "label": "Start", "custom_id": f"btn_start_{self.req_id}", "disabled": len(self.selected_indices) == 0}
-                ]
+                "components": action_buttons
             })
 
         # 3. Footer Section
@@ -210,7 +235,19 @@ class UniversalDashboard:
                 }
             })
         else:
-            inner_components.append({"type": 10, "content": footer_text})
+            if self.phases.get("download") == "done":
+                # 🔴 ERROR RETRY BUTTON: Shown when completes
+                inner_components.append({
+                    "type": 9,
+                    "components": [{"type": 10, "content": footer_text}],
+                    "accessory": {
+                        "type": 2, "style": 2, 
+                        "emoji": {"id": "1480954865516548126", "name": "Error_Chapter"}, 
+                        "custom_id": f"btn_error_retry_{self.req_id}"
+                    }
+                })
+            else:
+                inner_components.append({"type": 10, "content": footer_text})
 
         return [{
             "type": 17,
@@ -221,8 +258,15 @@ class UniversalDashboard:
     async def update_view(self, interaction: discord.Interaction = None):
         """Pushes raw V2 JSON natively via HTTP"""
         self.last_interaction_time = time.time()
-        # 🟢 Double check there is no 'content' key at the end of this line:
-        payload_data = {"flags": 32768, "components": self.build_v2_payload()} 
+        
+        # 🟢 MANDATORY: For V2 Components (Flag 32768), the 'content' key MUST be omitted entirely.
+        # Even 'content': "" will trigger a 400 Bad Request error from Discord.
+        payload_data = {
+            "flags": 32768, 
+            "components": self.build_v2_payload()
+        }
+        # Final safety: remove ANY top-level content field
+        payload_data.pop("content", None)
         try:
             if interaction:
                 payload = {"type": 7, "data": payload_data} # UPDATE_MESSAGE
@@ -255,6 +299,43 @@ class UniversalDashboard:
         from app.services.ui_manager import UIManager
         UIManager().request_update(self.req_id, self)
 
+    async def _perform_full_scan(self):
+        """Fetches all missing chapter metadata in the background."""
+        try:
+            logger.info(f"[{self.req_id}] 📡 Starting background full scan for {self.service_type}...")
+            scraper = self.bot.task_queue.scraper_registry.get_scraper(self.url)
+            
+            pg_size = 30 if self.service_type == "jumptoon" else 10
+            total_jt_pages = math.ceil(self.total_chapters / pg_size)
+            
+            # Skip the last page as it was already pre-fetched in get_series_info
+            skip_pages = [total_jt_pages] if total_jt_pages > 1 else []
+            
+            seen_ids = {ch['id'] for ch in self.all_chapters}
+            
+            if asyncio.iscoroutinefunction(scraper.fetch_more_chapters):
+                new_chaps = await scraper.fetch_more_chapters(self.url, total_jt_pages, seen_ids, skip_pages)
+            else:
+                new_chaps = await asyncio.to_thread(scraper.fetch_more_chapters, self.url, total_jt_pages, seen_ids, skip_pages)
+            
+            if new_chaps:
+                # Add and re-sort
+                self.all_chapters.extend(new_chaps)
+                
+                # Sort numerically by notation/id
+                def extract_num(ch):
+                    m = re.search(r'\d+', ch.get('notation', ''))
+                    return int(m.group()) if m else 0
+                
+                self.all_chapters.sort(key=lambda x: extract_num(x))
+                logger.info(f"[{self.req_id}] ✅ Background scan complete. Total mapped: {len(self.all_chapters)}")
+                
+                # Update UI to reflect new chapters if user is on a later page
+                self.trigger_refresh()
+                
+        except Exception as e:
+            logger.error(f"[{self.req_id}] ❌ Background full scan failed: {e}")
+
     async def monitor_tasks(self):
         while self.phases["download"] != "done":
             if self.active_tasks:
@@ -279,17 +360,22 @@ class UniversalDashboard:
             
             self.trigger_refresh()
             if self.phases["download"] == "done":
-                # Only post fallback if we likely hit the 15m expiration
-                if time.time() - getattr(self, "creation_time", time.time()) > 850 and self.final_link and self.interaction:
+                # 🟢 SEND NOTIFICATION: If this was a retry, OR if it's been > 15m (interaction likely expired)
+                is_retry = getattr(self, "retry_active", False)
+                timeout_threshold = 850 # ~14 mins
+                is_timed_out = time.time() - getattr(self, "creation_time", time.time()) > timeout_threshold
+                
+                if (is_retry or is_timed_out) and self.final_link and self.interaction:
                     try:
                         channel = self.bot.get_channel(self.interaction.channel_id)
                         if channel:
                             embed = discord.Embed(
-                                title="✅ Download Completed",
-                                description=f"The download session for **{self.title}** has finished.\n\n📂 **[Open Google Drive]({self.final_link})**",
+                                title="✅ Download Re-delivered" if is_retry else "✅ Download Completed",
+                                description=f"The requested content for **{self.title}** is ready.\n\n📂 **[Open Google Drive]({self.final_link})**",
                                 color=0x2ecc71
                             )
                             await channel.send(content=f"<@{self.interaction.user.id}>", embed=embed)
+                            self.retry_active = False # Reset flag
                     except: pass
                 break
             await asyncio.sleep(2)

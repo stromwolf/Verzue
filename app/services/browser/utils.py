@@ -1,17 +1,18 @@
 import json
 import logging
+from playwright.async_api import Page, BrowserContext
 from config.settings import Settings
 
 logger = logging.getLogger("BrowserUtils")
 
 class BrowserUtils:
     @staticmethod
-    def load_cookies(driver):
-        """Aggregates cookies from all account files into the browser."""
-        current_url = driver.current_url.lower()
-        platform = "mecha" if "mechacomic.jp" in current_url else \
-                   "jumptoon" if "jumptoon.com" in current_url else \
-                   "kakao" if "kakao.com" in current_url else None
+    async def load_cookies(context: BrowserContext, url: str):
+        """Aggregates cookies from all account files into the Playwright context."""
+        url_lower = url.lower()
+        platform = "mecha" if "mechacomic.jp" in url_lower else \
+                   "jumptoon" if "jumptoon.com" in url_lower else \
+                   "kakao" if "kakao.com" in url_lower else None
         
         cookie_paths = []
         if platform:
@@ -28,15 +29,26 @@ class BrowserUtils:
             try:
                 with open(path, 'r') as f:
                     cookies = json.load(f)
+                
+                # Format for Playwright
+                formatted = []
                 for c in cookies:
-                    # Clean up expiry types if they are invalid for Selenium
-                    if 'expiry' in c and not isinstance(c['expiry'], (int, float)):
-                        del c['expiry']
+                    if not c.get('name') or not c.get('value'): continue
                     
-                    try: 
-                        driver.add_cookie(c)
-                        total_injected += 1
-                    except: pass
+                    cookie_dict = {
+                        'name': c['name'],
+                        'value': c['value'],
+                        'url': f"https://{c['domain'].lstrip('.')}" if c.get('domain') else url
+                    }
+                    if 'path' in c: cookie_dict['path'] = c['path']
+                    # Playwright handles domain better via 'url' or 'domain'
+                    if 'domain' in c: cookie_dict['domain'] = c['domain']
+                    
+                    formatted.append(cookie_dict)
+                
+                if formatted:
+                    await context.add_cookies(formatted)
+                    total_injected += len(formatted)
             except Exception as e:
                 logger.error(f"Error loading {path.name}: {e}")
 
@@ -46,17 +58,17 @@ class BrowserUtils:
         return False
 
     @staticmethod
-    def save_cookies(driver):
-        """Saves current browser cookies back to the account file."""
-        current_url = driver.current_url.lower()
-        platform = "mecha" if "mechacomic.jp" in current_url else \
-                   "jumptoon" if "jumptoon.com" in current_url else \
-                   "kakao" if "kakao.com" in current_url else None
+    async def save_cookies(context: BrowserContext, url: str):
+        """Saves current Playwright context cookies back to the account file."""
+        url_lower = url.url.lower() if hasattr(url, 'url') else url.lower()
+        platform = "mecha" if "mechacomic.jp" in url_lower else \
+                   "jumptoon" if "jumptoon.com" in url_lower else \
+                   "kakao" if "kakao.com" in url_lower else None
         
         if not platform: return
         
         try:
-            cookies = driver.get_cookies()
+            cookies = await context.cookies()
             # Save to default fallback or primary account file
             path = Settings.SECRETS_DIR / platform / "cookies.json"
             path.parent.mkdir(parents=True, exist_ok=True)

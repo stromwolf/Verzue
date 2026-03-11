@@ -41,6 +41,13 @@ class BatchController:
         tasks_to_queue = []
         chapters_to_unlock = []
 
+        # 🟢 SCALING PROTECTION: Wait for background scan if it's running (e.g. Mecha)
+        if view_ref and hasattr(view_ref, '_full_scan_task') and view_ref._full_scan_task:
+            logger.info(f"[{req_id}] ⏳ Finalizing chapter mapping before download...")
+            await view_ref._full_scan_task
+            # Update the local reference to the now-populated chapters
+            all_chapters = view_ref.all_chapters
+
         for idx in selected_indices:
             ch_data = all_chapters[idx]
             task = self._make_task(idx, ch_data, title, url, scan_group, interaction, series_id, req_id)
@@ -129,11 +136,21 @@ class BatchController:
         # 🟢 Use notation (e.g. 第1話) for Jumptoon if available
         chapter_str = ch.get('notation') or ch.get('number_text') or str(idx + 1)
 
+        # 🟢 Detect service for progress reporting
+        service = "unknown"
+        if "mechacomic.jp" in url: service = "Mecha"
+        elif "jumptoon.com" in url: service = "Jumptoon"
+        elif "piccoma.com" in url: service = "Piccoma"
+        elif "kakao.com" in url: service = "Kakao"
+        elif "qq.com" in url: service = "Tencent"
+        elif "kuaikanmanhua.com" in url: service = "Kuaikan"
+
         return ChapterTask(
             id=idx+1, title=ch.get('title', ''), chapter_str=chapter_str,
             url=ch_url, series_title=title, requester_id=interaction.user.id, channel_id=interaction.channel_id,
             guild_id=interaction.guild.id if interaction.guild else 0, guild_name=interaction.guild.name if interaction.guild else "DM",
-            scan_group=group, series_id_key=str(sid), episode_id=str(ch.get('id', '')), is_smartoon=True, req_id=req_id
+            scan_group=group, series_id_key=str(sid), episode_id=str(ch.get('id', '')), episode_number=str(ch.get('number', '')), is_smartoon=True, req_id=req_id,
+            service=service
         )
 
     def _create_local_tasks(self, idxs, chs, title, url, group, interaction, sid, req_id):

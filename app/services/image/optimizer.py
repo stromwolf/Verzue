@@ -7,7 +7,13 @@ logger = logging.getLogger("ImageOptimizer")
 
 class JumptoonLCG:
     def __init__(self, seed_string):
-        self.state = sum(ord(char) for char in str(seed_string)) & 0xFFFFFFFF
+        # 🟢 FIX: If the seed is numeric (common in V2), use it as a direct integer.
+        # Otherwise, fall back to the sum of ASCII (for legacy/string seeds).
+        s = str(seed_string)
+        if s.isdigit():
+            self.state = int(s) & 0xFFFFFFFF
+        else:
+            self.state = sum(ord(char) for char in s) & 0xFFFFFFFF
 
     def next(self):
         self.state = (1664525 * self.state + 1013904223) & 0xFFFFFFFF

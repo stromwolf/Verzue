@@ -29,6 +29,8 @@ class ChapterTask:
     guild_id: int
     guild_name: str
     scan_group: str
+    episode_number: Optional[str] = None
+    service: str = "Unknown"
     
     waiters: list = None # List of (req_id, view_ref) pairs waiting for this task
 

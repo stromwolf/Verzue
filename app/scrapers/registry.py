@@ -82,11 +82,13 @@ class ScraperRegistry:
 
         # 6. MECHACOMIC ROUTING
         if "mechacomic.jp" in url_lower:
+            # We now prefer API (High-Speed Async) for all Mecha browsing by default.
+            # Web engine (Playwright) is only used as an explicit fallback or for difficult handshakes.
             if is_smartoon:
-                logger.info("[Registry] 🗺️ Routing to Mecha API Engine")
+                logger.info("[Registry] 🗺️ Routing to Mecha API Engine (Forced)")
                 return self.api_scraper
             else:
-                logger.info("[Registry] 🗺️ Routing to Mecha Web (Selenium) Engine")
-                return self.web_scraper
+                logger.info("[Registry] 🗺️ Routing to Mecha API Engine (Standard)")
+                return self.api_scraper
 
         raise ValueError(f"No scraper registered for URL: {url}")

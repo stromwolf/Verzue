@@ -113,9 +113,9 @@ class MechaApiScraper(BaseScraper):
 
             seen_ids.add(cid)
             page_items.append({
-                'id': cid, 'number_text': num_text, 'title_text': title_text,
+                'id': cid, 'number_text': num_text, 'notation': num_text, 'title_text': title_text,
                 'title': f"{num_text} {title_text}", 'url': f"{self.BASE_URL}/chapters/{cid}",
-                'is_locked': is_locked
+                'is_locked': is_locked, 'is_new': False
             })
         return page_items
 
@@ -126,10 +126,20 @@ class MechaApiScraper(BaseScraper):
         base_series_url = url.split('?')[0]
         logger.info(f"[Mecha] 🔍 Fetching series metadata: {base_series_url}")
 
-        # 1. Fetch Page 1
-        response = session.get(f"{base_series_url}?page=1")
-        if response.status_code != 200:
-            raise ScraperError(f"Series page returned {response.status_code}")
+        # 1. Fetch Page 1 (with Retry Logic for Tunnels/Slow Networks)
+        for attempt in range(2):
+            try:
+                response = session.get(f"{base_series_url}?page=1", timeout=15)
+                if response.status_code == 200:
+                    break
+                if attempt == 1:
+                    raise ScraperError(f"Series page returned {response.status_code}")
+            except Exception as e:
+                if attempt == 1:
+                    logger.error(f"[Mecha] API Timeout/Error after {attempt+1} attempts: {e}")
+                    raise e
+                logger.info(f"[Mecha] Retrying metadata fetch (Attempt {attempt+2})...")
+                time.sleep(1)
 
         soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -200,6 +210,10 @@ class MechaApiScraper(BaseScraper):
             m = re.search(r'\d+', ch['number_text'])
             return int(m.group()) if m else 9999
         all_chapters.sort(key=_sort_key)
+        
+        # 🟢 Latest Detection: Mecha doesn't have badges, so we treat the LAST chapter as New.
+        if all_chapters:
+            all_chapters[-1]['is_new'] = True
 
         series_id = base_series_url.split('/')[-1]
         return title, total_chapters_reported, all_chapters, image_url, series_id
@@ -211,12 +225,13 @@ class MechaApiScraper(BaseScraper):
         session = self._create_stateless_session()
 
         new_chapters = []
+        stripped_url = base_series_url.split('?')[0]
         for page_num in range(2, target_page + 1):
             if page_num in skip_pages:
                 logger.info(f"[Mecha] ⏩ Skipping page {page_num} (already fetched).")
                 continue
             try:
-                res = session.get(f"{base_series_url}?page={page_num}", timeout=30)
+                res = session.get(f"{stripped_url}?page={page_num}", timeout=30)
                 if res.status_code == 200:
                     p_soup = BeautifulSoup(res.text, 'html.parser')
                     chaps = self._parse_page_chapters(p_soup, seen_ids)
@@ -315,7 +330,7 @@ class MechaApiScraper(BaseScraper):
                 
         return False, None
 
-    def scrape_chapter(self, task, output_dir):
+    async def scrape_chapter(self, task, output_dir):
         real_id = task.episode_id
         accounts = self._load_available_accounts()
         
@@ -336,182 +351,158 @@ class MechaApiScraper(BaseScraper):
             self._apply_session_cookies(session, acc['cookies'])
             
             # 1. Try to access the chapter normally
-            viewer_url = self._check_chapter_access(session, real_id)
+            viewer_url = await self._check_chapter_access(session, real_id)
             
             # 🟢 2. AUTO-BUY FALLBACK: If denied, attempt an instant API purchase
             if not viewer_url:
                 logger.info(f"   🔒 Access Denied. Attempting on-the-fly Fast Purchase for Ch.{real_id}...")
-                success, new_cookies = self.fast_purchase(task)
+                # fast_purchase is sync, so we wrap it
+                success, new_cookies = await asyncio.to_thread(self.fast_purchase, task)
                 if success:
                     # Refresh our session with the newly purchased state
                     self._apply_session_cookies(session, new_cookies)
                     # Try to grab the viewer URL again now that we own it
-                    viewer_url = self._check_chapter_access(session, real_id)
+                    viewer_url = await self._check_chapter_access(session, real_id)
                 else:
                     raise ScraperError("API Fast Purchase Failed. Selenium fallback is disabled.")
 
             if viewer_url:
                 logger.info(f"   ✅ Access Granted via Account: {acc['name']}")
-                return self._execute_extraction(session, viewer_url, real_id, output_dir, task)
+                return await self._execute_extraction(session, viewer_url, real_id, output_dir, task)
 
         # Guest Fallback
         logger.info(f"[API] 👤 No account access. Attempting Guest Handshake...")
         session.cookies.clear()
-        guest_viewer_url = self._check_chapter_access(session, real_id)
+        guest_viewer_url = await self._check_chapter_access(session, real_id)
         
         if not guest_viewer_url and self.browser:
-            new_cookies, guest_viewer_url = self.browser.run_isolated_handshake(task.url, [], selectors)
+            # run_isolated_handshake is sync
+            new_cookies, guest_viewer_url = await asyncio.to_thread(self.browser.run_isolated_handshake, task.url, [], selectors)
             if guest_viewer_url and new_cookies: 
                 self._apply_session_cookies(session, new_cookies)
 
         if guest_viewer_url:
-            return self._execute_extraction(session, guest_viewer_url, real_id, output_dir, task)
+            return await self._execute_extraction(session, guest_viewer_url, real_id, output_dir, task)
 
         raise ScraperError("Manifest not found. Chapter is either locked or server rejected handshake.")
 
-    def _check_chapter_access(self, session, real_id):
+    async def _check_chapter_access(self, session, real_id):
         try:
-            res = session.get(f"{self.BASE_URL}/chapters/{real_id}", timeout=15)
+            # session is a requests Session, so we wrap it
+            res = await asyncio.to_thread(session.get, f"{self.BASE_URL}/chapters/{real_id}", timeout=15)
             logger.info(f"   [API] Access Check -> Landed on: {res.url}") 
             if res.status_code == 200 and 'contents_vertical' in res.text:
                 match = re.search(r'\"(https?://mechacomic\.jp/viewer\?.*?contents_vertical=.*?)\"', res.text)
                 if match: return match.group(1).replace('\\/', '/')
 
-            res = session.get(f"{self.BASE_URL}/chapters/{real_id}/download?commit=read", allow_redirects=True)
+            res = await asyncio.to_thread(session.get, f"{self.BASE_URL}/chapters/{real_id}/download?commit=read", allow_redirects=True)
             if "contents_vertical" in res.url: return res.url
         except Exception: pass
         return None
 
-    def _execute_extraction(self, session, viewer_url, real_id, output_dir, task):
+    async def _execute_extraction(self, session, viewer_url, real_id, output_dir, task):
         logger.info(f"[API] 🏗️  Starting Extraction from: {viewer_url[:60]}...")
         
-        import requests
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
-        import binascii
-        import os
-        import io
-        import json
-        import time
+        import binascii, os, io, json, time, random, asyncio
         from urllib.parse import urlparse, parse_qs, urljoin
         from PIL import Image
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
         from cryptography.hazmat.primitives import padding
         from cryptography.hazmat.backends import default_backend
-        import concurrent.futures
+        from curl_cffi.requests import AsyncSession
 
-        # 🟢 1. 大量アクセスに耐えられる強牢なセッションの構築 (自動リトライ付き)
-        req_session = requests.Session()
-        
-        # サーバーが混雑・制限（429や500番台）を返した際、自動で間隔を空けて再試行する
-        retry_strategy = Retry(
-            total=5,
-            backoff_factor=1.5,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET"]
-        )
-        adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry_strategy)
-        req_session.mount("https://", adapter)
-        req_session.mount("http://", adapter)
-        
-        req_session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-        })
+        # 🟢 1. Create a persistent AsyncSession for connection pooling
+        async with AsyncSession(impersonate="chrome120") as req_session:
+            # Sync session cookies to our async session
+            for k, v in session.cookies.items():
+                req_session.cookies.set(k, v, domain='.mechacomic.jp')
+                req_session.cookies.set(k, v, domain='mechacomic.jp')
 
-        for k, v in session.cookies.items():
-            req_session.cookies.set(k, v, domain='.mechacomic.jp')
-            req_session.cookies.set(k, v, domain='mechacomic.jp')
+            qs = parse_qs(urlparse(viewer_url).query)
+            contents_vertical_url = qs['contents_vertical'][0]
+            directory_url = qs['directory'][0]
+            version = qs.get('ver', [''])[0]
 
-        qs = parse_qs(urlparse(viewer_url).query)
-        contents_vertical_url = qs['contents_vertical'][0]
-        directory_url = qs['directory'][0]
-        version = qs.get('ver', [''])[0]
+            # 🟢 2. Trigger server-side read session (Sync logic but via async call)
+            logger.info("   [API] Triggering server-side read session...")
+            download_url = f"{self.BASE_URL}/chapters/{real_id}/download?commit=read"
+            await req_session.get(download_url, allow_redirects=False, timeout=15)
+            await asyncio.sleep(1) 
 
-        # サーバー側で既読フラグを立てる（少しスリープを挟んで負担を減らす）
-        download_url = f"{self.BASE_URL}/chapters/{real_id}/download?commit=read"
-        logger.info("   [API] Triggering server-side read session...")
-        req_session.get(download_url, allow_redirects=False, timeout=15)
-        
-        time.sleep(1) # サーバーの同期を待つためのクッション
-
-        manifest_res = req_session.get(contents_vertical_url, timeout=15)
-        manifest_res.raise_for_status()
-        manifest = manifest_res.json()
-        
-        cryptokey_path = qs.get('cryptokey', [f"/viewer_cryptokey/chapter/{real_id}"])[0]
-        key_url = urljoin(self.BASE_URL, cryptokey_path)
-        
-        key_res = req_session.get(key_url, timeout=15)
-        key_res.raise_for_status()
-        key_text = key_res.text.strip()
-        logger.info(f"   🔑 Acquired Cryptokey: {key_text[:8]}...")
-        key = binascii.unhexlify(key_text)
-
-        img_tasks = []
-        for pg in manifest.get('pages', []):
-            formats = manifest.get('images', {}).get(pg['image'], [])
-            if not formats: continue
-            target = next((f for f in formats if f['format'] == 'png'), None) or formats[0]
-            img_tasks.append({'src': target['src'], 'pg': pg['pageIndex'], 'filename': f"page_{pg['pageIndex']:03d}.png", 'pg_data': pg})
-
-        # 🟢 2. レート制限で空データが返された時のクラッシュ防止
-        if not img_tasks:
-            raise Exception("Manifest returned 0 pages. Rate limited by server or chapter is empty.")
-
-        def download_and_decrypt(t):
-            time.sleep(0.3) # 🟢 PACING: 0.3s prevents IP blocks during bulk runs
-            image_url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
+            manifest_res = await req_session.get(contents_vertical_url, timeout=15)
+            manifest_res.raise_for_status()
+            manifest = manifest_res.json()
             
-            for attempt in range(4):
-                try:
-                    img_res = req_session.get(image_url, timeout=30)
-                    img_res.raise_for_status()
-                    encrypted_data = img_res.content
-                    
-                    iv = encrypted_data[:16]
-                    ciphertext = encrypted_data[16:]
-                    
-                    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-                    decryptor = cipher.decryptor()
-                    padded_plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-                    
-                    unpadder = padding.PKCS7(128).unpadder()
-                    plaintext = unpadder.update(padded_plaintext) + unpadder.finalize()
-                    
-                    with open(os.path.join(output_dir, t['filename']), 'wb') as f:
-                        f.write(plaintext)
-                    
-                    with Image.open(io.BytesIO(plaintext)) as img:
-                        return t['pg'], img.size[0], img.size[1]
-                except Exception as e:
-                    if attempt == 3:
-                        raise Exception(f"Failed after 3 retries: {e}")
-                    time.sleep(2) # 失敗した場合は2秒待機して再試行
+            cryptokey_path = qs.get('cryptokey', [f"/viewer_cryptokey/chapter/{real_id}"])[0]
+            key_url = urljoin(self.BASE_URL, cryptokey_path)
+            
+            key_res = await req_session.get(key_url, timeout=15)
+            key_res.raise_for_status()
+            key = binascii.unhexlify(key_res.text.strip())
 
-        # 🟢 3. PACED IMAGE DOWNLOADER (Native Requests)
-        total_pages = len(img_tasks)
-        completed = 0
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_task = {executor.submit(download_and_decrypt, t): t for t in img_tasks}
-            for future in concurrent.futures.as_completed(future_to_task):
-                current_task = future_to_task[future]
-                try:
-                    # Execute and ignore dimensions
-                    future.result()
-                    completed += 1
-                    
-                    # Log every 10 pages so it doesn't spam your console, plus the final page
-                    if completed % 10 == 0 or completed == total_pages:
-                        logger.info(f"   [API] 📥 Downloaded {completed}/{total_pages} pages...")
-                        
-                except Exception as e:
-                    logger.error(f"[API] Sync Download failed for page {current_task.get('filename')}: {e}")
+            img_tasks = []
+            for pg in manifest.get('pages', []):
+                formats = manifest.get('images', {}).get(pg['image'], [])
+                if not formats: continue
+                target = next((f for f in formats if f['format'] == 'png'), None) or formats[0]
+                img_tasks.append({
+                    'src': target['src'], 
+                    'pg': pg['pageIndex'], 
+                    'filename': f"page_{pg['pageIndex']:03d}.png"
+                })
+
+            if not img_tasks:
+                raise Exception("Manifest returned 0 pages. Rate limited by server or chapter is empty.")
+
+            # 🟢 3. ASYNC DOWNLOADER WITH SEMAPHORE & JITTER
+            dl_semaphore = asyncio.Semaphore(3) # Limit to 3 concurrent downloads
+            total_pages = len(img_tasks)
+            completed = 0
+
+            async def fetch_and_decrypt(t):
+                nonlocal completed
+                # Randomized Jitter (0.1s - 0.4s) to bypass fingerprinting
+                await asyncio.sleep(random.uniform(0.1, 0.4))
+                
+                image_url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
+                
+                async with dl_semaphore:
+                    for attempt in range(4):
+                        try:
+                            img_res = await req_session.get(image_url, timeout=30)
+                            img_res.raise_for_status()
+                            encrypted_data = img_res.content
+                            
+                            # AES Decryption (CPU bound, but fast enough for threads/tasks here)
+                            iv = encrypted_data[:16]
+                            ciphertext = encrypted_data[16:]
+                            cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+                            decryptor = cipher.decryptor()
+                            padded_plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+                            
+                            unpadder = padding.PKCS7(128).unpadder()
+                            plaintext = unpadder.update(padded_plaintext) + unpadder.finalize()
+                            
+                            # Write file
+                            with open(os.path.join(output_dir, t['filename']), 'wb') as f:
+                                f.write(plaintext)
+                            
+                            completed += 1
+                            percent = int((completed / total_pages) * 100)
+                            bar_length = 20
+                            filled_length = int(bar_length * completed // total_pages)
+                            bar = '▰' * filled_length + '▱' * (bar_length - filled_length)
+                            import sys
+                            sys.stdout.write(f"\r[INFO] [{task.req_id}] - Downloading: [{task.service}] {bar} {completed}/{total_pages} ({percent}%)")
+                            sys.stdout.flush()
+                            return
+                        except Exception as e:
+                            if attempt == 3: raise e
+                            await asyncio.sleep(2)
+
+            # Start all tasks concurrently
+            await asyncio.gather(*(fetch_and_decrypt(t) for t in img_tasks))
+            return output_dir
 
         # 🟢 REMOVED: All math.json, scaling, and gap calculations. 
         # The stitcher will now just sequentially stack the decrypted images with 0 gaps!

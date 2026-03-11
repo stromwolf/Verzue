@@ -202,3 +202,17 @@ class GDriveUploader:
                 ).execute()
         except Exception as e:
             logger.error(f"Permission error for {file_id}: {e}")
+
+    def delete_file(self, file_id):
+        """Deletes a file or folder (Shared Drive Compatible)."""
+        try:
+            with self._write_semaphore:
+                self.client.get_service().files().delete(
+                    fileId=file_id,
+                    supportsAllDrives=True
+                ).execute()
+            logger.info(f"🗑️ Deleted item: {file_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Delete failed for {file_id}: {e}")
+            return False

@@ -6,7 +6,7 @@ from app.core.logger import logger
 
 class ImageStitcher:
     @staticmethod
-    def stitch_folder(input_dir: str, output_dir: str, max_slice_height: int = 12000, target_width: int = 720, episode_id=None):
+    def stitch_folder(input_dir: str, output_dir: str, max_slice_height: int = 12000, target_width: int = 720, episode_id=None, req_id=None, service_name="Jumptoon"):
         """
         Standard SmartStitch (All-in-Memory) implementation for maximum speed.
         
@@ -103,6 +103,13 @@ class ImageStitcher:
                     logger.error(f"Failed to load {f}: {e}")
                     continue
 
+            import sys
+            # 🟢 Stitching Progress Bar (Loading stage)
+            if req_id:
+                # We'll treat loading as part of stitching progress
+                # For simplicity, we'll show progress here if we want, but the user asked for "Stitching"
+                pass
+
         if not prepared_images: return
 
         # ─── STEP 3: COMBINE INTO LARGE CANVAS ───
@@ -146,11 +153,25 @@ class ImageStitcher:
             slice_img = combined_img.crop((0, curr_y, target_width, cut_y))
             # 🟢 Lossless WebP conversion as requested
             slice_img.save(slice_path, "WEBP", lossless=True)
+            
+            # 🟢 Standardized Progress Bar
+            if req_id:
+                # Estimate progress based on y coordinate
+                percent = int((cut_y / total_h) * 100)
+                bar_length = 20
+                filled_length = int(bar_length * cut_y // total_h)
+                bar = '▰' * filled_length + '▱' * (bar_length - filled_length)
+                import sys
+                sys.stdout.write(f"\r[INFO] [{req_id}] - Stitching: [{service_name.capitalize()}] {bar} {percent}%")
+                sys.stdout.flush()
+
             logger.info(f"   [Stitcher] Slice {slice_idx:02d}.webp: {target_width}x{cut_y-curr_y} ({cut_type})")
             slice_img.close()
             
             curr_y = cut_y
             if curr_y >= total_h: break
+
+        if req_id: sys.stdout.write("\n")
 
         combined_img.close()
         logger.info(f"[Stitcher] Done: {slice_idx} slices saved.")

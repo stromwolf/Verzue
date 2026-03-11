@@ -78,7 +78,10 @@ async def main():
         if helper_bot:
             await helper_bot.close()
             
-        logger.info("🧹 Cleaning up background tasks...")
+        # 🟢 Clean up Browser and other tasks
+        if 'browser' in locals():
+            await browser.stop()
+            
         current_task = asyncio.current_task()
         for task in asyncio.all_tasks():
             if task is not current_task:
