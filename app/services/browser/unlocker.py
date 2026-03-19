@@ -2,6 +2,8 @@ import asyncio
 import logging
 import time
 from app.core.events import EventBus
+from app.providers.manager import ProviderManager
+from app.services.session_service import SessionService
 
 logger = logging.getLogger("BatchUnlocker")
 
@@ -13,6 +15,8 @@ class BatchUnlocker:
         self.notifier = asyncio.Condition(self.queue_lock)
         self.workers = []
         self._started = False
+        self.provider_manager = ProviderManager()
+        self.session_service = SessionService()
         
         # We can handle more concurrent browser tasks now that we use Playwright!
         self.worker_stats = {i: {"service": None, "progress": 0, "purchase_status": "Idle", "task": None, "view": None, "busy": False} for i in range(5)}
@@ -88,13 +92,6 @@ class BatchUnlocker:
                 task.purchase_status = "Done"
                 if view: view.trigger_refresh()
 
-    def _update_disk_cookies(self, platform, cookies):
-        import json
-        from config.settings import Settings
-        path = Settings.SECRETS_DIR / platform / "cookies.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, 'w') as f:
-            json.dump(cookies, f, indent=4)
 
     async def _process_task(self, context_id, task, view):
         def update_progress(p, s):
@@ -110,43 +107,54 @@ class BatchUnlocker:
         if service == "mecha":
             update_progress(15, "API Fast-Path Attempt")
             try:
-                from app.scrapers.mecha.api import MechaApiScraper
-                scraper = MechaApiScraper()
-                # fast_purchase is sync, still needs to_thread or convert it too
-                success, new_cookies = await asyncio.to_thread(scraper.fast_purchase, task)
+                provider = self.provider_manager.get_provider("mecha")
+                success = await provider.fast_purchase(task)
                 
                 if success:
                     update_progress(90, "API Purchase Successful")
-                    if new_cookies: self._update_disk_cookies("mecha", new_cookies)
                     return
                 
-                # 🛡️ PLAYWRIGHT FALLBACK (The real reason we migrated!)
+                # 🛡️ PLAYWRIGHT FALLBACK
                 update_progress(30, "Browser Handshake Fallback")
                 selectors = [
                     ".p-buyConfirm-currentChapter input.js-bt_buy_and_download",
                     ".p-buyConfirm-currentChapter input.c-btn-read-end",
                     ".p-buyConfirm-currentChapter input.c-btn-free",
                     "input.js-bt_buy_and_download", "button.js-bt_buy_and_download",
-                    "input.c-btn-read-end", "input.c-btn-free"
                 ]
                 
-                # Load current cookies for the handshake
-                from app.scrapers.mecha.api import MechaApiScraper
-                mecha_api = MechaApiScraper()
-                current_acc = mecha_api._load_available_accounts()[0] # Target first acc
+                # Fetch target account from Vault
+                session_obj = await self.session_service.get_active_session("mecha")
+                if not session_obj: raise Exception("No active Mecha session for handshake.")
                 
                 new_cookies, viewer_url = await self.browser.run_isolated_handshake(
-                    task.url, current_acc['cookies'], selectors
+                    task.url, session_obj['cookies'], selectors
                 )
                 
                 if viewer_url:
                     update_progress(90, "Handshake Success")
-                    if new_cookies: self._update_disk_cookies("mecha", new_cookies)
+                    # Update Vault with new cookies
+                    await self.session_service.update_session_cookies("mecha", session_obj['account_id'], new_cookies)
                 else:
                     raise Exception("Browser Fallback failed to acquire viewer URL.")
                     
             except Exception as e:
                 logger.error(f"Worker {context_id} task processing failed: {e}")
+                raise e
+        elif service == "piccoma":
+            update_progress(15, "API Coin Purchase Attempt")
+            try:
+                provider = self.provider_manager.get_provider("piccoma")
+                success = await provider.fast_purchase(task)
+                
+                if success:
+                    update_progress(90, "Coin Purchase Successful")
+                    return
+                
+                raise Exception("Piccoma coin purchase failed via API")
+                    
+            except Exception as e:
+                logger.error(f"Worker {context_id} Piccoma purchase failed: {e}")
                 raise e
         else:
             raise Exception(f"Service {service} not supported in Playwright yet.")

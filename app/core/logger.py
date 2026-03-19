@@ -87,6 +87,50 @@ def setup_logging(name: str = "MechaBot"):
     logging.getLogger("httplib2").setLevel(logging.WARNING)
     logging.getLogger("PIL").setLevel(logging.INFO)
     
+
     return logging.getLogger(name)
+
+class ProgressBar:
+    """S-Grade Progress Bar for log-compatible console output."""
+    def __init__(self, req_id: str, label: str, service: str, total: int, bar_length: int = 20):
+        self.req_id = req_id
+        self.label = label
+        self.service = service
+        self.total = total
+        self.bar_length = bar_length
+        self.completed = 0
+        self._last_percent = -1
+
+    def update(self, current: int = None):
+        if current is not None:
+            self.completed = current
+        
+        percent = int((self.completed / self.total) * 100) if self.total > 0 else 100
+        
+        # Throttle: Only log at every 10% increment, at start (0%), and at completion (100%)
+        if percent != 100 and percent == self._last_percent:
+            return
+        if percent != 100 and percent != 0 and (percent - (self._last_percent if self._last_percent >= 0 else 0)) < 10:
+            return
+
+        self._last_percent = percent
+        filled_length = int(self.bar_length * self.completed // self.total) if self.total > 0 else self.bar_length
+        bar = '▰' * filled_length + '▱' * (self.bar_length - filled_length)
+        
+        # Log via the standard logger so it's clean in bot.log and terminal
+        msg = f"{self.label}: [{self.service}] {bar} {self.completed}/{self.total} ({percent}%)"
+        
+        # We manually inject the req_id context for the logger if it's not already set
+        from app.core.logger import req_id_context
+        token = req_id_context.set(self.req_id)
+        try:
+            logging.getLogger("ProgressBar").info(msg)
+        finally:
+            req_id_context.reset(token)
+
+    def finish(self):
+        # Already handled by the last 100% log in update()
+        pass
+
 
 logger = setup_logging()

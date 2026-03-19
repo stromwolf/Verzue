@@ -38,14 +38,13 @@ class JumptoonCog(commands.Cog):
             logger.info(f"🔗 URL: {url}")
             logger.info("="*50)
 
-            # 4. Access the specialized Jumptoon Scraper
-            # Registry handles the instance management
-            scraper = self.bot.task_queue.scraper_registry.jumptoon
+            # 4. Metadata Fetch
+            scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
             
             # 5. Fetch Series Info (Returns 5 values: title, total, chapters, image_url, series_id)
             # We run this in a thread to keep the Discord heartbeat alive
             logger.info(f"🔍 Processing metadata request for: {url}")
-            data = await asyncio.to_thread(scraper.get_series_info, url)
+            data = await scraper.get_series_info(url)
             
             title = data[0]
             total_chapters = data[1]

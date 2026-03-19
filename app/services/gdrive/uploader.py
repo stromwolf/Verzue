@@ -23,21 +23,45 @@ class GDriveUploader:
         self._write_semaphore = threading.Semaphore(5)
 
     def find_folder(self, name: str, parent_id: str):
-        """Finds ONLY folders (Shared Drive Compatible)."""
+        """Finds ONLY folders (Shared Drive Compatible, Case-Insensitive)."""
         safe_name = name.replace("'", "\\'")
-        query = f"mimeType='application/vnd.google-apps.folder' and name='{safe_name}' and '{parent_id}' in parents and trashed=false"
+        # Use 'contains' to get a superset, then filter for exact case-insensitive match
+        query = f"mimeType='application/vnd.google-apps.folder' and name contains '{safe_name}' and '{parent_id}' in parents and trashed=false"
         try:
-            # Metadata reads don't need the write semaphore (Limit: 200/sec)
             results = self.client.get_service().files().list(
                 q=query, 
-                fields="files(id)", 
+                fields="files(id, name)", 
                 supportsAllDrives=True, 
                 includeItemsFromAllDrives=True
             ).execute()
             files = results.get('files', [])
-            return files[0]['id'] if files else None
+            for f in files:
+                if f['name'].lower() == name.lower():
+                    return f['id']
+            return None
         except Exception as e:
             logger.error(f"Folder search failed for '{name}': {e}")
+            return None
+
+    def find_folder_by_prefix(self, prefix: str, parent_id: str):
+        """Finds a folder that starts with a specific prefix (e.g. '[SeriesID]'). Returns {id, name} or None."""
+        safe_prefix = prefix.replace("'", "\\'")
+        query = f"mimeType='application/vnd.google-apps.folder' and name contains '{safe_prefix}' and '{parent_id}' in parents and trashed=false"
+        try:
+            results = self.client.get_service().files().list(
+                q=query, 
+                fields="files(id, name)", 
+                supportsAllDrives=True, 
+                includeItemsFromAllDrives=True
+            ).execute()
+            files = results.get('files', [])
+            # Filter manually to ensure it STARTS with the prefix
+            for f in files:
+                if f['name'].startswith(prefix):
+                    return f # Return full metadata (id, name)
+            return None
+        except Exception as e:
+            logger.error(f"Folder prefix search failed for '{prefix}': {e}")
             return None
 
     def find_item(self, name: str, parent_id: str):
@@ -146,7 +170,12 @@ class GDriveUploader:
                     time.sleep(1)
 
     def create_shortcut(self, target_id, parent_id, name):
-        """Creates shortcut with Shared Drive support."""
+        """Creates shortcut with Shared Drive support, checking for existence first."""
+        existing_id = self.find_item(name, parent_id)
+        if existing_id: 
+            logger.debug(f"🔗 Shortcut already exists: {name}")
+            return existing_id
+
         metadata = {
             'name': name, 'mimeType': 'application/vnd.google-apps.shortcut',
             'parents': [parent_id], 'shortcutDetails': {'targetId': target_id}

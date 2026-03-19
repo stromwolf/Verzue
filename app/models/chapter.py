@@ -39,14 +39,17 @@ class ChapterTask:
     final_folder_name: Optional[str] = None
     main_folder_id: Optional[str] = None
     client_folder_id: Optional[str] = None
+    client_folders: list[dict] = None # [{'id': '...', 'name': '...', 'shortcut_name': '...'}]
     series_title_id: Optional[str] = None
 
     status: TaskStatus = TaskStatus.QUEUED
+    share_link: Optional[str] = None
     purchase_progress: int = 0 # 0-100%
     purchase_status: str = "Waiting" # e.g., "Navigating", "Clicking Buy", "Done"
 
     def __post_init__(self):
         if self.waiters is None: self.waiters = []
+        if self.client_folders is None: self.client_folders = []
 
     @property
     def folder_name(self) -> str:

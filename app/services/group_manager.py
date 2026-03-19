@@ -15,6 +15,24 @@ def _group_filename(group_name: str) -> Path:
     return Settings.GROUPS_DIR / f"{safe}.json"
 
 
+def _clean_url(url: str) -> str:
+    """Standardizes URL for matching (https + no trailing slash)."""
+    return url.replace("http://", "https://").rstrip("/")
+
+
+def delete_group(group_name: str) -> bool:
+    """Deletes a group profile JSON from disk. Returns True if deleted."""
+    path = _group_filename(group_name)
+    if path.exists():
+        try:
+            path.unlink()
+            logger.info(f"[GroupManager] Deleted group: {group_name}")
+            return True
+        except Exception as e:
+            logger.error(f"[GroupManager] Failed to delete {path.name}: {e}")
+    return False
+
+
 def load_group(group_name: str) -> dict:
     """Loads a group profile JSON. Returns a default structure if not found."""
     path = _group_filename(group_name)
@@ -67,14 +85,11 @@ def remove_subscription(group_name: str, target_url: str) -> bool:
     data = load_group(group_name)
     before = len(data["subscriptions"])
     
-    # Strip trailing slashes and ignore http/https differences for robust matching
-    def clean_url(u): return u.replace("http://", "https://").rstrip("/")
-    
-    target_clean = clean_url(target_url)
+    target_clean = _clean_url(target_url)
     
     data["subscriptions"] = [
         s for s in data["subscriptions"]
-        if clean_url(s["series_url"]) != target_clean
+        if _clean_url(s["series_url"]) != target_clean
     ]
     if len(data["subscriptions"]) == before:
         return False
@@ -88,11 +103,10 @@ def set_release_day(group_name: str, target_url: str, day: str) -> bool:
     Returns True if updated, False if series not found.
     """
     data = load_group(group_name)
-    def clean_url(u): return u.replace("http://", "https://").rstrip("/")
-    target_clean = clean_url(target_url)
+    target_clean = _clean_url(target_url)
     
     for sub in data["subscriptions"]:
-        if clean_url(sub["series_url"]) == target_clean:
+        if _clean_url(sub["series_url"]) == target_clean:
             sub["release_day"] = day.capitalize()
             save_group(group_name, data)
             return True
@@ -164,3 +178,73 @@ def get_admin_settings(group_name: str) -> dict:
     """Retrieves admin notification settings for a group."""
     data = load_group(group_name)
     return data.get("admin_settings", {})
+
+
+def set_title_override(group_name: str, series_url: str, english_title: str):
+    """Saves a custom English title for a series within a group profile."""
+    data = load_group(group_name)
+    overrides = data.setdefault("title_overrides", {})
+    clean = _clean_url(series_url)
+    overrides[clean] = english_title
+    save_group(group_name, data)
+    logger.info(f"[GroupManager] Title override set for {group_name}: {clean} → {english_title}")
+
+
+def get_title_override(group_name: str, series_url: str) -> str | None:
+    """Returns the custom English title for a series in a group, or None."""
+    data = load_group(group_name)
+    overrides = data.get("title_overrides", {})
+    clean = _clean_url(series_url)
+    return overrides.get(clean)
+
+
+def set_group_emoji(group_name: str, emoji: str):
+    """Saves a custom emoji for the group profile."""
+    data = load_group(group_name)
+    data["emoji"] = emoji.strip()
+    save_group(group_name, data)
+    logger.info(f"[GroupManager] Emoji set for {group_name}: {data['emoji']}")
+
+
+def get_group_emoji(group_name: str) -> str | None:
+    """Returns the custom emoji for the group profile, or None."""
+    data = load_group(group_name)
+    return data.get("emoji")
+
+
+def get_next_notification_id(group_name: str) -> int:
+    """
+    Returns the next N-ID for a group and increments the counter.
+    The counter is stored as 'next_notification_id' in the group JSON.
+    """
+    data = load_group(group_name)
+    nid = data.get("next_notification_id", 1)
+    data["next_notification_id"] = nid + 1
+    save_group(group_name, data)
+    return nid
+
+
+def get_interested_groups(series_url: str) -> list[tuple[str, str]]:
+    """
+    Finds all groups that have a title override for the given series URL.
+    Returns a list of (group_name, overridden_title) tuples.
+    """
+    results = []
+    if not Settings.GROUPS_DIR.exists():
+        return results
+    
+    clean_target = _clean_url(series_url)
+    
+    for path in Settings.GROUPS_DIR.glob("*.json"):
+        group_name = path.stem.replace('_', ' ')
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            overrides = data.get("title_overrides", {})
+            for url, title in overrides.items():
+                if _clean_url(url) == clean_target:
+                    results.append((group_name, title))
+                    break # Only one override per series per group
+        except Exception as e:
+            logger.error(f"[GroupManager] Error reading {path.name}: {e}")
+    return results

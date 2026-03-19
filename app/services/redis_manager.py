@@ -69,3 +69,59 @@ class RedisManager:
         """Returns a PubSub object for the Bot to listen for worker events."""
         if not self.client: return None
         return self.client.pubsub()
+
+    # --- SESSION VAULT METHODS (Phase 1) ---
+    async def set_session(self, platform: str, account_id: str, session_data: dict):
+        """Saves session data (cookies, tokens, metadata) to Redis."""
+        if not self.client: return
+        key = f"verzue:session:{platform}:{account_id}"
+        await self.client.set(key, json.dumps(session_data))
+        logger.debug(f"💾 Redis: Saved session for {platform}:{account_id}")
+
+    async def get_session(self, platform: str, account_id: str):
+        """Retrieves session data from Redis."""
+        if not self.client: return None
+        key = f"verzue:session:{platform}:{account_id}"
+        data = await self.client.get(key)
+        return json.loads(data) if data else None
+
+    async def list_sessions(self, platform: str):
+        """Lists all account IDs for a given platform."""
+        if not self.client: return []
+        pattern = f"verzue:session:{platform}:*"
+        keys = await self.client.keys(pattern)
+        return [k.split(":")[-1] for k in keys]
+
+    async def delete_session(self, platform: str, account_id: str):
+        """Removes a session from Redis."""
+        if not self.client: return
+        key = f"verzue:session:{platform}:{account_id}"
+        await self.client.delete(key)
+
+    # --- TELEMETRY & METRICS (Phase 5) ---
+    async def record_request(self, platform: str, success: bool, error_type: str = None):
+        """Tracks success/failure metrics for S-Grade monitoring."""
+        if not self.client: return
+        pipe = self.client.pipeline()
+        date_str = time.strftime("%Y-%m-%d")
+        base_key = f"verzue:metrics:{platform}:{date_str}"
+        
+        await pipe.hincrby(base_key, "total_requests", 1)
+        if success:
+            await pipe.hincrby(base_key, "success_count", 1)
+        else:
+            await pipe.hincrby(base_key, "failure_count", 1)
+            if error_type:
+                await pipe.hincrby(f"{base_key}:errors", error_type, 1)
+        
+        await pipe.execute()
+
+    async def get_metrics(self, platform: str, date_str: str = None):
+        """Retrieves metrics for a specific platform and date."""
+        if not self.client: return {}
+        if not date_str: date_str = time.strftime("%Y-%m-%d")
+        base_key = f"verzue:metrics:{platform}:{date_str}"
+        
+        stats = await self.client.hgetall(base_key)
+        errors = await self.client.hgetall(f"{base_key}:errors")
+        return {"stats": stats, "errors": errors}

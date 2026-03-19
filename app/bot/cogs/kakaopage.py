@@ -34,8 +34,8 @@ class KakaoCog(commands.Cog):
             logger.info("="*50)
 
             # 4. Metadata Fetch
-            scraper = self.bot.task_queue.scraper_registry.kakao
-            data = await asyncio.to_thread(scraper.get_series_info, url)
+            scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
+            data = await scraper.get_series_info(url)
             
             ctx = {
                 'url': url,
@@ -48,7 +48,7 @@ class KakaoCog(commands.Cog):
             }
             
             # 5. Launch Dashboard
-            view = UniversalDashboard(self.bot, ctx, "smartoon") 
+            view = UniversalDashboard(self.bot, ctx, "kakao") 
             view.interaction = interaction # CRITICAL for edits
             
             payload_data = {"flags": 32768, "components": view.build_v2_payload()}

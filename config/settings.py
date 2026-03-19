@@ -51,12 +51,10 @@ class Settings:
     SERVER_MAP_FILE = DATA_DIR / "server_map.json"
     
     # Fallback name if an unknown server uses the bot
-    DEFAULT_CLIENT_NAME = "Timeless Toons"
+    DEFAULT_CLIENT_NAME = "Verzue"
 
     # Default memory map
-    SERVER_MAP = {
-        1443643769751736523: "Timeless Toons"
-    }
+    SERVER_MAP = {}
 
     # --- CDN ACCESS LIST ---
     CDN_USERS_FILE = DATA_DIR / "cdn_users.json"

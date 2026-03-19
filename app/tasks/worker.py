@@ -7,6 +7,7 @@ from config.settings import Settings
 from app.models.chapter import ChapterTask, TaskStatus
 from app.services.image.stitcher import ImageStitcher
 from app.core.events import EventBus
+from app.providers.manager import ProviderManager
 
 logger = logging.getLogger("TaskWorker")
 
@@ -19,8 +20,8 @@ PROCESS_POOL = ProcessPoolExecutor(max_workers=4)
 STITCH_SEMAPHORE = asyncio.Semaphore(3)
 
 class TaskWorker:
-    def __init__(self, scraper_registry, uploader):
-        self.registry = scraper_registry
+    def __init__(self, provider_manager, uploader):
+        self.provider_manager = provider_manager
         self.uploader = uploader
 
     async def process_task(self, task: ChapterTask):
@@ -38,31 +39,45 @@ class TaskWorker:
         task_dir_name = f"{safe_series}_{task.id}"
         raw_dir, final_dir = Settings.DOWNLOAD_DIR / f"raw_{task_dir_name}", Settings.DOWNLOAD_DIR / f"final_{task_dir_name}"
 
-        self._clean_dirs(raw_dir, final_dir)
+        await self._clean_dirs(raw_dir, final_dir)
         raw_dir.mkdir(parents=True, exist_ok=True); final_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             task.status = TaskStatus.DOWNLOADING
-            scraper = self.registry.get_scraper(task.url, is_smartoon=task.is_smartoon)
-            logger.info(f"🔍 STAGE 1/3: Engine: {scraper.__class__.__name__}")
+            provider = self.provider_manager.get_provider(task.service)
+            if not provider:
+                 raise Exception(f"No provider found for service: {task.service}")
+            
+            logger.info(f"🔍 STAGE 1/3: Provider: {provider.__class__.__name__}")
             
             # --- LOCAL DOWNLOAD TRACK ---
-            # 🟢 Check if the scraper is async or sync to maximize throughput
-            if asyncio.iscoroutinefunction(scraper.scrape_chapter):
-                await scraper.scrape_chapter(task, str(raw_dir))
-            else:
-                await asyncio.to_thread(scraper.scrape_chapter, task, str(raw_dir))
+            # All providers are now async
+            await provider.scrape_chapter(task, str(raw_dir))
             
-            valid_imgs = [f for f in os.listdir(raw_dir) if f.lower().endswith(('.png', '.webp', '.jpg'))]
+            valid_imgs = [f for f in os.listdir(raw_dir) if f.lower().endswith(('.png', '.webp', '.jpg', '.jpeg'))]
             if not valid_imgs: raise Exception("No images found after scrape.")
             logger.info(f"✅ STAGE 1 COMPLETE: {len(valid_imgs)} images.")
 
             # --- STAGE 2: STITCHING (Semaphore-Controlled CPU Offloading) ---
+            task.status = TaskStatus.STITCHING
+            
+            # Fetch early share link as soon as folder is ready (before stitching completes)
+            if drive_folder_task and not task.share_link:
+                try:
+                    task.pre_created_folder_id = await drive_folder_task
+                    task.share_link = await asyncio.to_thread(self.uploader.get_share_link, task.pre_created_folder_id)
+                    logger.info(f"🔗 Early Link Generated: {task.share_link}")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch early link: {e}")
+
             logger.info("🧵 STAGE 2/3: Stitching (Waiting for CPU Slot)...")
             
             seed_string = None
             if "jumptoon.com" in task.url.lower():
-                seed_string = str(task.episode_id)
+                # 🟢 UNSCRAMBLE AT DOWNLOAD: Jumptoon is now unscrambled in api.py
+                # immediately after download. We pass None to the stitcher to avoid
+                # double-processing or errors.
+                seed_string = None
             elif "webtoon.kakao.com" in task.url.lower():
                 seed_string = task.series_id_key
 
@@ -85,7 +100,7 @@ class TaskWorker:
             # --- STAGE 3: UPLOADING (Decoupled & Backgrounded) ---
             task.status = TaskStatus.UPLOADING
             if self.uploader:
-                if drive_folder_task:
+                if drive_folder_task and not task.pre_created_folder_id:
                     logger.info("⏳ Finalizing Drive folder creation...")
                     task.pre_created_folder_id = await drive_folder_task
                 
@@ -101,7 +116,7 @@ class TaskWorker:
             task.status = TaskStatus.FAILED
             logger.error(f"❌ TASK FAILURE: {e}")
             await EventBus.emit("task_failed", task, str(e))
-            self._clean_dirs(raw_dir, final_dir)
+            await self._clean_dirs(raw_dir, final_dir)
             raise e
 
     async def _background_upload_and_cleanup(self, task: ChapterTask, final_dir, raw_dir):
@@ -116,7 +131,7 @@ class TaskWorker:
             logger.error(f"❌ BACKGROUND UPLOAD FAILED: {e}")
             await EventBus.emit("task_failed", task, str(e))
         finally:
-            self._clean_dirs(raw_dir, final_dir)
+            await self._clean_dirs(raw_dir, final_dir)
 
     async def _ensure_drive_folder(self, task: ChapterTask):
         """Runs concurrently in a thread to create Drive folders without blocking."""
@@ -133,8 +148,14 @@ class TaskWorker:
             if not chapter_id:
                 chapter_id = self.uploader.create_folder(temp_name, parent_id)
             
-            # 2. Create the shortcut in the client folder if specified
-            if task.client_folder_id:
+            # 2. Create the shortcut in all client folders specified
+            if task.client_folders:
+                for cf in task.client_folders:
+                    cf_id = cf.get('id')
+                    if cf_id:
+                        self.uploader.create_shortcut(chapter_id, cf_id, folder_name)
+            elif task.client_folder_id:
+                # Fallback for older tasks or direct calls
                 self.uploader.create_shortcut(chapter_id, task.client_folder_id, folder_name)
                 
             logger.info(f"☁️ [Parallel Track] Folder '{folder_name}' is ready! ID: {chapter_id}")
@@ -144,7 +165,7 @@ class TaskWorker:
 
     async def _fast_upload(self, task, local_path):
         # 🟢 UPDATE (09 March 2026): Concurrent uploading with Semaphore to maximize bandwidth.
-        files = sorted([f for f in os.listdir(local_path) if f.lower().endswith('.webp')])
+        files = sorted([f for f in os.listdir(local_path) if f.lower().endswith('.jpg')])
         
         if not files: return
 
@@ -161,17 +182,9 @@ class TaskWorker:
             # 🟢 Standardized Progress Bar Tracking
             completed = 1 # We already uploaded one file (last_file)
             total = len(files)
-            import sys
-            
-            def print_upload_progress():
-                percent = int((completed / total) * 100)
-                bar_length = 20
-                filled_length = int(bar_length * completed // total)
-                bar = '▰' * filled_length + '▱' * (bar_length - filled_length)
-                sys.stdout.write(f"\r[INFO] [{task.req_id}] - Uploading: [{task.service.capitalize()}] {bar} {completed}/{total} ({percent}%)")
-                sys.stdout.flush()
-
-            print_upload_progress()
+            from app.core.logger import ProgressBar
+            progress = ProgressBar(task.req_id, "Uploading", task.service.capitalize(), total)
+            progress.update(completed)
 
             async def safe_upload(filename):
                 nonlocal completed
@@ -179,16 +192,16 @@ class TaskWorker:
                     full_path = os.path.join(local_path, filename)
                     await asyncio.to_thread(self.uploader.upload_file, full_path, filename, task.pre_created_folder_id)
                     completed += 1
-                    print_upload_progress()
+                    progress.update(completed)
 
             # Fire off all uploads simultaneously (the semaphore controls the flow)
             await asyncio.gather(*(safe_upload(f) for f in remaining_files))
-            sys.stdout.write("\n")
+            progress.finish()
             
         if task.final_folder_name:
             await asyncio.to_thread(self.uploader.rename_file, task.pre_created_folder_id, task.final_folder_name)
 
-    def _clean_dirs(self, r, f):
+    async def _clean_dirs(self, r, f):
         """Robust cleanup with retry to avoid WinError 32."""
         for path in [r, f]:
             if not path.exists(): continue
@@ -198,7 +211,7 @@ class TaskWorker:
                     break
                 except PermissionError:
                     logger.warning(f"⚠️ Directory locked ({path}), retrying cleanup in 2s... (Attempt {attempt+1})")
-                    time.sleep(2)
+                    await asyncio.sleep(2)
                 except Exception as e:
                     logger.warning(f"Could not clean {path}: {e}")
                     break

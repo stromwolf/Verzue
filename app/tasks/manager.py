@@ -4,7 +4,7 @@ import psutil
 import os
 from collections import deque
 from app.models.chapter import ChapterTask, TaskStatus
-from app.scrapers.registry import ScraperRegistry
+from app.providers.manager import ProviderManager
 from app.services.gdrive.uploader import GDriveUploader
 from .worker import TaskWorker
 from app.core.events import EventBus
@@ -32,9 +32,14 @@ class TaskQueue:
         self.workers_to_kill = 0    # Hit-list for when RAM is critical
 
         if browser_service:
-            self.scraper_registry = ScraperRegistry(browser_service)
+            self.browser_service = browser_service
+            self.provider_manager = ProviderManager()
             self.uploader = GDriveUploader(gdrive_client) if gdrive_client else None
-            self.worker = TaskWorker(self.scraper_registry, self.uploader)
+            self.worker = TaskWorker(self.provider_manager, self.uploader)
+            
+            # 🟢 S-GRADE: Initialize the BatchUnlocker
+            from app.services.browser.unlocker import BatchUnlocker
+            self.unlocker = BatchUnlocker(self.browser_service)
 
     async def add_task(self, task: ChapterTask):
         """Producer: Bot pushes task to the Round-Robin dealer."""

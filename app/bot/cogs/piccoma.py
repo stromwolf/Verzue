@@ -37,14 +37,14 @@ class PiccomaCog(commands.Cog):
             logger.info(f"🔗 URL: {url}")
             logger.info("="*50)
 
-            # 4. Access the specialized Piccoma Scraper
-            scraper = self.bot.task_queue.scraper_registry.piccoma
+            # 4. Metadata Fetch
+            scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
             
             # 5. Fetch Series Info (Returns 5 values: title, total, chapters, image_url, series_id)
             logger.info(f"🔍 Processing metadata request for: {url}")
-            data = await asyncio.to_thread(scraper.get_series_info, url)
+            data = await scraper.get_series_info(url)
             
-            title, total_chapters, chapter_list, image_url, series_id = data
+            title, total_chapters, chapter_list, image_url, series_id, release_day, release_time = data
 
             # 6. Pack Context for the Universal Dashboard
             ctx_data = {

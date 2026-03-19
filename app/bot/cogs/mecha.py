@@ -66,12 +66,12 @@ class MechaCog(commands.Cog):
                 logger.info(f"🔗 URL: {url}")
                 logger.info("="*50)
 
-                # 5. API Metadata Fetch (Fast Thread)
-                scraper = self.bot.task_queue.scraper_registry.api_scraper
+                # 5. Metadata Fetch
+                scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
                 logger.info(f"🔍 Fetching metadata for: {url}")
                 
-                # This runs while the browser warms up in the background
-                data = await asyncio.to_thread(scraper.get_series_info, url)
+                # S-Grade Async
+                data = await scraper.get_series_info(url)
                 
                 title = data[0]
                 total_chapters = data[1]
@@ -100,10 +100,8 @@ class MechaCog(commands.Cog):
                 await self.bot.http.request(route, json=payload_data)
                 logger.info(f"✅ Dashboard active for '{title}'")
 
-                # 8. SPECULATIVE WARMUP (Parallel Action)
-                # We fire this NOW so the browser is booting while the user browsing chapters.
-                browser = self.bot.task_queue.scraper_registry.browser
-                asyncio.create_task(asyncio.to_thread(browser.warmup))
+                # 8. SPECULATIVE WARMUP
+                asyncio.create_task(self.bot.task_queue.browser_service.start())
                 logger.info("🔥 Browser Warmup Triggered (Background)")
 
             except Exception as e:

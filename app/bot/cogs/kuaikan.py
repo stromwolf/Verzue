@@ -41,10 +41,11 @@ class KuaikanCog(commands.Cog):
                 logger.info("="*50)
 
                 # API Metadata Fetch
-                scraper = self.bot.task_queue.scraper_registry.kuaikan
+                scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
                 logger.info(f"🔍 Fetching metadata for: {url}")
                 
-                data = await asyncio.to_thread(scraper.get_series_info, url)
+                # S-Grade Async
+                data = await scraper.get_series_info(url)
                 title, total_chapters, chapter_list, image_url, series_id = data
 
                 # Pack Context

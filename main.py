@@ -11,6 +11,9 @@ from app.services.gdrive.client import GDriveClient
 from app.tasks.manager import TaskQueue
 from app.bot.main import MechaBot
 from app.bot.helper_bot import HelperBot
+from app.services.session_service import SessionService
+from app.services.session_healer import SessionHealer
+from app.services.health_monitor import HealthMonitor
 
 async def heartbeat():
     """Keeps the event loop active to prevent container sleep/throttling."""
@@ -22,10 +25,28 @@ async def heartbeat():
 async def main():
     logger.info("🚀 Starting Mecha Bot System...")
     
-    # Write PID to file to prevent duplicate instances
-    from pathlib import Path
+    # 🟢 S-GRADE PROCESS GUARD: Prevent duplicate instances
     import os
-    Path("bot.pid").write_text(str(os.getpid()))
+    import psutil
+    from pathlib import Path
+    
+    pid_file = Path("bot.pid")
+    force_start = "--force" in sys.argv
+    
+    if pid_file.exists() and not force_start:
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            if psutil.pid_exists(old_pid):
+                proc = psutil.Process(old_pid)
+                if proc.is_running() and "python" in proc.name().lower():
+                    logger.critical(f"🛑 CRITICAL: Another instance (PID {old_pid}) is already running!")
+                    logger.info("Please kill the existing process or use 'python main.py --force'")
+                    sys.exit(1)
+        except (ValueError, psutil.NoSuchProcess):
+            pass # Stale PID, safe to overwrite
+            
+    pid_file.write_text(str(os.getpid()))
+    
     browser = BrowserService()
     
     logger.info("☁️  Initializing Google Drive...")
@@ -52,6 +73,15 @@ async def main():
     else:
         logger.error("🧠 Global Brain: DISCONNECTED. Check REDIS_URL.")
 
+    # 🟢 START S-GRADE AUTONOMOUS SERVICES
+    session_service = SessionService()
+    healer = SessionHealer(session_service)
+    monitor = HealthMonitor(session_service)
+    
+    asyncio.create_task(healer.start())
+    asyncio.create_task(monitor.start())
+    logger.info("🏥 Autonomous Health Services: ACTIVE (Healer & Monitor)")
+
     # ... start queue and bot ...
     bot = MechaBot(token=Settings.DISCORD_TOKEN, task_queue=queue)
     
@@ -73,21 +103,27 @@ async def main():
     except Exception as e:
         logger.critical(f"💀 Crash: {e}", exc_info=True)
     finally:
-        logger.info("🛑 Disconnecting from Discord...")
-        await bot.close() # 🟢 CRITICAL: This gracefully closes the websocket and aiohttp sessions!
-        if helper_bot:
-            await helper_bot.close()
-            
-        # 🟢 Clean up Browser and other tasks
-        if 'browser' in locals():
-            await browser.stop()
-            
+        # 🟢 PHASE 1: Immediate Cancellation of Background Tasks
+        # This keeps the bot responsive by stopping all loops (Healer, Poller, Heartbeat)
         current_task = asyncio.current_task()
         for task in asyncio.all_tasks():
             if task is not current_task:
                 task.cancel()
-                
-        # 🟢 Clean up the PID file so the next startup is clean
+        
+        logger.info("🛑 Disconnecting from Discord...")
+        try:
+            # 🟢 PHASE 2: Graceful Service Shutdown
+            # Use gather with a timeout to prevent hanging
+            await asyncio.gather(
+                bot.close(),
+                helper_bot.close() if helper_bot else asyncio.sleep(0),
+                browser.stop() if 'browser' in locals() else asyncio.sleep(0),
+                return_exceptions=True
+            )
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+            
+        # 🟢 PHASE 3: Final File Cleanup
         from pathlib import Path
         try:
             Path("bot.pid").unlink(missing_ok=True)

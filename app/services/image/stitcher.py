@@ -16,103 +16,52 @@ class ImageStitcher:
         ImageOptimizer.deduplicate(input_dir)
         if not os.path.exists(output_dir): os.makedirs(output_dir)
 
-        # ─── STEP 1: LOAD METADATA ───
-        math_path = os.path.join(input_dir, "math.json")
-        math_data_raw = []
-        seeds_map = {}
-        if os.path.exists(math_path):
-            try:
-                with open(math_path, 'r') as f:
-                    math_data_raw = json.load(f)
-                if math_data_raw and 'seed' in math_data_raw[0]:
-                    seeds_map = {item['file']: item.get('seed') for item in math_data_raw}
-            except Exception as e:
-                logger.error(f"Error loading math.json: {e}")
-
-        # ─── STEP 2: LOAD & PREPARE ALL IMAGES ───
+        # ─── STEP 1: PREPARE ALL IMAGES (Sequential) ───
         # Note: We load them all into memory for maximum speed as requested.
         prepared_images = []
         image_boundaries = []
         current_y = 0
         
-        # Strategy A: Mecha coordinate-perfect
-        if math_data_raw and 'y' in math_data_raw[0]:
-            logger.info("[Stitcher] Mode: All-in-Memory (Coordinate-Perfect)")
-            math_data_raw.sort(key=lambda x: x.get('y', 0))
+        logger.info(f"[Stitcher] Mode: All-in-Memory (Sequential). Unscramble={'ON' if (episode_id) else 'OFF'}")
+        files = sorted([f for f in os.listdir(input_dir) if f.lower().endswith(('.png', '.jpg', '.webp'))])
+        
+        for i, f in enumerate(files):
+            if i % 10 == 0 or i == len(files) - 1:
+                logger.info(f"   [Stitcher] Loading image {i+1}/{len(files)}...")
             
-            ref_width = 0
-            for entry in math_data_raw:
-                p = os.path.join(input_dir, entry['file'])
-                if os.path.exists(p):
-                    with Image.open(p) as img:
-                        ref_width = img.width
-                    break
-            if not ref_width: ref_width = target_width
-            scale_factor = target_width / ref_width
-            start_y = math_data_raw[0]['y']
-            
-            for entry in math_data_raw:
-                path = os.path.join(input_dir, entry['file'])
-                if not os.path.exists(path): continue
+            path = os.path.join(input_dir, f)
+            try:
+                # We no longer use seeds_map or math.json
+                seed = episode_id
                 
-                img = Image.open(path).convert("RGB")
+                if seed:
+                    # 🟢 SAFE UNSCRAMBLE: Pass seed. optimizer.py now handles already-clean images gracefully.
+                    img = ImageOptimizer.unscramble_jumptoon_v2(path, seed)
+                else:
+                    img = Image.open(path).convert("RGB")
+                
+                if not img: continue
+                
                 img_w, img_h = img.size
-                sw = target_width
-                sh = int(img_h * (target_width / img_w))
-                abs_y = int((entry['y'] - start_y) * scale_factor)
                 
-                if sw != img_w or sh != img_h:
+                effective_w = ImageOptimizer.get_jumptoon_effective_width(img_w) if seed else img_w
+                
+                sw = target_width
+                sh = int(img_h * (target_width / effective_w))
+                
+                if img.width != sw or img.height != sh:
                     img = img.resize((sw, sh), Image.Resampling.LANCZOS)
                 
-                prepared_images.append((img, abs_y))
-                image_boundaries.append(abs_y + sh)
-        
-        # Strategy B: Sequential (Jumptoon/Fallback)
-        else:
-            logger.info(f"[Stitcher] Mode: All-in-Memory (Sequential). Unscramble={'ON' if (episode_id or seeds_map) else 'OFF'}")
-            files = sorted([f for f in os.listdir(input_dir) if f.lower().endswith(('.png', '.jpg', '.webp'))])
-            
-            for i, f in enumerate(files):
-                if i % 10 == 0 or i == len(files) - 1:
-                    logger.info(f"   [Stitcher] Loading image {i+1}/{len(files)}...")
-                
-                path = os.path.join(input_dir, f)
-                try:
-                    seed = seeds_map.get(f) or episode_id
-                    if seed:
-                        img = ImageOptimizer.unscramble_jumptoon_v2(path, seed)
-                    else:
-                        img = Image.open(path).convert("RGB")
-                    
-                    if not img: continue
-                    
-                    img_w, img_h = img.size
-                    
-                    effective_w = ImageOptimizer.get_jumptoon_effective_width(img_w) if seed else img_w
-                    
-                    sw = target_width
-                    sh = int(img_h * (target_width / effective_w))
-                    
-                    if img.width != sw or img.height != sh:
-                        img = img.resize((sw, sh), Image.Resampling.LANCZOS)
-                    
-                    prepared_images.append((img, current_y))
-                    current_y += sh
-                    image_boundaries.append(current_y)
-                except Exception as e:
-                    logger.error(f"Failed to load {f}: {e}")
-                    continue
-
-            import sys
-            # 🟢 Stitching Progress Bar (Loading stage)
-            if req_id:
-                # We'll treat loading as part of stitching progress
-                # For simplicity, we'll show progress here if we want, but the user asked for "Stitching"
-                pass
+                prepared_images.append((img, current_y))
+                current_y += sh
+                image_boundaries.append(current_y)
+            except Exception as e:
+                logger.error(f"Failed to load {f}: {e}")
+                continue
 
         if not prepared_images: return
 
-        # ─── STEP 3: COMBINE INTO LARGE CANVAS ───
+        # ─── STEP 2: COMBINE INTO LARGE CANVAS ───
         total_h = image_boundaries[-1] if image_boundaries else 0
         logger.info(f"   [Stitcher] Creating large canvas: {target_width}x{total_h}px")
         combined_img = Image.new('RGB', (target_width, total_h), (255, 255, 255))
@@ -122,7 +71,7 @@ class ImageStitcher:
             img.close() # Free source image memory
         prepared_images.clear()
 
-        # ─── STEP 4: DETECT & SLICE (One Pass) ───
+        # ─── STEP 3: DETECT & SLICE (One Pass) ───
         slice_idx = 0
         curr_y = 0
         buffer_zone = 4000 # Search window beyond target_height
@@ -149,29 +98,27 @@ class ImageStitcher:
                     cut_type = f"Smart (+{cut_y - search_start}px)"
 
             # Crop and save
-            slice_path = os.path.join(output_dir, f"{slice_idx:02d}.webp")
+            slice_path = os.path.join(output_dir, f"{slice_idx:02d}.jpg")
             slice_img = combined_img.crop((0, curr_y, target_width, cut_y))
-            # 🟢 Lossless WebP conversion as requested
-            slice_img.save(slice_path, "WEBP", lossless=True)
+            # 🟢 Save as JPG with quality 95 as requested
+            slice_img.save(slice_path, "JPEG", quality=95)
             
             # 🟢 Standardized Progress Bar
             if req_id:
-                # Estimate progress based on y coordinate
-                percent = int((cut_y / total_h) * 100)
-                bar_length = 20
-                filled_length = int(bar_length * cut_y // total_h)
-                bar = '▰' * filled_length + '▱' * (bar_length - filled_length)
-                import sys
-                sys.stdout.write(f"\r[INFO] [{req_id}] - Stitching: [{service_name.capitalize()}] {bar} {percent}%")
-                sys.stdout.flush()
+                if 'progress' not in locals():
+                    from app.core.logger import ProgressBar
+                    progress = ProgressBar(req_id, "Stitching", service_name.capitalize(), total_h)
+                
+                progress.update(cut_y)
 
-            logger.info(f"   [Stitcher] Slice {slice_idx:02d}.webp: {target_width}x{cut_y-curr_y} ({cut_type})")
+            logger.info(f"   [Stitcher] Slice {slice_idx:02d}.jpg: {target_width}x{cut_y-curr_y} ({cut_type})")
             slice_img.close()
             
             curr_y = cut_y
             if curr_y >= total_h: break
 
-        if req_id: sys.stdout.write("\n")
+        if req_id and 'progress' in locals():
+            progress.finish()
 
         combined_img.close()
         logger.info(f"[Stitcher] Done: {slice_idx} slices saved.")

@@ -7,8 +7,10 @@ import uuid
 import asyncio
 import math
 import time
+import datetime
 from config.settings import Settings
 from app.models.chapter import TaskStatus
+from app.services.group_manager import load_group, get_group_emoji
 
 logger = logging.getLogger("Dashboard")
 
@@ -19,67 +21,8 @@ class DashboardCog(commands.Cog):
     @app_commands.command(name="dashboard", description="Open the central extraction menu")
     async def dashboard(self, interaction: discord.Interaction):
         """Phase 1: Launch the V2 Dashboard using raw API payloads."""
-        guild_id = interaction.guild.id if interaction.guild else 0
-        channel_id = interaction.channel.id if interaction.channel else 0
-        scan_name = Settings.SERVER_MAP.get(channel_id) or Settings.SERVER_MAP.get(guild_id) or Settings.DEFAULT_CLIENT_NAME
-
-        payload = {
-            "type": 4, # MESSAGE_WITH_SOURCE
-            "data": {
-                "flags": 32768, # 🟢 MAGIC FLAG FOR V2 COMPONENTS
-                "components": [
-                    {
-                        "type": 17, # CONTAINER
-                        "components": [
-                            {
-                                "type": 9, # SECTION COMPONENT
-                                "components": [
-                                    {
-                                        "type": 10, # TEXT DISPLAY
-                                        "content": f"# Dashboard of {scan_name}"
-                                    }
-                                ],
-                                "accessory": {
-                                    "type": 2, 
-                                    "style": 4, 
-                                    "emoji": {"name": "✖️"}, 
-                                    "custom_id": "btn_close_main_dash"
-                                }
-                            },
-                            {
-                                "type": 14, # SEPARATOR
-                                "divider": True,
-                                "spacing": 1
-                            },
-                            {
-                                "type": 10,
-                                "content": "## Platform Lists\n**Available Platforms**\n> * <:Mechacomic:1478369141957333083> Mecha Comic\n> * <:Jumptoon:1478367963928068168> Jumptoon\n> * <:Piccoma:1478368704164134912> Piccoma\n\n**Coming Soon Platforms**\n> * <:KakaoPage:1478366505640001566> KakaoPage\n> * <:KuaikanManhua:1478368412609679380> Kuaikan Manhua\n> * <:acqq:1478369616660140082> AC.QQ"
-                            },
-                            {
-                                "type": 10,
-                                "content": "## Your Commands"
-                            },
-                            {
-                                "type": 1, # ACTION ROW
-                                "components": [
-                                    {
-                                        "type": 3, # SELECT
-                                        "custom_id": "v2_platform_select",
-                                        "placeholder": "Select Platform",
-                                        "options": [
-                                            {"label": "Mecha Comic", "value": "Mecha Comic", "emoji": {"id": "1478369141957333083", "name": "Mechacomic"}},
-                                            {"label": "Jumptoon", "value": "Jumptoon", "emoji": {"id": "1478367963928068168", "name": "Jumptoon"}},
-                                            {"label": "Piccoma", "value": "Piccoma", "emoji": {"id": "1478368704164134912", "name": "Piccoma"}}
-                                        ]
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-
+        payload = await self.get_dashboard_payload(interaction)
+        
         try:
             route = discord.http.Route(
                 'POST', '/interactions/{interaction_id}/{interaction_token}/callback',
@@ -88,9 +31,128 @@ class DashboardCog(commands.Cog):
             )
             await self.bot.http.request(route, json=payload)
         except discord.NotFound:
-            pass # 🟢 Silently ignore "Unknown Interaction" on double-clicks
+            pass 
         except Exception as e:
             logger.error(f"Failed to send V2 Dashboard: {e}")
+
+    async def get_dashboard_payload(self, interaction: discord.Interaction, is_update=False):
+        """Standardized payload generator for the refined V2 Dashboard."""
+        guild_id = interaction.guild.id if interaction.guild else 0
+        channel_id = interaction.channel.id if interaction.channel else 0
+        scan_name = Settings.SERVER_MAP.get(channel_id) or Settings.SERVER_MAP.get(guild_id) or Settings.DEFAULT_CLIENT_NAME
+
+        # Fetch Today's Weeklies
+        from app.services.group_manager import get_all_subscriptions
+        all_subs = get_all_subscriptions()
+        today_name = datetime.datetime.now(datetime.timezone.utc).strftime("%A")
+        
+        # Filter for today's subs for THIS group
+        group_subs = [
+            sub for g_name, sub in all_subs 
+            if g_name == scan_name and (sub.get("release_day") or "").lower() == today_name.lower()
+        ]
+        
+        # Custom Logo
+        custom_emoji = get_group_emoji(scan_name)
+        header_logo = f"{custom_emoji} " if custom_emoji else ""
+
+        # 1. HEADER SECTION
+        header_section = {
+            "type": 10, # TEXT_DISPLAY
+            "content": f"# {header_logo}{scan_name}'s Dashboard"
+        }
+
+        # 2. WEEKLIES SECTION
+        weeklies_text = "## Today's Weeklies\n"
+        if group_subs:
+            for i, sub in enumerate(group_subs[:5], 1):
+                weeklies_text += f"> {i}. <#{sub['channel_id']}>\n"
+            if len(group_subs) > 5:
+                weeklies_text += f"> *...and {len(group_subs)-5} more*"
+        else:
+            weeklies_text += "> *No scheduled series subscriptions for today.*"
+        
+        weeklies_section = {
+            "type": 10, # TEXT_DISPLAY
+            "content": weeklies_text
+        }
+
+        # 3. PLATFORM LIST & SELECT
+        platform_list_text = (
+            "## Platform Lists\n"
+            "> - <:Piccoma:1478368704164134912> Piccoma\n"
+            "> - <:Mechacomic:1478369141957333083> Mechacomic\n"
+            "> - <:Jumptoon:1478367963928068168> Jumptoon"
+        )
+        platform_list_section = {
+            "type": 10, # TEXT_DISPLAY
+            "content": platform_list_text
+        }
+
+        platform_select_row = {
+            "type": 1, 
+            "components": [
+                {
+                    "type": 3,
+                    "custom_id": "v2_platform_select",
+                    "placeholder": "Select Platform",
+                    "options": [
+                        {"label": "Piccoma", "value": "Piccoma", "emoji": {"id": "1478368704164134912", "name": "Piccoma"}},
+                        {"label": "Mecha Comic", "value": "Mecha Comic", "emoji": {"id": "1478369141957333083", "name": "Mechacomic"}},
+                        {"label": "Jumptoon", "value": "Jumptoon", "emoji": {"id": "1478367963928068168", "name": "Jumptoon"}}
+                    ]
+                }
+            ]
+        }
+
+        # 4. UTILITY / FOOTER SECTION
+        footer_section = {
+            "type": 10, # TEXT_DISPLAY
+            "content": f"-# CS-ID: {guild_id if guild_id else '0'}"
+        }
+        
+        utility_buttons_row = {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2, "style": 2, 
+                    "emoji": {"id": "1480959010722021567", "name": "setting"},
+                    "custom_id": "v2_btn_settings"
+                },
+                {
+                    "type": 2, "style": 4, 
+                    "emoji": {"name": "✖️"},
+                    "custom_id": "btn_close_main_dash"
+                }
+            ]
+        }
+
+        # --- ASSEMBLE PAYLOAD ---
+        components = [
+            {
+                "type": 17, # CONTAINER
+                "components": [
+                    header_section,
+                    {"type": 14, "divider": True, "spacing": 1},
+                    weeklies_section,
+                    {"type": 14, "divider": True, "spacing": 1},
+                    platform_list_section,
+                    platform_select_row,
+                    {"type": 14, "divider": True, "spacing": 1},
+                    footer_section,
+                    utility_buttons_row
+                ]
+            }
+        ]
+
+        payload = {
+            "type": 7 if is_update else 4,
+            "data": {
+                "flags": 32768,
+                "components": components
+            }
+        }
+        return payload
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
@@ -98,6 +160,14 @@ class DashboardCog(commands.Cog):
         if interaction.type == discord.InteractionType.component:
             custom_id = interaction.data.get("custom_id", "")
             
+            # --- Close Button ---
+            if custom_id == "btn_close_main_dash":
+                try: 
+                    await interaction.response.defer()
+                    await interaction.message.delete()
+                except: pass
+                return
+
             # --- Platform Selection Modal ---
             if custom_id == "v2_platform_select":
                 platform = interaction.data["values"][0]
@@ -143,16 +213,41 @@ class DashboardCog(commands.Cog):
                     else:
                         logger.error(f"Modal launch error: {e}")
 
-            # --- Subscription Hook (Button that opens the 2nd modal) ---
-            elif custom_id.startswith("v2_btn_sub_trigger_"):
-                # Format: v2_btn_sub_trigger_{platform}|{url}
-                parts = custom_id.replace("v2_btn_sub_trigger_", "").split("|", 1)
+            # --- Settings Button ---
+            elif custom_id == "v2_btn_settings":
+                await interaction.response.send_message("⚙️ **Settings Menu** coming soon!", ephemeral=True)
+
+            # --- Channel Selection for Subscription ---
+            elif custom_id.startswith("v2_select_sub_channel_"):
+                # Format: v2_select_sub_channel_{platform}|{url}
+                parts = custom_id.replace("v2_select_sub_channel_", "").split("|", 1)
                 platform = parts[0]
                 url = parts[1] if len(parts) > 1 else ""
-                await self.launch_subscribe_modal(interaction, platform, url)
+                
+                # Extract selected channel ID
+                values = interaction.data.get("values", [])
+                if not values:
+                    return # Should not happen
+                
+                target_channel_id = int(values[0])
+                await self.finalize_subscription(interaction, platform, url, target_channel_id)
+
+            # --- Registration Hook ---
+            elif custom_id.startswith("v2_btn_sub_confirm_yes_"):
+                # Format: v2_btn_sub_confirm_yes_{platform}|{url}
+                parts = custom_id.replace("v2_btn_sub_confirm_yes_", "").split("|", 1)
+                platform = parts[0]
+                url = parts[1] if len(parts) > 1 else ""
+                await self.finalize_subscription(interaction, platform, url, interaction.channel_id)
+            elif custom_id.startswith("v2_btn_sub_confirm_no_"):
+                # Format: v2_btn_sub_confirm_no_{platform}|{url}
+                parts = custom_id.replace("v2_btn_sub_confirm_no_", "").split("|", 1)
+                platform = parts[0]
+                url = parts[1] if len(parts) > 1 else ""
+                await self.launch_channel_select(interaction, platform, url)
 
             # --- Universal Dashboard Navigation & Actions ---
-            elif any(custom_id.startswith(p) for p in ["btn_open_menu_", "mode_select_", "page_select_", "btn_start_", "btn_cancel_", "btn_clear_", "btn_error_retry_"]):
+            elif any(custom_id.startswith(p) for p in ["btn_open_menu_", "mode_select_", "page_select_", "btn_start_", "btn_cancel_", "btn_home_", "btn_clear_", "btn_error_retry_", "btn_visit_drive_"]):
                 req_id = custom_id.split("_")[-1]
                 from app.bot.common.view import UniversalDashboard
                 view = UniversalDashboard.active_views.get(req_id)
@@ -163,10 +258,20 @@ class DashboardCog(commands.Cog):
                         "1. **Timeout**: The session was inactive for more than 15 minutes.\n"
                         "2. **Process Conflict**: Multiple bots are running. **Please kill all `main.py` processes and run only one.**"
                     )
-                    return await interaction.response.send_message(error_msg, ephemeral=True)
+                    if interaction.response.is_done():
+                        return await interaction.followup.send(error_msg, ephemeral=True)
+                    else:
+                        return await interaction.response.send_message(error_msg, ephemeral=True)
                 
                 view.interaction = interaction
                 view.last_interaction_time = time.time() # 🔄 Reset session timer on every interaction
+
+                # NEW: Error Report Logic
+                if custom_id.startswith("btn_report_error_"):
+                    acknowledgement = (
+                        "Thank you for reporting this. We'll improve this feature to allow detailed error reporting soon."
+                    )
+                    return await interaction.response.send_message(acknowledgement, ephemeral=True)
 
                 # NEW: Error Retry Logic
                 if custom_id.startswith("btn_error_retry_"):
@@ -219,23 +324,25 @@ class DashboardCog(commands.Cog):
                 # B. Open Selection Sub-Menu (The Radio Group Modal)
                 if custom_id.startswith("btn_open_menu_"):
                     new_ch = next((ch for ch in view.all_chapters if ch.get('is_new')), None)
-                    if new_ch:
-                        ch_not = new_ch.get("notation", "Ch").strip()
-                        ch_tit = new_ch.get("title", "").strip()
-                        latest_desc = f"[NEW] {ch_not} - {ch_tit}- released!"
-                    else:
-                        latest_desc = "No New Chapter released."
                     
                     options = [
                         {"label": "SR", "description": "Select all available chapters.", "value": "all"},
                         {"label": "Select", "description": "Add custom range of chapters.", "value": "custom"}
                     ]
-                    # The Latest option is added separately so we can potentially truncate the description since it has a 100 char limit
-                    options.append({
-                        "label": "Latest", 
+                    
+                    if new_ch:
+                        ch_not = new_ch.get("notation", "Ch").strip()
+                        ch_tit = new_ch.get("title", "").strip()
+                        latest_desc = f"[NEW] - {ch_not} {ch_tit}".strip()
+                    else:
+                        latest_desc = "No New Chapter released."
+
+                    latest_opt = {
+                        "label": "Latest Chapter:", 
                         "description": latest_desc[:100], 
                         "value": "latest"
-                    })
+                    }
+                    options.append(latest_opt)
                     
                     range_str = ""
                     if view.selected_indices:
@@ -300,7 +407,7 @@ class DashboardCog(commands.Cog):
                     req_ch_index = view.page * view.per_page
                     if req_ch_index > len(view.all_chapters) and getattr(view, 'total_chapters', 0) > len(view.all_chapters):
                         if view.service_type in ["jumptoon", "mecha"]:
-                            scraper = self.bot.task_queue.scraper_registry.get_scraper(view.url)
+                            scraper = self.bot.task_queue.provider_manager.get_provider_for_url(view.url)
                             
                             # 🟢 Dynamic Math: Jumptoon (30/pg) vs Mecha (10/pg)
                             pg_size = 30 if view.service_type == "jumptoon" else 10
@@ -311,11 +418,8 @@ class DashboardCog(commands.Cog):
                                 logger.info(f"[{req_id}] ⚡ Lazy Loading: Fetching up to {view.service_type} page {target_jt_page}...")
                                 seen_ids = {ch['id'] for ch in view.all_chapters}
                                 
-                                # 🟢 Handle both Async and Sync Scrapers
-                                if asyncio.iscoroutinefunction(scraper.fetch_more_chapters):
-                                    new_chaps = await scraper.fetch_more_chapters(view.url, target_jt_page, seen_ids, [last_jt_page] if last_jt_page > 1 else [])
-                                else:
-                                    new_chaps = await asyncio.to_thread(scraper.fetch_more_chapters, view.url, target_jt_page, seen_ids, [last_jt_page] if last_jt_page > 1 else [])
+                                # 🟢 Every Provider is now Async
+                                new_chaps = await scraper.fetch_more_chapters(view.url, target_jt_page, seen_ids, [last_jt_page] if last_jt_page > 1 else [])
                                 
                                 if new_chaps:
                                     view.all_chapters.extend(new_chaps)
@@ -327,9 +431,24 @@ class DashboardCog(commands.Cog):
                     # Passing None forces the view to use the PATCH /webhooks route.
                     await view.update_view()
 
-                # D. Cancel Session
+                # D. Home (Redirect to Main)
+                elif custom_id.startswith("btn_home_"):
+                    if view.service_type == "mecha": 
+                        try: self.bot.task_queue.browser_service.dec_session()
+                        except: pass
+                    UniversalDashboard.active_views.pop(req_id, None)
+                    
+                    try:
+                        main_payload = await self.get_dashboard_payload(interaction, is_update=True)
+                        route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
+                        await self.bot.http.request(route, json=main_payload)
+                    except Exception as e:
+                        logger.error(f"Failed to return home: {e}")
+                    return
+
+                # E. Cancel Session
                 elif custom_id.startswith("btn_cancel_"):
-                    if view.service_type == "mecha": view.bot.task_queue.scraper_registry.browser.dec_session()
+                    if view.service_type == "mecha": self.bot.task_queue.browser_service.dec_session()
                     UniversalDashboard.active_views.pop(req_id, None)
                     await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json={"type": 6})
                     try: await interaction.message.delete()
@@ -343,7 +462,7 @@ class DashboardCog(commands.Cog):
                     
                     asyncio.create_task(view.monitor_tasks())
                     from app.services.batch_controller import BatchController
-                    tasks = await BatchController(self.bot).prepare_batch(interaction, sorted(list(view.selected_indices)), view.all_chapters, view.title, view.url, view_ref=view, series_id=view.series_id)
+                    tasks = await BatchController(self.bot).prepare_batch(interaction, sorted(list(view.selected_indices)), view.all_chapters, view.title, view.url, view_ref=view, series_id=view.series_id, original_title=view.original_title)
                     if tasks:
                         view.phases.update({"analyze":"done","purchase":"done","download":"loading"})
                         view.active_tasks = [await self.bot.task_queue.add_task(t) for t in tasks]
@@ -377,10 +496,16 @@ class DashboardCog(commands.Cog):
                         view.selected_indices = {idx}
                     else:
                         error_payload = {
-                            "type": 4, 
+                            "type": 4, # CHANNEL_MESSAGE_WITH_SOURCE
                             "data": {
-                                "flags": 64, 
-                                "content": "⛔ **No New Releases Found**\nThis series currently doesn't have any newly released chapters. Please use the **SR** or **Select** options instead."
+                                "flags": 32832, # Ephemeral + V2
+                                "components": [{
+                                    "type": 17,
+                                    "components": [{
+                                        "type": 10,
+                                        "content": "<a:error:1482426908699267174> **No New Releases Found**\nThis series currently doesn't have any newly released chapters. Please use the **SR** or **Select** options instead."
+                                    }]
+                                }]
                             }
                         }
                         try:
@@ -400,7 +525,7 @@ class DashboardCog(commands.Cog):
                     
                 await view.update_view(interaction)
 
-            elif custom_id.startswith("v2_modal_subscribe_"):
+            elif custom_id.startswith(("v2_modal_subscribe_", "v2_modal_sub_channel_select_")):
                 await self.handle_subscribe_modal(interaction, custom_id)
 
             elif custom_id.startswith("v2_modal_"):
@@ -412,6 +537,12 @@ class DashboardCog(commands.Cog):
 
     async def handle_platform_modal(self, interaction, custom_id):
         """Processes the platform URL submission modal."""
+        # 🟢 THE FIX: DEFER IMMEDIATELY to prevent 3s timeout
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except:
+            pass
+
         platform = custom_id.replace("v2_modal_", "")
         url, action = "", "download"
         
@@ -424,74 +555,67 @@ class DashboardCog(commands.Cog):
         expected_domain = platform_domains.get(platform)
         
         if expected_domain and expected_domain not in url.lower():
-            await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json={
-                "type": 4, "data": {"flags": 64, "content": f"⛔ **Protocol Violation**\nExpected `{expected_domain}` link."}
-            })
-            return 
-
-        if action == "subscribe":
-            # Respond with a V2 message containing a button to trigger the second modal
-            # Chaining modals directly is not allowed by Discord
-            trigger_payload = {
-                "type": 4,
-                "data": {
-                    "flags": 32768,
-                    "components": [{
-                        "type": 17,
-                        "components": [
-                            {
-                                "type": 10,
-                                "content": f"✅ **Series Recognized!**\nTo complete the subscription for **{platform}**, click the button below to choose your target channel."
-                            },
-                            {
-                                "type": 1,
-                                "components": [{
-                                    "type": 2, "style": 1, 
-                                    "label": "Configure Channel & Finish",
-                                    "custom_id": f"v2_btn_sub_trigger_{platform}|{url}"
-                                }]
-                            }
-                        ]
-                    }]
-                }
-            }
-            try:
-                await self.bot.http.request(
-                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
-                    json=trigger_payload
-                )
-            except Exception as e:
-                logger.error(f"Failed to send subscribe trigger: {e}")
-            return
-
-        # 🟢 THE FIX: Send the Analyzing message as a V2 Component so there is no root "content"
-        # 🟢 THE FIX: Use type 10 (Text) directly inside the Container. No type 9!
-        analyzing_payload = {
-            "type": 4, 
-            "data": {
-                "flags": 32768,
+            # Use followup since we deferred. MUST USE V2 structure for V2-deferred messages.
+            embed_payload = {
+                "flags": 32832, # Ephemeral + V2
                 "components": [{
                     "type": 17,
                     "components": [{
-                        "type": 10, # <--- CHANGED FROM 9 TO 10
-                        "content": f"🔍 **Analyzing {platform} Link:**\n`{url}`\n*Fetching metadata, please wait...*"
+                        "type": 10,
+                        "content": f"⛔ **Protocol Violation**\nExpected `{expected_domain}` link."
                     }]
                 }]
             }
+            await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'), json=embed_payload)
+            return 
+
+        if action == "subscribe":
+            # For subscriptions, we first ask if they want to use the current channel
+            trigger_payload = {
+                "flags": 32768,
+                "components": [{
+                    "type": 17,
+                    "components": [
+                        {
+                            "type": 10,
+                            "content": f"✅ **Series Found!**\nWould you like to use this channel for this series subscription?"
+                        },
+                        {
+                            "type": 1,
+                            "components": [
+                                {"type": 2, "style": 3, "label": "Yes", "custom_id": f"v2_btn_sub_confirm_yes_{platform}|{url}"},
+                                {"type": 2, "style": 4, "label": "No", "custom_id": f"v2_btn_sub_confirm_no_{platform}|{url}"}
+                            ]
+                        }
+                    ]
+                }]
+            }
+            try:
+                await self.bot.http.request(
+                    discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'),
+                    json=trigger_payload
+                )
+            except Exception as e:
+                logger.error(f"Failed to send subscribe confirmation: {e}")
+            return
+
+        # 🟢 Send the Analyzing message via PATCH
+        analyzing_payload = {
+            "flags": 32768,
+            "components": [{
+                "type": 17,
+                "components": [{
+                    "type": 10,
+                    "content": f"🔍 **Analyzing {platform} Link:**\n`{url}`\n*Fetching metadata, please wait...*"
+                }]
+            }]
         }
         
         try:
-            route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
+            route = discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original')
             await self.bot.http.request(route, json=analyzing_payload)
-        except discord.HTTPException as e:
-            if e.code in [10062, 40060]: 
-                # Already acknowledged (e.g., from double clicks/lag), continue scraping but use PATCH later
-                pass
-            else:
-                logger.error(f"Interaction expired: {e}")
-                return
         except Exception as e:
-            logger.error(f"Interaction expired: {e}")
+            logger.error(f"Interaction expired or PATCH failed: {e}")
             return
 
         try:
@@ -500,27 +624,37 @@ class DashboardCog(commands.Cog):
             req_id = str(uuid.uuid4())[:8].upper()
             token = req_id_context.set(req_id)
             
-            scraper = self.bot.task_queue.scraper_registry.get_scraper(url, is_smartoon=("mecha" in platform.lower()))
+            scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
             logger.info(f"[{req_id}] 🚀 Handoff: Extraction starting for {platform}...")
-            
-            # 🟢 Handle both Async and Sync Scrapers
-            if asyncio.iscoroutinefunction(scraper.get_series_info):
-                data = await scraper.get_series_info(url)
-            else:
-                try:
-                    data = await asyncio.to_thread(scraper.get_series_info, url)
-                except Exception as e:
-                    if platform == "mecha":
-                        logger.warning(f"[Dashboard] Mecha API failed ({e}), falling back to Web Scraper...")
-                        web_scraper = self.bot.task_queue.scraper_registry.web_scraper
-                        data = await web_scraper.get_series_info(url)
-                    else:
-                        raise e
+            # 🟢 Every Provider is now S-Grade Async
+            data = await scraper.get_series_info(url)
                 
             logger.info(f"[{req_id}] ✅ Handoff: Metadata retrieved successfully.")
-            title, total_chapters, chapter_list, image_url, series_id = data
+            title, total_chapters, chapter_list, image_url, series_id, release_day, release_time = data
             
-            ctx_data = {'url': url, 'title': title, 'chapters': chapter_list, 'total_chapters': total_chapters, 'image_url': image_url, 'series_id': series_id, 'req_id': req_id, 'user': interaction.user}
+            # 🟢 TITLE OVERRIDE: Check if the group has a custom English title for this series
+            guild_id = interaction.guild.id if interaction.guild else 0
+            channel_id_origin = interaction.channel.id if interaction.channel else 0
+            group_name = Settings.SERVER_MAP.get(channel_id_origin) or Settings.SERVER_MAP.get(guild_id)
+            original_title = title # Keep the one from scraper
+            if group_name:
+                from app.services.group_manager import get_title_override
+                custom_title = get_title_override(group_name, url)
+                if custom_title:
+                    logger.info(f"[{req_id}] 🏷️ Title Override: '{title}' → '{custom_title}' (Group: {group_name})")
+                    title = custom_title
+            
+            ctx_data = {
+                'url': url, 
+                'title': title, 
+                'original_title': original_title,
+                'chapters': chapter_list, 
+                'total_chapters': total_chapters, 
+                'image_url': image_url, 
+                'series_id': series_id, 
+                'req_id': req_id, 
+                'user': interaction.user
+            }
             service_type = platform.lower().replace(" ", "").replace(".jp", "").replace("comic", "")
             
             view = UniversalDashboard(self.bot, ctx_data, service_type)
@@ -529,11 +663,11 @@ class DashboardCog(commands.Cog):
             # 🟢 NO "content": "" here!
             payload_data = {"flags": 32768, "components": view.build_v2_payload()}
             
-            route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+            route = discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original')
             await self.bot.http.request(route, json=payload_data)
             
             if service_type == "mecha":
-                asyncio.create_task(asyncio.to_thread(self.bot.task_queue.scraper_registry.browser.warmup))
+                asyncio.create_task(self.bot.task_queue.browser_service.start())
                 
         except Exception as e:
             logger.error(f"Failed to fetch metadata: {e}", exc_info=True)
@@ -547,12 +681,12 @@ class DashboardCog(commands.Cog):
                     "type": 17,
                     "components": [{
                         "type": 10, # <--- CHANGED FROM 9 TO 10
-                        "content": f"❌ **Extraction Failed:**\n`{err}`"
+                        "content": f"<a:error:1482426908699267174> **Extraction Failed:**\n`{err}`"
                     }]
                 }]
             }
             try:
-                route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+                route = discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original')
                 await self.bot.http.request(route, json=error_payload)
             except:
                 pass
@@ -560,98 +694,116 @@ class DashboardCog(commands.Cog):
             try: req_id_context.reset(token)
             except: pass
 
-    async def launch_subscribe_modal(self, interaction, platform, url):
-        """Launches the actual subscription modal (called from button click)."""
-        subscribe_modal_payload = {
-            "type": 9,
-            "data": {
-                "custom_id": f"v2_modal_subscribe_{platform}",
-                "title": f"Subscribe to {platform}",
-                "components": [
-                    {
-                        "type": 18,
-                        "label": "Confirm Series URL",
-                        "component": {
-                            "type": 4, "custom_id": "url_input", "style": 1,
-                            "value": url,
-                            "required": True
+    async def launch_channel_select(self, interaction, platform, url):
+        """Sends a V2 message with a Channel Select component."""
+        channel_select_payload = {
+            "flags": 32768,
+            "components": [
+                {
+                    "type": 17,
+                    "components": [
+                        {
+                            "type": 10,
+                            "content": f"📡 **Subscription Setup**\nPlease select the target channel for the **{platform}** series subscription below."
+                        },
+                        {
+                            "type": 1,
+                            "components": [
+                                {
+                                    "type": 8,
+                                    "custom_id": f"v2_select_sub_channel_{platform}|{url}",
+                                    "channel_types": [0], # Text Channels only
+                                    "placeholder": "Search or select a text channel..."
+                                }
+                            ]
                         }
-                    },
-                    {
-                        "type": 18,
-                        "label": "Auto-Download Target Channel ID",
-                        "component": {
-                            "type": 4, "custom_id": "channel_input", "style": 1,
-                            "placeholder": "e.g. 12345678901234567",
-                            "required": True
-                        }
-                    }
-                ]
-            }
+                    ]
+                }
+            ]
         }
         try:
+            # Note: This is usually called from a button interaction, so we can PATCH original or POST new.
+            # User said "popup" but Select Menus in messages feel like a "step".
+            # If they meant a Modal with Channel Select, we need to check if Label supports Type 8.
+            # Reference says: "Channel Selects are available in messages and modals. They must be placed inside an Action Row in messages and a Label in modals."
+            # The user specifically said "On No button popup is alright", implies they might want a Modal.
+            # Let's try to fit it into a Modal if possible.
+            
+            modal_payload = {
+                "type": 9,
+                "data": {
+                    "custom_id": f"v2_modal_sub_channel_select_{platform}|{url}", # We'll need to handle this in on_interaction too
+                    "title": "Select Target Channel",
+                    "components": [
+                        {
+                            "type": 18, # LABEL
+                            "label": "Choose the auto-download channel",
+                            "component": {
+                                "type": 8, # CHANNEL_SELECT
+                                "custom_id": f"v2_select_sub_channel_{platform}|{url}",
+                                "channel_types": [0],
+                                "required": True
+                            }
+                        }
+                    ]
+                }
+            }
             await self.bot.http.request(
                 discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
-                json=subscribe_modal_payload
+                json=modal_payload
             )
         except Exception as e:
-            logger.error(f"Failed to open final subscribe modal: {e}")
+            logger.error(f"Failed to launch channel select modal: {e}")
 
     async def handle_subscribe_modal(self, interaction, custom_id):
-        """Processes the secondary subscription modal where user inputs the channel ID."""
-        platform = custom_id.replace("v2_modal_subscribe_", "")
-        url, channel_input = "", ""
+        """Processes the secondary subscription modal (DEPRECATED for manual, now used for Channel Select)."""
+        # Note: Interaction type for Modal Submit is 5.
+        # If it's the new modal, we extract from components -> label -> component -> values
+        platform, url = "", ""
+        if custom_id.startswith("v2_modal_sub_channel_select_"):
+            parts = custom_id.replace("v2_modal_sub_channel_select_", "").split("|", 1)
+            platform = parts[0]
+            url = parts[1] if len(parts) > 1 else ""
+            
+            # Extract from Modal Data
+            # components[0] (Label) -> component (Channel Select) -> values
+            try:
+                rows = interaction.data.get("components", [])
+                if rows:
+                    label_comp = rows[0]
+                    ch_select = label_comp.get("component")
+                    values = ch_select.get("values", [])
+                    if values:
+                        target_channel_id = int(values[0])
+                        return await self.finalize_subscription(interaction, platform, url, target_channel_id)
+            except Exception as e:
+                logger.error(f"Failed to parse channel select modal data: {e}")
+                return
 
-        for row in interaction.data.get("components", []):
-            inner = row.get("component", {})
-            if inner.get("custom_id") == "url_input": url = inner.get("value", "")
-            elif inner.get("custom_id") == "channel_input": channel_input = inner.get("value", "")
-
-        # Target channel validation
-        try:
-            target_channel_id = int(''.join(c for c in channel_input if c.isdigit()))
-        except ValueError:
-            return await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json={
-                "type": 4, "data": {"flags": 64, "content": "❌ **Invalid Channel ID.** Please provide a valid numeric Discord Channel ID."}
-            })
-
-        # Send Thinking state
-        analyzing_payload = {
-            "type": 4, 
-            "data": {
-                "flags": 32768,
-                "components": [{
-                    "type": 17,
-                    "components": [{
-                        "type": 10,
-                        "content": f"📡 **Setting up Subscription...**\n`{url}`"
-                    }]
-                }]
+    async def finalize_subscription(self, interaction, platform, url, target_channel_id):
+        """Core backend logic for completing a subscription."""
+        # defer if not already thinking
+        if not interaction.response.is_done():
+            analyzing_payload = {
+                "type": 7, # 🟢 Update original message instead of creating a new one
+                "data": {
+                    "flags": 32768,
+                    "components": [{"type": 17, "components": [{"type": 10, "content": "📡 **Setting up Subscription...**"}]}]
+                }
             }
-        }
-        
-        try:
-            route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
-            await self.bot.http.request(route, json=analyzing_payload)
-        except Exception:
-            return
+            try: await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=analyzing_payload)
+            except: pass
 
-        # Backend Processing
         try:
             import datetime
-            from app.services.group_manager import add_subscription, is_series_subscribed_globally
+            from app.services.group_manager import add_subscription, is_series_subscribed_globally, get_title_override
             
-            # Fetch Metadata (using existing scraper logic exactly as dashboard does)
-            scraper = self.bot.task_queue.scraper_registry.get_scraper(url, is_smartoon=("mecha" in platform.lower()))
-            
-            if asyncio.iscoroutinefunction(scraper.get_series_info):
-                data = await scraper.get_series_info(url)
-            else:
-                data = await asyncio.to_thread(scraper.get_series_info, url)
-                
-            title, total_chapters, chapter_list, image_url, series_id = data
+            # 1. Fetch Metadata
+            scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
+            data = await scraper.get_series_info(url)
+            title, total_chapters, chapter_list, image_url, series_id, release_day, release_time = data
 
-            # Check Global Singularity rule
+            # 2. Check Global Singularity rule
             is_subbed, existing_group = is_series_subscribed_globally(series_id)
             if is_subbed:
                 error_payload = {
@@ -660,14 +812,13 @@ class DashboardCog(commands.Cog):
                         "type": 17,
                         "components": [{
                             "type": 10,
-                            "content": f"⚠️ **Subscription Rejected**\n**{title}** is already being tracked by **{existing_group}**. Series can only have one active subscription globally."
+                            "content": f"⚠️ **Subscription Rejected**\n**{title}** is already being tracked by **{existing_group}**."
                         }]
                     }]
                 }
-                route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
-                return await self.bot.http.request(route, json=error_payload)
+                return await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_payload)
 
-            # Determine Group based on the interaction origin
+            # 3. Determine Group
             guild_id = interaction.guild.id if interaction.guild else 0
             origin_channel_id = interaction.channel.id if interaction.channel else 0
             group_name = Settings.SERVER_MAP.get(origin_channel_id) or Settings.SERVER_MAP.get(guild_id)
@@ -677,115 +828,66 @@ class DashboardCog(commands.Cog):
                     "flags": 32768,
                     "components": [{
                         "type": 17,
-                        "components": [{
-                            "type": 10,
-                            "content": f"❌ **No Group Profile Linked**\nThis server channel must be linked to a Group Profile via `$cdn-menu` before adding subscriptions."
-                        }]
+                        "components": [{"type": 10, "content": "❌ **No Group Profile Linked**\nPlease link this server to a group via `/register-server` first."}]
                     }]
                 }
-                route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
-                return await self.bot.http.request(route, json=error_payload)
+                return await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_payload)
 
-            # Determine the baseline "last_known_chapter"
-            last_known = "0"
-            if chapter_list:
-                # Set baseline to the VERY LATEST id found, regardless of locked/free
-                last_known = str(chapter_list[-1]["id"])
+            # Check for Title Override
+            display_title = get_title_override(group_name, url) or title
 
+            # 4. Save Subscription
+            last_known = str(chapter_list[-1]["id"]) if chapter_list else "0"
             sub = {
                 "series_id": series_id,
                 "series_title": title,
                 "series_url": url,
                 "platform": platform,
                 "channel_id": target_channel_id,
-                "release_day": None, 
+                "release_day": release_day, 
                 "last_known_chapter_id": last_known,
                 "added_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "added_by": interaction.user.id
             }
-
             add_subscription(group_name, sub)
 
-            # Send Success UI
+            # 5. Success UI
             success_payload = {
                 "flags": 32768,
                 "components": [{
                     "type": 17,
                     "components": [{
                         "type": 10,
-                        "content": f"✅ **Successfully Subscribed!**\n\n**Series:** `{title}`\n**Profile:** `{group_name}`\n**Target Channel:** <#{target_channel_id}>\n\n⚠️ *Auto-download is currently paused. Please use `$sub-day {title}, <Day>` to set the polling schedule.*"
+                        "content": (
+                            f"# <a:done_subscription:1482425914456281108> Successfully Subscribed!\n"
+                            f"Series: [{display_title}]({url})\n"
+                            f"Subscription Channel: <#{target_channel_id}>\n"
+                            f"Subscribed by: <@{interaction.user.id}>"
+                        )
                     }]
                 }]
             }
+            
+            # Send success message
             route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
             await self.bot.http.request(route, json=success_payload)
             
-            # Send Notification to Target Channel
-            target_chan = self.bot.get_channel(target_channel_id)
-            if target_chan:
+            # Start 30min auto-deletion timer
+            async def auto_delete():
+                await asyncio.sleep(1800) # 30 mins
                 try:
-                    embed = discord.Embed(
-                        title="📡 Auto-Download Linked",
-                        description=f"This channel has been set as the auto-download destination for **{title}**.\n\n*(Assigned by <@{interaction.user.id}>)*",
-                        color=0x3498db
-                    )
-                    await target_chan.send(embed=embed)
-                except Exception as e:
-                    logger.warning(f"Could not send target channel notification: {e}")
-
-            # 🟢 SEND ADMIN ALERT
-            from app.services.group_manager import get_admin_settings
-            admin_settings = get_admin_settings(group_name)
-            admin_channel_id = admin_settings.get("channel_id")
-            if admin_channel_id:
-                admin_chan = self.bot.get_channel(admin_channel_id)
-                if admin_chan:
-                    role_id = admin_settings.get("role_id")
-                    ping_str = f"<@&{role_id}> " if role_id else ""
-                    
-                    alert_embed = discord.Embed(
-                        title="📡 New Subscription Alert",
-                        description=(
-                            f"**Series:** `{title}`\n"
-                            f"**URL:** <{url}>\n"
-                            f"**Requested by:** <@{interaction.user.id}>\n"
-                            f"**Group:** `{group_name}`\n\n"
-                            "⚠️ **Action Required:** Please set the weekly release day for this series using:\n"
-                            f"`$sub-day {url}, <Day>`"
-                        ),
-                        color=0xf1c40f
-                    )
-                    try:
-                        await admin_chan.send(content=ping_str, embed=alert_embed)
-                    except Exception as e:
-                        logger.warning(f"Could not send admin alert: {e}")
+                    del_route = discord.http.Route('DELETE', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+                    await self.bot.http.request(del_route)
+                    logger.info(f"Subscription success message auto-deleted after 30 mins (S-ID: {series_id})")
+                except: pass
+            
+            asyncio.create_task(auto_delete())
 
         except Exception as e:
             logger.error(f"Subscription setup failed: {e}", exc_info=True)
             err = str(e).splitlines()[0] if str(e) else "Unknown Error"
-            error_payload = {
-                "flags": 32768,
-                "components": [{
-                    "type": 17,
-                    "components": [{
-                        "type": 10,
-                        "content": f"❌ **Subscription Failed:**\n`{err}`"
-                    }]
-                }]
-            }
-            try:
-                route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
-                await self.bot.http.request(route, json=error_payload)
-            except: pass
-
-            try:
-                route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
-                await self.bot.http.request(route, json=error_payload)
-            except: pass
-
-            try:
-                route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
-                await self.bot.http.request(route, json=error_payload)
+            error_p = {"flags": 32768, "components": [{"type": 17, "components": [{"type": 10, "content": f"❌ **Subscription Failed:**\n`{err}`"}]}]}
+            try: await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_p)
             except: pass
 
 async def setup(bot):

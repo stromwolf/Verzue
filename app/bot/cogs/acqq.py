@@ -30,9 +30,9 @@ class AcQqCog(commands.Cog):
             logger.info(f"🔗 URL: {url}")
             logger.info("="*50)
 
-            scraper = self.bot.task_queue.scraper_registry.acqq
+            scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
             logger.info(f"🔍 Processing metadata request for: {url}")
-            data = await asyncio.to_thread(scraper.get_series_info, url)
+            data = await scraper.get_series_info(url)
             
             # PROPERLY UNPACK THE TUPLE
             title, total_chapters, chapter_list, image_url, series_id = data
@@ -46,8 +46,8 @@ class AcQqCog(commands.Cog):
                 'user': interaction.user
             }
 
-            # Utilizing 'smartoon' style for standard vertical UI handling
-            view = UniversalDashboard(self.bot, ctx_data, "smartoon")
+            # Utilizing 'acqq' style
+            view = UniversalDashboard(self.bot, ctx_data, "acqq")
             view.interaction = interaction
             
             payload_data = {"flags": 32768, "components": view.build_v2_payload()}

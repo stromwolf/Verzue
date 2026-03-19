@@ -2,6 +2,7 @@ import asyncio
 import logging
 from config.settings import Settings
 from app.models.chapter import ChapterTask
+from app.services.group_manager import get_interested_groups
 
 logger = logging.getLogger("BatchController")
 
@@ -9,9 +10,9 @@ class BatchController:
     def __init__(self, bot):
         self.bot = bot
         self.uploader = bot.task_queue.uploader
-        self.unlocker = bot.task_queue.scraper_registry.unlocker
+        self.unlocker = bot.task_queue.unlocker
 
-    async def prepare_batch(self, interaction, selected_indices, all_chapters, title, url, view_ref=None, series_id=None):
+    async def prepare_batch(self, interaction, selected_indices, all_chapters, title, url, view_ref=None, series_id=None, original_title=None):
         guild_id = interaction.guild.id if interaction.guild else 0
         scan_group = Settings.SERVER_MAP.get(guild_id, Settings.DEFAULT_CLIENT_NAME)
         req_id = view_ref.req_id if view_ref else "UNKNOWN"
@@ -23,23 +24,104 @@ class BatchController:
         if not self.uploader:
             return self._create_local_tasks(selected_indices, all_chapters, title, url, scan_group, interaction, series_id, req_id)
 
-        # 1. SETUP DRIVE (Top-Level Only)
-        # We only create the Series, MAIN, and Client folders. Individual chapters are offloaded to workers.
-        drive_series_id = await asyncio.to_thread(self.uploader.create_folder, title, Settings.GDRIVE_ROOT_ID)
-        main_id = await asyncio.to_thread(self.uploader.create_folder, "MAIN", drive_series_id)
-        client_folder_name = f"{scan_group}_{title}"
-        client_id = await asyncio.to_thread(self.uploader.create_folder, client_folder_name, drive_series_id)
+        # 1. SETUP DRIVE (Platform -> [ID] - Name -> MAIN/Group)
+        # Determine service for platform folder
+        service = "Unknown"
+        if "mechacomic.jp" in url: service = "Mecha"
+        elif "jumptoon.com" in url: service = "Jumptoon"
+        elif "piccoma.com" in url: service = "Piccoma"
+        elif "kakao.com" in url: service = "Kakao"
+        elif "qq.com" in url: service = "Tencent"
+        elif "kuaikanmanhua.com" in url: service = "Kuaikan"
+
+        # 1a. Raws Root Folder
+        try:
+            root_info = await asyncio.to_thread(self.uploader.client.get_service().files().get(fileId=Settings.GDRIVE_ROOT_ID, fields='name', supportsAllDrives=True).execute)
+            root_name = root_info.get('name', '').strip()
+            logger.info(f"[{req_id}] 🏠 Drive Root Name: '{root_name}' (ID: {Settings.GDRIVE_ROOT_ID})")
+            
+            if root_name.lower() == "raws":
+                logger.info(f"[{req_id}] 🎯 Root is already 'Raws', skipping root-level folder creation.")
+                raws_root_id = Settings.GDRIVE_ROOT_ID
+            else:
+                raws_root_id = await asyncio.to_thread(self.uploader.create_folder, "Raws", Settings.GDRIVE_ROOT_ID)
+        except Exception as e:
+            logger.error(f"Failed to check root folder name: {e}")
+            raws_root_id = await asyncio.to_thread(self.uploader.create_folder, "Raws", Settings.GDRIVE_ROOT_ID)
+
+        # 1b. Platform Folder (e.g. Jumptoon)
+        # 🟢 Robust Choice: If we are already in a platform-named folder, we might want to skip this too.
+        # But for now, we follow Root -> Raws -> Platform -> Series
+        platform_id = await asyncio.to_thread(self.uploader.create_folder, service, raws_root_id)
         
+        # 1c. Series Folder (Search by [ID] prefix)
+        prefix = f"[{series_id}]"
+        logger.info(f"[{req_id}] 🔍 Searching for series folder with prefix '{prefix}' for '{original_title}'...")
+        folder_data = await asyncio.to_thread(self.uploader.find_folder_by_prefix, prefix, platform_id)
+        
+        target_series_name = f"{prefix} - {original_title or title}"
+        
+        if not folder_data:
+            logger.info(f"[{req_id}] 📁 Creating new series folder: '{target_series_name}'")
+            drive_series_id = await asyncio.to_thread(self.uploader.create_folder, target_series_name, platform_id)
+        else:
+            drive_series_id = folder_data['id']
+            current_name = folder_data['name']
+            if current_name.strip() != target_series_name.strip():
+                logger.info(f"[{req_id}] 🔄 Renaming series folder: '{current_name}' -> '{target_series_name}'")
+                await asyncio.to_thread(self.uploader.rename_file, drive_series_id, target_series_name)
+            else:
+                logger.info(f"[{req_id}] ✅ Using existing series folder: '{current_name}'")
+        
+        # 1d. MAIN Folder (For raw uploads)
+        main_id = await asyncio.to_thread(self.uploader.create_folder, "MAIN", drive_series_id)
+        
+        # 1e. Multi-Group Folder Setup (For shortcuts)
+        # Find all groups that have an override for this series
+        interested_groups = get_interested_groups(url)
+        
+        # Ensure the current group is included even if they don't have an override (fallback to scan_group)
+        current_group_in_list = False
+        for g_name, _ in interested_groups:
+            if g_name.lower() == scan_group.lower():
+                current_group_in_list = True
+                break
+        
+        if not current_group_in_list:
+            interested_groups.append((scan_group, title))
+
+        all_interested_folders = [] # [{'id': '...', 'name': '...', 'group': '...'}]
+        requester_folder = None
+        
+        for g_name, g_title in interested_groups:
+            # 🟢 Suffix " Team" if not already present
+            display_group = g_name if " team" in g_name.lower() else f"{g_name} Team"
+            client_folder_name = f"{display_group} - {g_title}"
+            
+            c_id = await asyncio.to_thread(self.uploader.create_folder, client_folder_name, drive_series_id)
+            await asyncio.to_thread(self.uploader.make_public, c_id)
+            
+            folder_info = {
+                'id': c_id,
+                'name': client_folder_name,
+                'group': g_name
+            }
+            all_interested_folders.append(folder_info)
+            
+            if g_name.lower() == scan_group.lower():
+                requester_folder = folder_info
+
         # Ensure they are public (inherited by children)
         await asyncio.to_thread(self.uploader.make_public, main_id)
-        await asyncio.to_thread(self.uploader.make_public, client_id)
 
-        # Quick check of what already exists to avoid redundant task queueing
+        # Quick check of what already exists (MAIN) to avoid redundant task queueing
         main_manifest = await asyncio.to_thread(self.uploader.list_all_items, main_id)
-        client_manifest = await asyncio.to_thread(self.uploader.list_all_items, client_id)
 
         tasks_to_queue = []
         chapters_to_unlock = []
+
+        # 🚀 TARGETED SHORTCUTS: Only create shortcuts for the group making the request
+        task_client_folders = [requester_folder] if requester_folder else []
 
         # 🟢 SCALING PROTECTION: Wait for background scan if it's running (e.g. Mecha)
         if view_ref and hasattr(view_ref, '_full_scan_task') and view_ref._full_scan_task:
@@ -55,7 +137,8 @@ class BatchController:
             
             # Pass top-level IDs so the worker knows where to put things
             task.main_folder_id = main_id
-            task.client_folder_id = client_id
+            task.client_folder_id = requester_folder['id'] if requester_folder else None # Backward compatibility
+            task.client_folders = task_client_folders # New multi-folder list
             task.series_title_id = drive_series_id
             task.final_folder_name = folder_name
             
@@ -64,9 +147,9 @@ class BatchController:
             # Check if this chapter is already finished
             main_existing_id = main_manifest.get(folder_name)
             if main_existing_id:
-                # If it's in MAIN but not the client folder, create the shortcut now (fast)
-                if folder_name not in client_manifest:
-                    await asyncio.to_thread(self.uploader.create_shortcut, main_existing_id, client_id, folder_name)
+                # 🟢 Filter: Only create shortcut for the requester now
+                if requester_folder:
+                    await asyncio.to_thread(self.uploader.create_shortcut, main_existing_id, requester_folder['id'], folder_name)
                 # Skip queueing if it already exists in MAIN
                 continue
             
@@ -79,7 +162,7 @@ class BatchController:
             
             tasks_to_queue.append(task)
             # Only send to unlocker if it's explicitly locked AND supported
-            if is_locked and ("mechacomic.jp" in url):
+            if is_locked and ("mechacomic.jp" in url or "piccoma.com" in url):
                 chapters_to_unlock.append(task)
 
         # 2. PHASE 3 UNLOCK
@@ -90,10 +173,6 @@ class BatchController:
                 view_ref.trigger_refresh()
             
             await self.unlocker.unlock_batch(chapters_to_unlock, view_ref=view_ref)
-            
-            if "jumptoon.com" in url:
-                try: self.bot.task_queue.scraper_registry.jumptoon._load_cookies_initial()
-                except: pass
             
             if view_ref: view_ref.phases["purchase"] = "done"
         else:
@@ -115,7 +194,10 @@ class BatchController:
                     # Will be updated by monitor_tasks once the folder is created by the worker
                     view_ref.final_link = None
             else:
-                view_ref.final_link = await asyncio.to_thread(self.uploader.get_share_link, client_id)
+                if requester_folder:
+                    view_ref.final_link = await asyncio.to_thread(self.uploader.get_share_link, requester_folder['id'])
+                else:
+                    view_ref.final_link = None
             
             view_ref.phases["analyze"] = "done"
             view_ref.trigger_refresh()
