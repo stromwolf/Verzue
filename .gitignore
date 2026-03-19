@@ -27,3 +27,16 @@ scrape_html.py
 scrape_css.py
 test_scraper.py
 test_stitcher.py
+
+# Internal / Debug files to exclude from GitHub
+Discord Component V2/
+Newtoki/
+Piccoma Act files/
+scripts/
+temp_skill_download/
+tests/
+tmp/
+newtoki.py
+analyze_shadowing.py
+check_sessions.py
+instructions.md
