@@ -263,8 +263,15 @@ class MechaProvider(BaseProvider):
         progress = ProgressBar(task.req_id, "Downloading", "Mecha", total)
         progress.update(stats["completed"])
 
+        # 🧤 S-Grade: Humanlike Concurrency (Randomized per chapter)
+        chapter_concurrency = random.randint(5, 10)
+        semaphore = asyncio.Semaphore(chapter_concurrency)
+        logger.debug(f"[Mecha] Using concurrency of {chapter_concurrency} for this chapter.")
+
         async def fetch_one(t):
-            async with self._download_semaphore:
+            # 🕰️ Micro-Jitter: Small random delay to avoid bot patterns
+            await asyncio.sleep(random.uniform(0.1, 0.4))
+            async with semaphore:
                 img_url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
                 t_get = auth_session.get(img_url, timeout=30)
                 img_res = await t_get

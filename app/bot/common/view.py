@@ -196,10 +196,17 @@ class UniversalDashboard:
             inner_components.append({"type": 10, "content": f"# {self.title}\n-# **{self.original_title}**"})
             inner_components.append(divider)
             
-            # Render all sorted chapters (Capped to 10 to avoid Discord 40-component limit)
-            MAX_RESULTS = 10
-            visible_items = all_sorted_items[:MAX_RESULTS]
-            remaining_count = len(all_sorted_items) - MAX_RESULTS
+            # 🟢 S-GRADE: Interactive Results Pagination
+            per_page = 10
+            total_items = len(all_sorted_items)
+            total_pages = math.ceil(total_items / per_page)
+            
+            # Clamp page to valid range (since the same self.page is used for selection)
+            results_page = min(self.page, total_pages)
+            if results_page < 1: results_page = 1
+            
+            start_idx = (results_page - 1) * per_page
+            visible_items = all_sorted_items[start_idx : start_idx + per_page]
 
             for item in visible_items:
                 link: Optional[str] = None
@@ -224,23 +231,35 @@ class UniversalDashboard:
                         }
                     })
 
-            if remaining_count > 0:
+            # Add results pagination dropdown if needed
+            if total_items > per_page:
+                options = []
+                for p in range(1, total_pages + 1):
+                    opt = {"label": f"Results Page {p}", "value": str(p), "emoji": {"name": "📄"}}
+                    if p == results_page:
+                        opt["description"] = "(Current Page)"
+                        opt["default"] = True
+                    options.append(opt)
+                
                 inner_components.append({
-                    "type": 10, 
-                    "content": f"-_...and {remaining_count} other chapters are ready on Google Drive._"
+                    "type": 1,
+                    "components": [{
+                        "type": 3, "custom_id": f"page_select_{self.req_id}", "options": options
+                    }]
                 })
-                # Add a big button for the main folder if we have lots of links
-                if self.final_link:
-                    inner_components.append({
-                        "type": 9,
-                        "components": [{"type": 10, "content": "**Full Series Folder**"}],
-                        "accessory": {
-                            "type": 2, "style": 5,
-                            "label": "Open Main Folder",
-                            "emoji": {"id": "1482676886680113172", "name": "drive"},
-                            "url": self.final_link
-                        }
-                    })
+            
+            # Add Main Folder button at bottom for convenience
+            if self.final_link:
+                inner_components.append({
+                    "type": 9,
+                    "components": [{"type": 10, "content": "**Full Series Folder**"}],
+                    "accessory": {
+                        "type": 2, "style": 5,
+                        "label": "Open Google Drive",
+                        "emoji": {"id": "1482676886680113172", "name": "drive"},
+                        "url": self.final_link
+                    }
+                })
 
             # Fallback ONLY if both are empty
             if not all_sorted_items:
