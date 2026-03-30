@@ -54,16 +54,15 @@ class AdminCog(commands.Cog):
         await msg.edit(content=f"⚠️ Timeout waiting for workers. Proceeding with **{action_name}** anyway for stability.")
         return True
 
+    @commands.group(name="admin_ops", invoke_without_command=True)
+    async def admin_ops(self, ctx):
+        """Root for admin-only operations."""
+        pass
+
     @commands.command(name="sync")
+    @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
     async def sync_commands(self, ctx):
-        """Forces a global sync of slash commands."""
-        # Standard Admin/Owner Check
-        is_owner = ctx.author.id == 1216284053049704600
-        is_allowed = ctx.author.id in Settings.CDN_ALLOWED_USERS
-        
-        if not (is_owner or is_allowed):
-            return await ctx.send("❌ You are not authorized to use this command.", delete_after=60.0)
-            
+        """Forces a global sync of slash commands. [Owner/Admin Only]"""
         # 🟢 S-GRADE: Graceful Check
         await self._wait_for_drain(ctx, "sync")
 
@@ -78,10 +77,9 @@ class AdminCog(commands.Cog):
                 self.bot.task_queue.is_draining = False
 
     @commands.command(name="restart", aliases=["reboot", "reset"])
+    @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
     async def restart_bot(self, ctx):
-        """Usage: $restart. Reboots the entire bot and services."""
-        if ctx.author.id != 1216284053049704600:
-            return await ctx.send("❌ You are not authorized to use this command.")
+        """Usage: $restart. Reboots the entire bot and services. [Owner/Admin Only]"""
 
         # 🟢 S-GRADE: Graceful Check
         await self._wait_for_drain(ctx, "restart")
