@@ -104,22 +104,75 @@ class MechaBot(commands.Bot):
             self.logger.error(f"Failed to send link: {e}")
 
     async def handle_task_failure(self, task, error_message):
-        """Alerts the user when a task crashes."""
+        """Alerts the user AND the admin channel when a task crashes."""
         try:
-            channel = self.get_channel(task.channel_id)
-            if channel:
-                # Clean error message logic (No backslashes inside f-string)
-                err_text = str(error_message).split('\n')[0]
-                
-                embed = discord.Embed(
-                    title="❌ Extraction Failed",
-                    description=f"**Chapter:** `{task.title}`\n**Reason:** {err_text}",
-                    color=0xe74c3c
-                )
-                embed.set_footer(text=f"Task ID: {task.id}")
-                await channel.send(embed=embed)
+            # 1. Notify User Channel
+            user_channel = self.get_channel(task.channel_id)
+            err_text = str(error_message).split('\n')[0]
+            
+            embed = discord.Embed(
+                title="❌ Extraction Failed",
+                description=f"**Chapter:** `{task.title}`\n**Reason:** {err_text}",
+                color=0xe74c3c
+            )
+            embed.set_footer(text=f"Task ID: {task.id}")
+
+            if user_channel:
+                await user_channel.send(embed=embed)
+
+            # 2. Notify Admin Audit Channel
+            admin_channel = self.get_channel(Settings.ADMIN_LOG_CHANNEL_ID)
+            if admin_channel and admin_channel.id != task.channel_id:
+                admin_embed = embed.copy()
+                admin_embed.title = "🚨 [ADMIN AUDIT] Task Failed"
+                admin_embed.add_field(name="Group", value=f"`{task.scan_group}`", inline=True)
+                admin_embed.add_field(name="User ID", value=f"`{task.user_id}`", inline=True)
+                await admin_channel.send(embed=admin_embed)
+
         except Exception as e:
-            self.logger.error(f"Failed to send error alert: {e}")
+            self.logger.error(f"Failed to send extraction error alert: {e}")
+
+    # --- S-GRADE: GLOBAL CRASH SENTINEL ---
+
+    async def on_command_error(self, ctx, error):
+        """Global handler for all command-related failures."""
+        if isinstance(error, commands.CommandNotFound):
+            return
+
+        self.logger.error(f"Command Error in {ctx.command}: {error}")
+        
+        try:
+            admin_channel = self.get_channel(Settings.ADMIN_LOG_CHANNEL_ID)
+            if admin_channel:
+                embed = discord.Embed(
+                    title="💥 Command Crash Detected",
+                    description=f"**Command:** `{ctx.command}`\n**User:** {ctx.author} (`{ctx.author.id}`)\n**Error:** `{str(error)}`",
+                    color=0xc0392b,
+                    timestamp=discord.utils.utcnow()
+                )
+                embed.set_footer(text="Iron Mask Sentinel Active")
+                await admin_channel.send(embed=embed)
+        except Exception as e:
+            self.logger.error(f"Sentinel failed to dispatch command error: {e}")
+
+    async def on_error(self, event_method, *args, **kwargs):
+        """Global handler for all non-command event crashes."""
+        import traceback
+        self.logger.error(f"Event Error in {event_method}: {traceback.format_exc()}")
+
+        try:
+            admin_channel = self.get_channel(Settings.ADMIN_LOG_CHANNEL_ID)
+            if admin_channel:
+                embed = discord.Embed(
+                    title="💀 Critical System Event Error",
+                    description=f"**Event:** `{event_method}`\n**Summary:** `{traceback.format_exc().splitlines()[-1]}`",
+                    color=0x000000, # Black (Fatal)
+                    timestamp=discord.utils.utcnow()
+                )
+                embed.set_footer(text="Check logs/Bot-Fatal.log for full trace")
+                await admin_channel.send(embed=embed)
+        except Exception as e:
+            self.logger.error(f"Sentinel failed to dispatch system error: {e}")
 
     # --- S-GRADE: ADMIN CONNECTIVITY DISPATCHERS ---
 
