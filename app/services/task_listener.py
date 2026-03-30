@@ -20,37 +20,46 @@ class TaskListener:
         return cls._instance
 
     async def start(self):
-        """Starts the background event listener for task updates."""
+        """Starts the background event listener with automatic reconnection."""
         if self._running: return
         self._running = True
         logger.info("🎧 TaskListener background listener started.")
         
-        subscriber = self.redis.get_subscriber()
-        if not subscriber:
-            logger.error("❌ Redis client not available for TaskListener.")
-            return
+        while self._running:
+            try:
+                subscriber = self.redis.get_subscriber()
+                if not subscriber:
+                    raise ConnectionError("Redis client not available.")
 
-        await subscriber.subscribe("verzue:events:tasks")
-        
-        try:
-            while self._running:
-                message = await subscriber.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if message:
-                    try:
-                        payload = json.loads(message["data"])
-                        event = payload.get("event")
-                        data = payload.get("data")
-                        
-                        if event == "task_updated":
-                            await self._handle_task_update(data)
-                    except Exception as e:
-                        logger.error(f"Error parsing task event: {e}")
+                await subscriber.subscribe("verzue:events:tasks")
+                logger.info("🎧 [TaskListener] Subscribed to task events.")
                 
-                await asyncio.sleep(0.1)
-        except Exception as e:
-            logger.error(f"🎧 TaskListener Listener Error: {e}")
-        finally:
-            self._running = False
+                while self._running:
+                    message = await subscriber.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if message:
+                        try:
+                            payload = json.loads(message["data"])
+                            event = payload.get("event")
+                            data = payload.get("data")
+                            
+                            if event == "task_updated":
+                                await self._handle_task_update(data)
+                        except Exception as e:
+                            logger.error(f"Error parsing task event: {e}")
+                    
+                    await asyncio.sleep(0.1)
+
+            except (ConnectionError, TimeoutError) as e:
+                logger.warning(f"🎧 [TaskListener] Redis disconnected ({e}). Reconnecting in 5s...")
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"🎧 [TaskListener] Unexpected error: {e}")
+                await asyncio.sleep(5)
+            finally:
+                # Ensure we reset for the next connection attempt
+                pass
+
+        logger.info("🎧 TaskListener background listener stopped.")
 
     async def stop(self):
         self._running = False

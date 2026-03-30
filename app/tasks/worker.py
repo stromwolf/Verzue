@@ -35,121 +35,135 @@ class TaskWorker:
         self.uploader = uploader
 
     async def process_task(self, task: ChapterTask):
-        start_time = time.time()
-        logger.info(f"🚀 STARTING TASK: [{task.series_title}] - {task.title}")
-        self._sync_view_status(task)
+        from app.core.logger import req_id_context, group_name_context, log_category_context
         
-        # 🟢 THE FORK: Start the Google Drive Folder creation IMMEDIATELY in the background
-        # We wrap it in asyncio.create_task so it runs concurrently with scraping!
-        drive_folder_task = None
-        if self.uploader and not task.pre_created_folder_id:
-            logger.info("☁️ [Parallel Track] Initiating Google Drive folder sync...")
-            drive_folder_task = asyncio.create_task(self._ensure_drive_folder(task))
-
-        safe_series = "".join([c for c in task.series_title if c.isalnum() or c in " -_"]).strip()
-        task_dir_name = f"{safe_series}_{task.id}"
-        raw_dir, final_dir = Settings.DOWNLOAD_DIR / f"raw_{task_dir_name}", Settings.DOWNLOAD_DIR / f"final_{task_dir_name}"
-
-        await self._clean_dirs(raw_dir, final_dir)
-        raw_dir.mkdir(parents=True, exist_ok=True); final_dir.mkdir(parents=True, exist_ok=True)
-
+        # 🟢 S-GRADE: Inject Structured Logging Context
+        token_id = req_id_context.set(task.req_id)
+        token_group = group_name_context.set(task.scan_group)
+        token_cat = log_category_context.set("Requests")
+        
         try:
-            task.status = TaskStatus.DOWNLOADING
+            start_time = time.time()
+            logger.info(f"🚀 STARTING TASK: [{task.series_title}] - {task.title}")
             self._sync_view_status(task)
-            provider = self.provider_manager.get_provider(task.service)
-            if not provider:
-                 raise Exception(f"No provider found for service: {task.service}")
-            
-            logger.info(f"🔍 STAGE 1/3: Provider: {provider.__class__.__name__}")
-            
-            # --- 🛡️ PER-PLATFORM RATE LIMITING ---
-            # Get or create the lock for this specific service (Piccoma, Kakao, etc.)
-            if task.service not in self._SERVICE_LOCKS:
-                self._SERVICE_LOCKS[task.service] = asyncio.Lock()
-            
-            async with self._SERVICE_LOCKS[task.service]:
-                # --- LOCAL DOWNLOAD TRACK ---
-                # All providers are now async
-                await provider.scrape_chapter(task, str(raw_dir))
-                
-                # Apply the requested safety gap for this platform before releasing the lock
-                if getattr(Settings, "DOWNLOAD_DELAY", 0) > 0:
-                    logger.info(f"⏳ [Safety] Waiting {Settings.DOWNLOAD_DELAY}s between {task.service.capitalize()} chapters...")
-                    await asyncio.sleep(Settings.DOWNLOAD_DELAY)
-            
-            valid_imgs = [f for f in os.listdir(raw_dir) if f.lower().endswith(('.png', '.webp', '.jpg', '.jpeg'))]
-            if not valid_imgs: raise Exception("No images found after scrape.")
-            logger.info(f"✅ STAGE 1 COMPLETE: {len(valid_imgs)} images.")
+        
+            # 🟢 THE FORK: Start the Google Drive Folder creation IMMEDIATELY in the background
+            # We wrap it in asyncio.create_task so it runs concurrently with scraping!
+            drive_folder_task = None
+            if self.uploader and not task.pre_created_folder_id:
+                logger.info("☁️ [Parallel Track] Initiating Google Drive folder sync...")
+                drive_folder_task = asyncio.create_task(self._ensure_drive_folder(task))
 
-            # --- STAGE 2: STITCHING (Semaphore-Controlled CPU Offloading) ---
-            task.status = TaskStatus.STITCHING
-            self._sync_view_status(task)
-            
-            # Fetch early share link as soon as folder is ready (before stitching completes)
-            if drive_folder_task and not task.share_link:
-                try:
-                    task.pre_created_folder_id = await drive_folder_task
-                    task.share_link = await asyncio.to_thread(self.uploader.get_share_link, task.pre_created_folder_id)
-                    logger.info(f"🔗 Early Link Generated: {task.share_link}")
-                    self._sync_view_status(task) # 🟢 Update UI immediately with the link
-                except Exception as e:
-                    logger.warning(f"Failed to fetch early link: {e}")
+            safe_series = "".join([c for c in task.series_title if c.isalnum() or c in " -_"]).strip()
+            task_dir_name = f"{safe_series}_{task.id}"
+            raw_dir, final_dir = Settings.DOWNLOAD_DIR / f"raw_{task_dir_name}", Settings.DOWNLOAD_DIR / f"final_{task_dir_name}"
 
-            logger.info("🧵 STAGE 2/3: Stitching (Waiting for CPU Slot)...")
-            
-            seed_string = None
-            if "jumptoon.com" in task.url.lower():
-                # 🟢 UNSCRAMBLE AT DOWNLOAD: Jumptoon is now unscrambled in api.py
-                # immediately after download. We pass None to the stitcher to avoid
-                # double-processing or errors.
-                seed_string = None
-            elif "webtoon.kakao.com" in task.url.lower():
-                seed_string = task.series_id_key
-
-            loop = asyncio.get_running_loop()
-            stitch_func = partial(
-                ImageStitcher.stitch_folder, 
-                str(raw_dir), 
-                str(final_dir), 
-                12000, 
-                episode_id=seed_string,
-                req_id=task.req_id,
-                service_name=task.service
-            )
-
-            # 🟢 Use Semaphore to prevent too many dense CPU tasks from running at once
-            async with STITCH_SEMAPHORE:
-                logger.info("⚡ Slot Acquired! Stitching now...")
-                await loop.run_in_executor(PROCESS_POOL, stitch_func)
-            
-            # --- STAGE 3: UPLOADING (Decoupled & Backgrounded) ---
-            task.status = TaskStatus.UPLOADING
-            self._sync_view_status(task)
-            if self.uploader:
-                if drive_folder_task and not task.pre_created_folder_id:
-                    logger.info("⏳ Finalizing Drive folder creation...")
-                    task.pre_created_folder_id = await drive_folder_task
-                
-        # 🚀 FIRE AND FORGET: Move upload and cleanup to a background task
-                # This frees up the worker IMMEDIATELY to start the next chapter.
-                from app.core.logger import req_id_context
-                asyncio.create_task(self._background_upload_and_cleanup(task, final_dir, raw_dir, req_id_context.get()))
-            
-            elapsed = time.time() - start_time
-            logger.info(f"🏁 TASK DISPATCHED TO BACKGROUND in {elapsed:.2f}s")
-            # We don't set COMPLETED here; the background task will do it.
-
-        except Exception as e:
-            task.status = TaskStatus.FAILED
-            logger.error(f"❌ TASK FAILURE: {e}")
-            await EventBus.emit("task_failed", task, str(e))
             await self._clean_dirs(raw_dir, final_dir)
-            raise e
+            raw_dir.mkdir(parents=True, exist_ok=True); final_dir.mkdir(parents=True, exist_ok=True)
 
-    async def _background_upload_and_cleanup(self, task: ChapterTask, final_dir, raw_dir, req_id):
+            try:
+                task.status = TaskStatus.DOWNLOADING
+                self._sync_view_status(task)
+                provider = self.provider_manager.get_provider(task.service)
+                if not provider:
+                     raise Exception(f"No provider found for service: {task.service}")
+                
+                logger.info(f"🔍 STAGE 1/3: Provider: {provider.__class__.__name__}")
+                
+                # --- 🛡️ PER-PLATFORM RATE LIMITING ---
+                # Get or create the lock for this specific service (Piccoma, Kakao, etc.)
+                if task.service not in self._SERVICE_LOCKS:
+                    self._SERVICE_LOCKS[task.service] = asyncio.Lock()
+                
+                async with self._SERVICE_LOCKS[task.service]:
+                    # --- LOCAL DOWNLOAD TRACK ---
+                    # All providers are now async
+                    await provider.scrape_chapter(task, str(raw_dir))
+                    
+                    # Apply the requested safety gap for this platform before releasing the lock
+                    if getattr(Settings, "DOWNLOAD_DELAY", 0) > 0:
+                        logger.info(f"⏳ [Safety] Waiting {Settings.DOWNLOAD_DELAY}s between {task.service.capitalize()} chapters...")
+                        await asyncio.sleep(Settings.DOWNLOAD_DELAY)
+                
+                valid_imgs = [f for f in os.listdir(raw_dir) if f.lower().endswith(('.png', '.webp', '.jpg', '.jpeg'))]
+                if not valid_imgs: raise Exception("No images found after scrape.")
+                logger.info(f"✅ STAGE 1 COMPLETE: {len(valid_imgs)} images.")
+
+                # --- STAGE 2: STITCHING (Semaphore-Controlled CPU Offloading) ---
+                task.status = TaskStatus.STITCHING
+                self._sync_view_status(task)
+                
+                # Fetch early share link as soon as folder is ready (before stitching completes)
+                if drive_folder_task and not task.share_link:
+                    try:
+                        task.pre_created_folder_id = await drive_folder_task
+                        task.share_link = await asyncio.to_thread(self.uploader.get_share_link, task.pre_created_folder_id)
+                        logger.info(f"🔗 Early Link Generated: {task.share_link}")
+                        self._sync_view_status(task) # 🟢 Update UI immediately with the link
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch early link: {e}")
+
+                logger.info("🧵 STAGE 2/3: Stitching (Waiting for CPU Slot)...")
+                
+                seed_string = None
+                if "jumptoon.com" in task.url.lower():
+                    # 🟢 UNSCRAMBLE AT DOWNLOAD: Jumptoon is now unscrambled in api.py
+                    # immediately after download. We pass None to the stitcher to avoid
+                    # double-processing or errors.
+                    seed_string = None
+                elif "webtoon.kakao.com" in task.url.lower():
+                    seed_string = task.series_id_key
+
+                loop = asyncio.get_running_loop()
+                stitch_func = partial(
+                    ImageStitcher.stitch_folder, 
+                    str(raw_dir), 
+                    str(final_dir), 
+                    12000, 
+                    episode_id=seed_string,
+                    req_id=task.req_id,
+                    service_name=task.service
+                )
+
+                # 🟢 Use Semaphore to prevent too many dense CPU tasks from running at once
+                async with STITCH_SEMAPHORE:
+                    logger.info("⚡ Slot Acquired! Stitching now...")
+                    await loop.run_in_executor(PROCESS_POOL, stitch_func)
+                
+                # --- STAGE 3: UPLOADING (Decoupled & Backgrounded) ---
+                task.status = TaskStatus.UPLOADING
+                self._sync_view_status(task)
+                if self.uploader:
+                    if drive_folder_task and not task.pre_created_folder_id:
+                        logger.info("⏳ Finalizing Drive folder creation...")
+                        task.pre_created_folder_id = await drive_folder_task
+                    
+                    # 🚀 FIRE AND FORGET: Move upload and cleanup to a background task
+                    # This frees up the worker IMMEDIATELY to start the next chapter.
+                    from app.core.logger import req_id_context, group_name_context
+                    asyncio.create_task(self._background_upload_and_cleanup(task, final_dir, raw_dir, req_id_context.get(), group_name_context.get()))
+                
+                elapsed = time.time() - start_time
+                logger.info(f"🏁 TASK DISPATCHED TO BACKGROUND in {elapsed:.2f}s")
+                # We don't set COMPLETED here; the background task will do it.
+
+            except Exception as e:
+                task.status = TaskStatus.FAILED
+                logger.error(f"❌ TASK FAILURE: {e}")
+                await EventBus.emit("task_failed", task, str(e))
+                await self._clean_dirs(raw_dir, final_dir)
+                raise e
+        finally:
+            req_id_context.reset(token_id)
+            group_name_context.reset(token_group)
+            log_category_context.reset(token_cat)
+
+    async def _background_upload_and_cleanup(self, task: ChapterTask, final_dir, raw_dir, req_id, group_name):
         """Dispatches uploads and handles definitive cleanup without blocking the worker pool."""
-        from app.core.logger import req_id_context
-        token = req_id_context.set(req_id)
+        from app.core.logger import req_id_context, group_name_context, log_category_context
+        t1 = req_id_context.set(req_id)
+        t2 = group_name_context.set(group_name)
+        t3 = log_category_context.set("Requests")
         try:
             await self._fast_upload(task, final_dir)
             task.status = TaskStatus.COMPLETED
@@ -162,7 +176,9 @@ class TaskWorker:
             logger.error(f"❌ BACKGROUND UPLOAD FAILED: {e}")
             await EventBus.emit("task_failed", task, str(e))
         finally:
-            req_id_context.reset(token)
+            req_id_context.reset(t1)
+            group_name_context.reset(t2)
+            log_category_context.reset(t3)
             await self._clean_dirs(raw_dir, final_dir)
             # 🟢 S-GRADE: Ensure active task is cleared if it wasn't already
             key = f"{task.series_id_key}:{task.episode_id}"

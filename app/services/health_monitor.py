@@ -55,7 +55,7 @@ class HealthMonitor:
             
             # Preemptive Ritual if session hasn't been active
             if status == "HEALTHY" and (time.time() - last_ritual > 43200): # 12 hours
-                logger.info(f"🕯️ Session {platform}:{aid} is aging. Triggering preemptive ritual.")
+                logger.info(f"🕯️ Session {platform}:{aid} is aging. Sending message to the Admin Server.")
                 await self.redis.publish_event("verzue:events:session", "run_ritual", {
                     "platform": platform, "account_id": aid
                 })
@@ -70,7 +70,7 @@ class HealthMonitor:
             
             if status == "HEALTHY":
                 if ssr < 30: # Danger Zone
-                    logger.warning(f"⚠️ High Failure Rate ({ssr:.1f}%) for {platform}. Marking as AT_RISK.")
+                    logger.warning(f"⚠️ [Platform:{platform}] High Failure Rate ({ssr:.1f}%). Marking as AT_RISK.")
                     session["status"] = "AT_RISK"
                     await self.redis.set_session(platform, aid, session)
                 else:

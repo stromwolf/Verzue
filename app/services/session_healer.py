@@ -22,34 +22,45 @@ class SessionHealer:
         self._running = True
         logger.info("🏥 SessionHealer background listener started.")
         
-        subscriber = self.redis.get_subscriber()
-        if not subscriber:
-            logger.error("❌ Redis client not available for SessionHealer.")
-            return
+        while self._running:
+            try:
+                subscriber = self.redis.get_subscriber()
+                if not subscriber:
+                    raise ConnectionError("Redis client not available.")
 
-        await subscriber.subscribe("verzue:events:session")
-        
-        # S-Grade Recovery: Check for already EXPIRED sessions on boot
-        asyncio.create_task(self._heal_all_expired())
-        
-        try:
-            while self._running:
-                message = await subscriber.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if message:
-                    payload = json.loads(message["data"])
-                    event = payload.get("event")
-                    data = payload.get("data")
-                    
-                    if event == "session_expired":
-                        asyncio.create_task(self.heal_session(data["platform"], data["account_id"]))
-                    elif event == "run_ritual":
-                        asyncio.create_task(self.run_ritual_for_session(data["platform"], data["account_id"]))
+                await subscriber.subscribe("verzue:events:session")
+                logger.info("🏥 [SessionHealer] Subscribed to session events.")
                 
-                await asyncio.sleep(0.1)
-        except Exception as e:
-            logger.error(f"🏥 SessionHealer Listener Error: {e}")
-        finally:
-            self._running = False
+                # S-Grade Recovery: Check for already EXPIRED sessions upon each reconnection
+                asyncio.create_task(self._heal_all_expired())
+                
+                while self._running:
+                    message = await subscriber.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if message:
+                        try:
+                            payload = json.loads(message["data"])
+                            event = payload.get("event")
+                            data = payload.get("data")
+                            
+                            if event == "session_expired":
+                                asyncio.create_task(self.heal_session(data["platform"], data["account_id"]))
+                            elif event == "run_ritual":
+                                asyncio.create_task(self.run_ritual_for_session(data["platform"], data["account_id"]))
+                        except Exception as e:
+                            logger.error(f"Error parsing session event: {e}")
+                    
+                    await asyncio.sleep(0.1)
+
+            except (ConnectionError, TimeoutError) as e:
+                logger.warning(f"🏥 [SessionHealer] Redis disconnected ({e}). Reconnecting in 5s...")
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"🏥 [SessionHealer] Unexpected error: {e}")
+                await asyncio.sleep(5)
+            finally:
+                pass
+
+        logger.info("🏥 SessionHealer background listener stopped.")
 
     async def _heal_all_expired(self):
         """Scans all platforms for EXPIRED sessions and triggers a heal."""

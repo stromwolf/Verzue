@@ -2,26 +2,40 @@ import logging, sys
 import contextvars
 from config.settings import Settings
 
-# Global context for Request ID
+# Global context for Request ID and Categorization
 req_id_context = contextvars.ContextVar("req_id", default=None)
+group_name_context = contextvars.ContextVar("group_name", default=None)
+log_category_context = contextvars.ContextVar("log_category", default="Requests")
 
 class ContextFilter(logging.Filter):
     """Injects the current request ID into the log record."""
     def filter(self, record):
         record.req_id = req_id_context.get()
+        record.group_name = group_name_context.get()
+        record.log_category = log_category_context.get()
         return True
 
-class RequestFileHandler(logging.Handler):
-    """Dynamically routes logs to files named after the R-ID."""
+class StructuredFileHandler(logging.Handler):
+    """Dynamically routes logs to structured hierarchies: logs/<Category>/<Group>/<ID>.log"""
     def emit(self, record):
         req_id = getattr(record, "req_id", None)
         if not req_id:
             return
         
-        log_path = Settings.REQUEST_LOG_DIR / f"{req_id}.log"
+        # S-GRADE: Determine Category and Group
+        category = getattr(record, "log_category", "Requests") or "Requests"
+        group = getattr(record, "group_name", "Global") or "Global"
+        
+        # Sanitize group name for filesystem
+        safe_group = "".join([c for c in group if c.isalnum() or c in " -_"]).strip() or "Global"
+        
+        log_dir = Settings.LOG_DIR / category / safe_group
+        log_dir.mkdir(parents=True, exist_ok=True)
+        
+        log_path = log_dir / f"{req_id}.log"
         log_entry = self.format(record)
         
-        # Thread-safe appending to specific request file
+        # Thread-safe appending to structured log file
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(log_entry + "\n")
 
@@ -73,12 +87,12 @@ def setup_logging(name: str = "MechaBot"):
         fh.addFilter(ctx_filter)
         logger.addHandler(fh)
 
-        # 3. Request Specific Files (Isolation)
-        rfh = RequestFileHandler()
-        rfh.setLevel(logging.DEBUG)
-        rfh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"))
-        rfh.addFilter(ctx_filter)
-        logger.addHandler(rfh)
+        # 3. Structured Task/Notification Files (Isolation)
+        sfh = StructuredFileHandler()
+        sfh.setLevel(logging.DEBUG)
+        sfh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"))
+        sfh.addFilter(ctx_filter)
+        logger.addHandler(sfh)
     
     # 🧊 S-GRADE: Suppress noisy library logs
     logging.getLogger("discord").setLevel(logging.WARNING)

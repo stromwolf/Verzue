@@ -1,22 +1,37 @@
 import redis.asyncio as redis
+from redis.asyncio.retry import Retry
+from redis.backoff import ExponentialBackoff
+from redis.exceptions import ConnectionError, TimeoutError
 import time
 import json
 import logging
 from config.settings import Settings
 from app.core.lua_scripts import TOKEN_BUCKET_SCRIPT
+from app.core.events import EventBus
 
 logger = logging.getLogger("RedisManager")
 
 class RedisManager:
     _instance = None
+    _is_connected = True # Track state for alerting
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(RedisManager, cls).__new__(cls)
             try:
                 logger.info(f"🔌 Connecting to Redis: {Settings.REDIS_URL}")
+                
+                # S-GRADE: Implement Exponential Backoff Retry Strategy
+                # This handles temporary VPS drops (1s, 2s, 4s...) autonomously.
+                retry_strategy = Retry(ExponentialBackoff(cap=10, base=1), 5)
+                
                 cls._instance.pool = redis.ConnectionPool.from_url(
-                    Settings.REDIS_URL, decode_responses=True, max_connections=50
+                    Settings.REDIS_URL, 
+                    decode_responses=True, 
+                    max_connections=50,
+                    retry=retry_strategy,
+                    retry_on_timeout=True,
+                    retry_on_error=[ConnectionError, TimeoutError]
                 )
                 cls._instance.client = redis.Redis(connection_pool=cls._instance.pool)
                 cls._instance._lua_limiter = None
@@ -24,6 +39,20 @@ class RedisManager:
                 logger.critical(f"Redis Setup Failed: {e}")
                 cls._instance.client = None
         return cls._instance
+
+    # --- S-GRADE: CONNECTION RESILIENCE HELPERS ---
+    async def _handle_connection_status(self, is_success: bool):
+        """Monitors connectivity and emits global events when the status changes."""
+        if is_success:
+            if not self._is_connected:
+                logger.info("📡 [Redis] RECONNECTED: Connection restored.")
+                self.__class__._is_connected = True
+                await EventBus.emit("redis_connected", {})
+        else:
+            if self._is_connected:
+                logger.error("🚨 [Redis] DISCONNECTED: Connection lost. Hibernating services...")
+                self.__class__._is_connected = False
+                await EventBus.emit("redis_lost", {})
 
     # --- RATE LIMITING (Existing) ---
     async def get_token(self, bucket_name: str, rate: int = 40, capacity: int = 50):
@@ -33,30 +62,50 @@ class RedisManager:
                 self._lua_limiter = self.client.register_script(TOKEN_BUCKET_SCRIPT)
             bucket_key = "global_ui_limit" if "discord_ui" in bucket_name else bucket_name
             result = await self._lua_limiter(keys=[f"limiter:{bucket_key}"], args=[capacity, rate, time.time()])
+            await self._handle_connection_status(True)
             return result[0] == 1, result[1]
+        except (ConnectionError, TimeoutError):
+            await self._handle_connection_status(False)
+            return True, 0
         except Exception as e:
             logger.error(f"Redis Limiter Error: {e}")
             return True, 0
 
     async def check_connection(self):
         if not self.client: return False
-        try: return await self.client.ping()
+        try: 
+            status = await self.client.ping()
+            await self._handle_connection_status(True)
+            return status
+        except (ConnectionError, TimeoutError):
+            await self._handle_connection_status(False)
+            return False
         except: return False
 
     # --- DISTRIBUTED QUEUE METHODS (Phase 3) ---
     async def enqueue_task(self, queue_name: str, task_dict: dict):
         """Pushes a serialized task to the back of the Redis List."""
         if not self.client: return False
-        await self.client.rpush(queue_name, json.dumps(task_dict))
-        return True
+        try:
+            await self.client.rpush(queue_name, json.dumps(task_dict))
+            await self._handle_connection_status(True)
+            return True
+        except (ConnectionError, TimeoutError):
+            await self._handle_connection_status(False)
+            return False
 
     async def dequeue_task(self, queue_name: str, timeout: int = 5):
-        """Blocks and pops a task from the front of the Redis List. (timeout=0 means wait forever)"""
+        """Blocks and pops a task from the front of the Redis List."""
         if not self.client: return None
-        result = await self.client.blpop(queue_name, timeout=timeout)
-        if result:
-            return json.loads(result[1]) # result is a tuple: (queue_key, data)
-        return None
+        try:
+            result = await self.client.blpop(queue_name, timeout=timeout)
+            await self._handle_connection_status(True)
+            if result:
+                return json.loads(result[1]) # result is a tuple: (queue_key, data)
+            return None
+        except (ConnectionError, TimeoutError):
+            await self._handle_connection_status(False)
+            return None
 
     # --- S-GRADE DISTRIBUTED QUEUE (Approach A) ---
     async def push_task(self, task_dict: dict):

@@ -28,6 +28,7 @@ class ProviderManager:
             os.makedirs(platforms_dir, exist_ok=True)
             return
 
+        loaded_providers = []
         for filename in os.listdir(platforms_dir):
             if filename.endswith(".py") and not filename.startswith("__"):
                 module_name = f"app.providers.platforms.{filename[:-3]}"
@@ -41,9 +42,13 @@ class ProviderManager:
                             # Use a convention or attribute for the platform name
                             platform_name = getattr(obj, "IDENTIFIER", name.lower().replace("provider", ""))
                             self._providers[platform_name] = obj()
-                            logger.info(f"🔌 Loaded Provider: {platform_name} ({obj.__name__})")
+                            loaded_providers.append(f"                  -   {platform_name} ({obj.__name__})")
                 except Exception as e:
                     logger.error(f"❌ Failed to load provider module {module_name}: {e}")
+        
+        if loaded_providers:
+            summary = "\n" + "\n".join(loaded_providers)
+            logger.info(f"🔌 Loaded Provider{summary}")
 
     def get_provider(self, platform: str) -> BaseProvider:
         """Returns the requested provider instance."""

@@ -8,7 +8,6 @@ from app.providers.manager import ProviderManager
 from app.services.gdrive.uploader import GDriveUploader
 from .worker import TaskWorker
 from app.core.events import EventBus
-
 logger = logging.getLogger("TaskQueue")
 
 class TaskQueue:
@@ -16,6 +15,7 @@ class TaskQueue:
         # ==========================================
         # 🃏 THE DEALER (Round-Robin State)
         # ==========================================
+        from config.settings import Settings
         self.total_tasks = 0
         self.busy_workers = 0 # 👷 Current active processing workers
         self.is_draining = False # 🚦 Maintenance lock for reboots
@@ -77,21 +77,31 @@ class TaskQueue:
     async def _get_next_task(self) -> ChapterTask:
         """The Dealer: Grabs one task from Redis global queue."""
         while True:
-            # 1. Check if we have tasks in Redis
-            task_data = await self.redis.pop_task(timeout=5)
-            
-            if task_data:
-                # Convert back to object
-                task = ChapterTask.from_dict(task_data)
-                async with self.task_condition:
-                    if self.total_tasks > 0: self.total_tasks -= 1
-                return task
+            try:
+                # 1. Check if we have tasks in Redis
+                task_data = await self.redis.pop_task(timeout=5)
                 
-            # 2. If no tasks, check if we should shut down
-            if self.workers_to_kill > 0: return None
-            
-            # 3. Brief wait if queue was empty
-            await asyncio.sleep(1)
+                if task_data:
+                    # Convert back to object
+                    task = ChapterTask.from_dict(task_data)
+                    async with self.task_condition:
+                        if self.total_tasks > 0: self.total_tasks -= 1
+                    return task
+                
+                # Check for hibernation/redis drop (RedisManager returns None on ConnectionError)
+                if not self.redis._is_connected:
+                    logger.warning("😴 [TaskQueue] Redis is offline. Worker Hibernating...")
+                    await asyncio.sleep(5) # Longer wait during outage
+                    continue
+
+                # 2. If no tasks, check if we should shut down
+                if self.workers_to_kill > 0: return None
+                
+                # 3. Brief wait if queue was empty
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"⚠️ [TaskQueue] Error in retrieval loop: {e}")
+                await asyncio.sleep(2)
 
     # ==========================================
     # WORKER & PIT BOSS LOGIC
@@ -144,7 +154,7 @@ class TaskQueue:
     async def _worker_loop(self, worker_id):
         from app.core.logger import req_id_context
         self.active_worker_count += 1
-        logger.info(f"   👷 Worker {worker_id} joined the table.")
+        logger.debug(f"   👷 Worker {worker_id} joined the table.")
         
         try:
             while True:

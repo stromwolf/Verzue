@@ -120,3 +120,37 @@ class MechaBot(commands.Bot):
                 await channel.send(embed=embed)
         except Exception as e:
             self.logger.error(f"Failed to send error alert: {e}")
+
+    # --- S-GRADE: ADMIN CONNECTIVITY DISPATCHERS ---
+
+    async def handle_redis_lost(self, _):
+        """Alerts the admin channel that Redis is offline and services are hibernating."""
+        try:
+            channel = self.get_channel(Settings.ADMIN_LOG_CHANNEL_ID)
+            if channel:
+                embed = discord.Embed(
+                    title="🚨 Redis Connection Lost",
+                    description="**Status:** System Hibernating 😴\n**Impact:** Task Queue & Listeners are on standby.\n\n*The bot will automatically resume once the connection is restored.*",
+                    color=0xe67e22, # Orange (Warning)
+                    timestamp=discord.utils.utcnow()
+                )
+                embed.set_footer(text="Iron Mask Protection Active")
+                await channel.send(embed=embed)
+        except Exception as e:
+            self.logger.error(f"Failed to send redis_lost alert: {e}")
+
+    async def handle_redis_connected(self, _):
+        """Alerts the admin channel that Redis is back online."""
+        try:
+            channel = self.get_channel(Settings.ADMIN_LOG_CHANNEL_ID)
+            if channel:
+                embed = discord.Embed(
+                    title="✨ Redis Connection Restored",
+                    description="**Status:** System Online 🚀\n**Action:** Resuming all hibernated tasks and background listeners.",
+                    color=0x2ecc71, # Green (Success)
+                    timestamp=discord.utils.utcnow()
+                )
+                embed.set_footer(text="Stability Patch V2.1")
+                await channel.send(embed=embed)
+        except Exception as e:
+            self.logger.error(f"Failed to send redis_connected alert: {e}")

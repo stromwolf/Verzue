@@ -37,6 +37,8 @@ class Settings:
     REDIS_URL = Secrets.REDIS_URL
     SCRAPING_PROXY = Secrets.SCRAPING_PROXY
 
+    ADMIN_LOG_CHANNEL_ID = 1488184233229811724
+    
     ALLOWED_IDS = [] 
     
     @classmethod
