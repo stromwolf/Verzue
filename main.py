@@ -6,7 +6,6 @@ logger = setup_logging()
 from config.settings import Settings
 Settings.ensure_dirs()
 
-from app.services.browser.driver import BrowserService
 from app.services.gdrive.client import GDriveClient
 from app.tasks.manager import TaskQueue
 from app.bot.main import MechaBot
@@ -49,8 +48,6 @@ async def main():
             
     pid_file.write_text(str(os.getpid()))
     
-    browser = BrowserService()
-    
     logger.info("☁️  Initializing Google Drive...")
     try:
         gdrive_client = GDriveClient()
@@ -59,7 +56,7 @@ async def main():
         gdrive_client = None
 
     # 2. Init Queue
-    queue = TaskQueue(browser_service=browser, gdrive_client=gdrive_client)
+    queue = TaskQueue(gdrive_client=gdrive_client)
 
     # The worker is now a separate process and is no longer started here.
     # asyncio.create_task(queue.start_worker())
@@ -123,7 +120,6 @@ async def main():
             await asyncio.gather(
                 bot.close(),
                 helper_bot.close() if helper_bot else asyncio.sleep(0),
-                browser.stop() if 'browser' in locals() else asyncio.sleep(0),
                 return_exceptions=True
             )
         except Exception as e:

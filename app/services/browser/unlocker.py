@@ -8,8 +8,8 @@ from app.services.session_service import SessionService
 logger = logging.getLogger("BatchUnlocker")
 
 class BatchUnlocker:
-    def __init__(self, browser_service):
-        self.browser = browser_service
+    def __init__(self):
+        self.browser = None
         self.queue = [] 
         self.queue_lock = asyncio.Lock()
         self.notifier = asyncio.Condition(self.queue_lock)
@@ -45,7 +45,7 @@ class BatchUnlocker:
         # No platforms strictly require Playwright now for unlocking.
         requires_browser = False 
         if requires_browser:
-            await self.browser.start()
+            pass
 
         futures = []
         async with self.queue_lock:

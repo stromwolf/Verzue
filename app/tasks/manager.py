@@ -11,7 +11,7 @@ from app.core.events import EventBus
 logger = logging.getLogger("TaskQueue")
 
 class TaskQueue:
-    def __init__(self, browser_service=None, gdrive_client=None):
+    def __init__(self, gdrive_client=None):
         # ==========================================
         # 🃏 THE DEALER (Round-Robin State)
         # ==========================================
@@ -31,22 +31,15 @@ class TaskQueue:
         self.active_worker_count = 0
         self.workers_to_kill = 0    # Hit-list for when RAM is critical
 
-        if browser_service and getattr(Settings, "USE_BROWSER", False):
-            self.browser_service = browser_service
-            self.provider_manager = ProviderManager()
-            self.uploader = GDriveUploader(gdrive_client) if gdrive_client else None
-            self.worker = TaskWorker(self.provider_manager, self.uploader)
-            
-            # 🟢 S-GRADE: Initialize the BatchUnlocker
-            from app.services.browser.unlocker import BatchUnlocker
-            self.unlocker = BatchUnlocker(self.browser_service)
-        else:
-            # VPS / Browserless Mode Initialization
-            self.browser_service = None
-            self.unlocker = None
-            self.provider_manager = ProviderManager()
-            self.uploader = GDriveUploader(gdrive_client) if gdrive_client else None
-            self.worker = TaskWorker(self.provider_manager, self.uploader)
+        # VPS / Browserless Mode Initialization (Playwright Purged)
+        self.browser_service = None
+        self.provider_manager = ProviderManager()
+        self.uploader = GDriveUploader(gdrive_client) if gdrive_client else None
+        self.worker = TaskWorker(self.provider_manager, self.uploader)
+        
+        # 🟢 S-GRADE: Initialize the BatchUnlocker (Now API-Driven Only)
+        from app.services.browser.unlocker import BatchUnlocker
+        self.unlocker = BatchUnlocker()
 
     async def add_task(self, task: ChapterTask):
         """Producer: Bot pushes task to the Redis global queue."""

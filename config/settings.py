@@ -22,14 +22,9 @@ class Settings:
     CREDENTIALS_JSON = SECRETS_DIR / "credentials.json"
     TOKEN_PICKLE = SECRETS_DIR / "token.pickle"
 
-    # --- 2. BROWSER ---
-    USE_BROWSER = False # Set to False for browserless VPS operation
-    HEADLESS = True 
-    WINDOW_SIZE = "390,844"
-    SCROLL_PAUSE = 0.5 
-    BINARY_LOCATION = None 
-    DRIVER_LOCATION = None
-    BROWSER_PROFILE_DIR = DATA_DIR / "browser_profile"
+    # --- 2. VACANT ---
+    # Browser purged for API fast-path.
+
 
     # --- 3. DISCORD ---
     DISCORD_TOKEN = Secrets.DISCORD_TOKEN
@@ -152,7 +147,6 @@ class Settings:
         """Creates necessary directories."""
         cls.DATA_DIR.mkdir(parents=True, exist_ok=True)
         cls.SECRETS_DIR.mkdir(parents=True, exist_ok=True) # Creates data/secrets
-        cls.BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True) # Persistent identity
         cls.DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
         cls.LOG_DIR.mkdir(parents=True, exist_ok=True)
         cls.REQUEST_LOG_DIR.mkdir(parents=True, exist_ok=True)

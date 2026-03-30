@@ -13,7 +13,6 @@ from config.settings import Settings
 Settings.ensure_dirs()
 
 # 2. Imports from the main bot app
-from app.services.browser.driver import BrowserService
 from app.services.gdrive.client import GDriveClient
 from app.tasks.manager import TaskQueue
 from app.bot.main import MechaBot
@@ -54,9 +53,7 @@ async def main():
             
     pid_file.write_text(str(os.getpid()))
     
-    # Initialize Browser (Staging runs browserless by default for stability)
-    browser = BrowserService()
-    
+    # Initialize GDrive
     logger.info("☁️  Staging: Connecting to Google Drive...")
     try:
         gdrive_client = GDriveClient()
@@ -65,7 +62,7 @@ async def main():
         gdrive_client = None
 
     # Init Queue
-    queue = TaskQueue(browser_service=browser, gdrive_client=gdrive_client)
+    queue = TaskQueue(gdrive_client=gdrive_client)
     asyncio.create_task(heartbeat())
 
     # Sync Global Brain (Redis)
@@ -108,7 +105,6 @@ async def main():
         try:
             await asyncio.gather(
                 bot.close(),
-                browser.stop() if 'browser' in locals() else asyncio.sleep(0),
                 return_exceptions=True
             )
         except: pass

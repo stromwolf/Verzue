@@ -1,7 +1,6 @@
 import asyncio
 from app.core.logger import setup_logging
 from config.settings import Settings
-from app.services.browser.driver import BrowserService
 from app.services.gdrive.client import GDriveClient
 from app.tasks.manager import TaskQueue
 
@@ -16,8 +15,6 @@ async def main():
     Settings.ensure_dirs()
 
     # The worker needs its own instances of the services to perform tasks
-    browser = BrowserService()
-    
     logger.info("☁️  Initializing Google Drive for Worker...")
     try:
         gdrive_client = GDriveClient()
@@ -26,7 +23,7 @@ async def main():
         gdrive_client = None
 
     # The TaskQueue, when run here, acts as the consumer
-    queue = TaskQueue(browser_service=browser, gdrive_client=gdrive_client)
+    queue = TaskQueue(gdrive_client=gdrive_client)
 
     logger.info("🎧 Worker is now listening to Redis for tasks...")
     # This will block forever, processing jobs as they arrive

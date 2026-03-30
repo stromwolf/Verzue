@@ -3,7 +3,6 @@ import asyncio
 import json
 import time
 from app.services.redis_manager import RedisManager
-from app.services.browser.driver import BrowserService
 from app.providers.manager import ProviderManager
 
 logger = logging.getLogger("SessionHealer")
@@ -12,7 +11,6 @@ class SessionHealer:
     def __init__(self, session_service):
         self.redis = RedisManager()
         self.session_service = session_service
-        self.browser = BrowserService()
         self.provider_manager = ProviderManager()
         self._running = False
 
@@ -83,8 +81,6 @@ class SessionHealer:
         try:
             if platform in ["mecha"]:
                 await self._refresh_via_token(platform, account_id)
-            elif platform in ["piccoma", "jumptoon", "kakao"]:
-                await self._refresh_via_handshake(platform, account_id)
             else:
                 logger.warning(f"🤷 No healing strategy for platform: {platform}")
             
@@ -138,43 +134,4 @@ class SessionHealer:
         session_obj["last_refresh_attempt"] = now
         await self.redis.set_session(platform, account_id, session_obj)
 
-    async def _refresh_via_handshake(self, platform: str, account_id: str):
-        """
-        Strategy B: The 'Restorative Handshake' via Playwright.
-        """
-        logger.info(f"🎭 Attempting Browser Handshake refresh for {platform}:{account_id}...")
-        
-        session = await self.redis.get_session(platform, account_id)
-        if not session: return
-
-        # Target specific login/home URLs
-        urls = {
-            "piccoma": "https://piccoma.com/web/",
-            "jumptoon": "https://jumptoon.com/me/",
-            "kakao": "https://page.kakao.com/"
-        }
-        
-        target_url = urls.get(platform)
-        if not target_url: return
-
-        # Selectors for verifying login state or triggering handshake
-        if platform == "piccoma":
-            selectors = [".PCM-gnb_user"] 
-        elif platform == "jumptoon":
-            selectors = ['.bwozyz5'] 
-        elif platform == "kakao":
-            selectors = ['.link_profile']
-        else:
-            selectors = []
-
-        new_cookies, _ = await self.browser.run_isolated_handshake(
-            target_url, session.get("cookies", []), selectors
-        )
-        
-        if new_cookies:
-            # Convert Playwright cookies to consistent format if needed
-            # Actually run_isolated_handshake returns them as dicts
-            await self.session_service.update_session_cookies(platform, account_id, new_cookies)
-            logger.info(f"✨ Handshake refresh successful for {platform}:{account_id}")
-        else:
-            logger.error(f"💀 Handshake refresh FAILED for {platform}:{account_id}")
+        await self.redis.set_session(platform, account_id, session_obj)
