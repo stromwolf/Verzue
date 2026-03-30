@@ -30,6 +30,30 @@ class AdminCog(commands.Cog):
         return ctx.author.id in Settings.ALLOWED_IDS or ctx.author.id == 1216284053049704600
 
 
+    async def _wait_for_drain(self, ctx, action_name: str):
+        """Helper to wait for active tasks to finish before an action."""
+        if not hasattr(self.bot, 'task_queue'):
+            return True
+        
+        tq = self.bot.task_queue
+        if tq.busy_workers == 0:
+            return True
+            
+        tq.is_draining = True
+        busy = tq.busy_workers
+        msg = await ctx.send(f"⚠️ **Graceful {action_name.capitalize()} Initiated**\nFound **{busy}** active chapter(s). Finishing them before {action_name}...\n-# (No new tasks will be accepted during this time)")
+        
+        # Max wait: 120 seconds
+        for _ in range(24): 
+            await asyncio.sleep(5)
+            if tq.busy_workers == 0:
+                await msg.edit(content=f"✅ Workers finished. Proceeding with **{action_name}**...")
+                return True
+            await msg.edit(content=f"⏳ Still finishing **{tq.busy_workers}** chapter(s)... ({_}/24)")
+            
+        await msg.edit(content=f"⚠️ Timeout waiting for workers. Proceeding with **{action_name}** anyway for stability.")
+        return True
+
     @commands.command(name="sync")
     async def sync_commands(self, ctx):
         """Forces a global sync of slash commands."""
@@ -40,18 +64,27 @@ class AdminCog(commands.Cog):
         if not (is_owner or is_allowed):
             return await ctx.send("❌ You are not authorized to use this command.", delete_after=60.0)
             
+        # 🟢 S-GRADE: Graceful Check
+        await self._wait_for_drain(ctx, "sync")
+
         msg = await ctx.send("🔄 Syncing slash commands...")
         try:
             synced = await self.bot.tree.sync()
             await msg.edit(content=f"✅ Synced **{len(synced)}** slash commands globally.")
         except Exception as e:
             await msg.edit(content=f"❌ Failed to sync: {e}")
+        finally:
+            if hasattr(self.bot, 'task_queue'):
+                self.bot.task_queue.is_draining = False
 
     @commands.command(name="restart", aliases=["reboot", "reset"])
     async def restart_bot(self, ctx):
         """Usage: $restart. Reboots the entire bot and services."""
         if ctx.author.id != 1216284053049704600:
             return await ctx.send("❌ You are not authorized to use this command.")
+
+        # 🟢 S-GRADE: Graceful Check
+        await self._wait_for_drain(ctx, "restart")
 
         await ctx.send("🔄 **Initiating System Reboot...**")
         logger.info(f"Reboot: Process initiated via $restart by {ctx.author}")

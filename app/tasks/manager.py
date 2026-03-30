@@ -17,6 +17,8 @@ class TaskQueue:
         # 🃏 THE DEALER (Round-Robin State)
         # ==========================================
         self.total_tasks = 0
+        self.busy_workers = 0 # 👷 Current active processing workers
+        self.is_draining = False # 🚦 Maintenance lock for reboots
         self.task_condition = asyncio.Condition() # Thread-safe waker for workers
         
         from app.services.redis_manager import RedisManager
@@ -48,6 +50,9 @@ class TaskQueue:
 
     async def add_task(self, task: ChapterTask):
         """Producer: Bot pushes task to the Redis global queue."""
+        if self.is_draining:
+            raise RuntimeError("Bot is currently preparing for maintenance/restart. Please try again in 1-2 minutes.")
+
         key = f"{task.series_id_key}:{task.episode_id}"
 
         # 🟢 S-GRADE: Cross-Process Deduplication via Redis
@@ -162,6 +167,7 @@ class TaskQueue:
                 dedup_key = f"{task.series_id_key}:{task.episode_id}"
                 
                 try:
+                    self.busy_workers += 1
                     await EventBus.emit("task_started", {"req_id": task.req_id, "title": task.title})
                     
                     # Process the task
@@ -173,6 +179,7 @@ class TaskQueue:
                     logger.error(f"❌ Worker {worker_id} crashed on {task.title}: {e}")
                     await EventBus.emit("task_failed", task, str(e))
                 finally:
+                    self.busy_workers -= 1
                     await self.redis.remove_active_task(dedup_key)
                     req_id_context.reset(token)
                     

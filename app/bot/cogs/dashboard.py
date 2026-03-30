@@ -721,17 +721,26 @@ class DashboardCog(commands.Cog):
 
                 # E. Start Batch Process
                 elif custom_id.startswith("btn_start_"):
-                    view.processing_mode = True
-                    view.phases["analyze"] = "loading"
-                    await view.update_view(interaction)
-                    
-                    asyncio.create_task(view.monitor_tasks())
-                    from app.services.batch_controller import BatchController
-                    tasks = await BatchController(self.bot).prepare_batch(interaction, sorted(list(view.selected_indices)), view.all_chapters, view.title, view.url, view_ref=view, series_id=view.series_id, original_title=view.original_title)
-                    if tasks:
-                        view.phases.update({"analyze":"done","purchase":"done","download":"loading"})
-                        view.active_tasks = [await self.bot.task_queue.add_task(t) for t in tasks]
+                    try:
+                        view.processing_mode = True
+                        view.phases["analyze"] = "loading"
+                        await view.update_view(interaction)
+                        
+                        asyncio.create_task(view.monitor_tasks())
+                        from app.services.batch_controller import BatchController
+                        tasks = await BatchController(self.bot).prepare_batch(interaction, sorted(list(view.selected_indices)), view.all_chapters, view.title, view.url, view_ref=view, series_id=view.series_id, original_title=view.original_title)
+                        if tasks:
+                            view.phases.update({"analyze":"done","purchase":"done","download":"loading"})
+                            view.active_tasks = [await self.bot.task_queue.add_task(t) for t in tasks]
+                            view.trigger_refresh()
+                    except RuntimeError as e:
+                        # 🟢 S-GRADE: Friendly Maintenance Feedback
+                        view.processing_mode = False
                         view.trigger_refresh()
+                        return await interaction.followup.send(f"⚠️ **Maintenance Mode**\n{str(e)}", ephemeral=True)
+                    except Exception as e:
+                        logger.error(f"Failed to start batch: {e}")
+                        return await interaction.followup.send(f"❌ **Error starting batch:** {e}", ephemeral=True)
 
         # --- Modal Submissions (URL Entry & Range Picker) ---
         elif interaction.type == discord.InteractionType.modal_submit:
