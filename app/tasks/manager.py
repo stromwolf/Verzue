@@ -122,7 +122,7 @@ class TaskQueue:
             
             # Do we need more workers? (We have RAM + Idle tasks waiting)
             if self.active_worker_count < target_workers and self.total_tasks > self.active_worker_count:
-                logger.info(f"📈 [Pit Boss] RAM: {avail_mb:.0f}MB. Target: {target_workers} workers. Spawning Worker {worker_id_counter}.")
+                logger.debug(f"📈 [Pit Boss] RAM: {avail_mb:.0f}MB. Target: {target_workers} workers. Spawning Worker {worker_id_counter}.")
                 asyncio.create_task(self._worker_loop(worker_id_counter))
                 worker_id_counter += 1
             

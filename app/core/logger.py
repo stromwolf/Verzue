@@ -29,9 +29,9 @@ class CustomFormatter(logging.Formatter):
     grey, blue, yellow, red, bold_red, reset = "\x1b[38;20m", "\x1b[34;20m", "\x1b[33;20m", "\x1b[31;20m", "\x1b[31;1m", "\x1b[0m"
     
     def get_fmt(self, req_id):
-        # Professional Prefix: [INFO] [R-ID] - Message
+        # Balanced Prefix: [INFO ] [R-ID] - Message
         prefix = f" [{req_id}]" if req_id and req_id != "None" else ""
-        return f"[%(levelname)-5s]{prefix} - %(message)s"
+        return f"[%(levelname)-6s]{prefix} - %(message)s"
 
     def format(self, record):
         req_id = getattr(record, "req_id", None)
@@ -80,11 +80,14 @@ def setup_logging(name: str = "MechaBot"):
         rfh.addFilter(ctx_filter)
         logger.addHandler(rfh)
     
-    # Suppress noisy library logs
+    # 🧊 S-GRADE: Suppress noisy library logs
     logging.getLogger("discord").setLevel(logging.WARNING)
     logging.getLogger("selenium").setLevel(logging.WARNING)
     logging.getLogger("googleapiclient").setLevel(logging.WARNING)
     logging.getLogger("httplib2").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("curl_cffi").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("PIL").setLevel(logging.INFO)
     
 
