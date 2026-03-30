@@ -108,33 +108,67 @@ class CookieStatusCog(commands.Cog):
 
                     statuses.append(f"{idx}. {p_name.capitalize()} - {status_emoji}\n- {expiry_text}")
 
-                # 2. Build Message
-                content = "# Verzue - Cookies Status\n"
-                content += "------------------------------------\n"
-                content += "### 📊Cookies Overview\n"
-                content += "\n".join(statuses) + "\n"
-                content += "------------------------------------\n"
-                content += "### ⚙️Details\n"
-                content += "Use `/add-cookies` to add new cookies using editthiscookies extension.\n\n"
-                content += f"*Last Updated: <t:{int(time.time())}:R>*"
+                # 2. Build V2 Component Payload
+                inner = []
+                
+                # Header
+                inner.append({"type": 10, "content": "# Verzue — Cookies Status"})
+                inner.append({"type": 14, "divider": True, "spacing": 1})
+                
+                # Overview Title
+                inner.append({"type": 10, "content": "### 📊 Cookies Overview"})
+                
+                # Platform List
+                for s_text in statuses:
+                    inner.append({"type": 10, "content": s_text})
+                    inner.append({"type": 14, "divider": True, "spacing": 1})
+                
+                # Details & Instructions
+                inner.append({"type": 10, "content": "### ⚙️ Details\nUse `/add-cookies` to add new cookies using **EditThisCookie** extension."})
+                inner.append({"type": 14, "divider": True, "spacing": 1})
+                
+                # Footer with timestamp
+                inner.append({"type": 10, "content": f"-# Last Updated: <t:{int(time.time())}:R>"})
 
-                # 3. Send or Edit
+                # Wrap in Container (Type 17)
+                payload = {
+                    "flags": 32768,
+                    "components": [{
+                        "type": 17,
+                        "accent_color": 0x5865f2,
+                        "components": inner
+                    }]
+                }
+
+                # 3. Send or Edit via Raw HTTP (Required for V2 Components)
                 msg_id = await self.redis.client.get(self.REDIS_MSG_KEY)
-                message = None
                 
                 if msg_id:
                     try:
-                        message = await channel.fetch_message(int(msg_id))
-                    except (discord.NotFound, discord.HTTPException, ValueError):
-                        message = None
+                        # Attempt to edit existing
+                        route = discord.http.Route(
+                            'PATCH',
+                            '/channels/{channel_id}/messages/{message_id}',
+                            channel_id=self.CHANNEL_ID,
+                            message_id=int(msg_id)
+                        )
+                        await self.bot.http.request(route, json=payload)
+                        logger.info(f"✅ [StatusUI] Dashboard V2 updated (Msg: {msg_id})")
+                        return
+                    except (discord.NotFound, discord.HTTPException):
+                        logger.warning(f"⚠️ [StatusUI] Message {msg_id} not found, creating new one.")
 
-                if message:
-                    await message.edit(content=content)
-                    logger.info(f"✅ [StatusUI] Dashboard updated (Msg: {msg_id})")
-                else:
-                    new_msg = await channel.send(content=content)
-                    await self.redis.client.set(self.REDIS_MSG_KEY, str(new_msg.id))
-                    logger.info(f"🆕 [StatusUI] Dashboard created (Msg: {new_msg.id})")
+                # Create new message if none exists or fetch failed
+                route = discord.http.Route(
+                    'POST',
+                    '/channels/{channel_id}/messages',
+                    channel_id=self.CHANNEL_ID
+                )
+                response = await self.bot.http.request(route, json=payload)
+                new_id = response.get("id")
+                if new_id:
+                    await self.redis.client.set(self.REDIS_MSG_KEY, str(new_id))
+                    logger.info(f"🆕 [StatusUI] Dashboard V2 created (Msg: {new_id})")
 
             except Exception as e:
                 logger.error(f"❌ [StatusUI] Failed to update dashboard: {e}")
