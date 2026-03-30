@@ -41,8 +41,7 @@ class JumptoonProvider(BaseProvider):
         """Fetches a healthy session from the Vault and initializes an AsyncSession."""
         session_obj = await self.session_service.get_active_session("jumptoon")
         if not session_obj:
-            logger.warning("[Jumptoon] No healthy sessions in vault. Using guest session.")
-            return curl_requests.AsyncSession(impersonate="chrome", proxy=Settings.get_proxy())
+            raise ScraperError("No healthy sessions available for jumptoon. Use /add-cookies to fix.")
 
         self.active_account_id = session_obj["account_id"]
         async_session = curl_requests.AsyncSession(impersonate="chrome", proxy=Settings.get_proxy())

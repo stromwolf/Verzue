@@ -1,6 +1,7 @@
 import logging
 import random
 from app.services.redis_manager import RedisManager
+from app.core.events import EventBus
 
 logger = logging.getLogger("SessionService")
 
@@ -57,6 +58,7 @@ class SessionService:
             "platform": platform,
             "account_id": account_id
         })
+        await EventBus.emit("session_status_changed", platform)
 
     async def record_session_success(self, platform: str):
         """Records a successful request for telemetry tracking."""
@@ -79,3 +81,4 @@ class SessionService:
         session.pop("error_reason", None)
         await self.redis.set_session(platform, account_id, session)
         logger.info(f"✅ Session updated and refreshed: {platform}:{account_id}")
+        await EventBus.emit("session_status_changed", platform)

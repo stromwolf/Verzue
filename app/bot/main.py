@@ -30,7 +30,8 @@ class MechaBot(commands.Bot):
             "app.bot.cogs.admin",
             "app.bot.cogs.dashboard",
             "app.bot.cogs.subscriptions",
-            "app.bot.cogs.discovery"
+            "app.bot.cogs.discovery",
+            "app.bot.cogs.status"
         ]
         
         for ext in extensions:

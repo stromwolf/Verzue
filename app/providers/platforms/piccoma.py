@@ -83,10 +83,12 @@ class PiccomaProvider(BaseProvider):
                 name, value = c.get('name'), c.get('value')
                 if name and value: 
                     async_session.cookies.set(name, value, domain=region_domain)
-                    # Also try setting it for the exact domain without the dot if it starts with one
                     d_base = str(region_domain)
                     if d_base.startswith('.'):
                         async_session.cookies.set(name, value, domain=d_base[1:])
+        else:
+            # S-GRADE: Explicitly fail if no session is available
+            raise ScraperError("No healthy sessions available for piccoma. Use /add-cookies to fix.")
         
         return async_session
 
@@ -201,6 +203,9 @@ class PiccomaProvider(BaseProvider):
         t_ep = auth_session.get(episodes_url)
         ep_res = await t_ep
         
+        if ep_res.status_code != 200:
+            raise ScraperError(f"Failed to fetch Piccoma episodes: HTTP {ep_res.status_code}. Session might be invalid.")
+            
         if ep_res.status_code == 200:
             ep_soup = BeautifulSoup(ep_res.text, 'html.parser')
             
