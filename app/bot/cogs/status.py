@@ -69,15 +69,30 @@ class CookieStatusCog(commands.Cog):
                 statuses = []
                 
                 for idx, p_name in enumerate(platforms, 1):
-                    session = await self.redis.get_session(p_name, "primary")
-                    if not session:
-                        # Try to find ANY session if primary doesn't exist
-                        aids = await self.redis.list_sessions(p_name)
-                        if aids:
+                    # Prioritize finding a HEALTHY session first
+                    aids = await self.redis.list_sessions(p_name)
+                    session = None
+                    
+                    if aids:
+                        # Check primary first
+                        if "primary" in aids:
+                            session = await self.redis.get_session(p_name, "primary")
+                        
+                        # If primary is not healthy or not found, look for any healthy one
+                        if not session or session.get("status") != "HEALTHY":
+                            for aid in aids:
+                                if aid == "primary": continue
+                                s = await self.redis.get_session(p_name, aid)
+                                if s and s.get("status") == "HEALTHY":
+                                    session = s
+                                    break
+                        
+                        # Fallback to just the first one if we still don't have a session
+                        if not session:
                             session = await self.redis.get_session(p_name, aids[0])
                     
                     status_emoji = "🔴 Uh Oh"
-                    expiry_text = "Has expired or no cookies found."
+                    expiry_text = "No active session found in vault."
                     
                     if session and session.get("cookies"):
                         expiry_ts = self._get_earliest_expiry(session["cookies"])
@@ -100,11 +115,18 @@ class CookieStatusCog(commands.Cog):
                             else:
                                 status_emoji = "🟠 Uh Oh"
                                 expiry_text = "Has expired."
+                        else:
+                            # 🟢 S-GRADE: Handle session with cookies but NO expiry (session cookies)
+                            status_emoji = "🟢 Good"
+                            expiry_text = "Session cookies active (No fixed expiry)."
                         
                         # Override if status is explicitly EXPIRED
                         if session.get("status") == "EXPIRED":
                             status_emoji = "🟠 Uh Oh"
                             expiry_text = "Session marked as Expired/Blocked."
+                    elif session:
+                         status_emoji = "🟠 Uh Oh"
+                         expiry_text = "Session exists but has no cookies."
 
                     statuses.append(f"{idx}. {p_name.capitalize()} - {status_emoji}\n- {expiry_text}")
 
@@ -177,13 +199,14 @@ class CookieStatusCog(commands.Cog):
         """Parses cookies to find the earliest expiration timestamp."""
         expiries = []
         for c in cookies:
-            exp = c.get("expiry") or c.get("expires")
+            # EditThisCookie uses expirationDate. Others use expiry or expires.
+            exp = c.get("expirationDate") or c.get("expiry") or c.get("expires")
             if exp:
                 try:
                     val = float(exp)
                     if val > 10000000000: # Milliseconds fallback
                         val /= 1000
-                    if val > 0:
+                    if val > 1000000000: # Sanity check for Unix timestamp
                         expiries.append(val)
                 except:
                     continue
