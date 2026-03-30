@@ -24,6 +24,7 @@ JUMPTOON_RELEASE_TIME_UTC = "15:00"
 class JumptoonProvider(BaseProvider):
     IDENTIFIER = "jumptoon"
     BASE_URL = "https://jumptoon.com"
+    SERIES_PATH = "/series/"
 
     def __init__(self):
         self.session_service = SessionService()

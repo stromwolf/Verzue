@@ -16,6 +16,7 @@ logger = logging.getLogger("AcqqProvider")
 class AcqqProvider(BaseProvider):
     IDENTIFIER = "acqq"
     BASE_URL = "https://ac.qq.com"
+    SERIES_PATH = "/Comic/comicInfo/id/"
 
     def __init__(self):
         self.session_service = SessionService()

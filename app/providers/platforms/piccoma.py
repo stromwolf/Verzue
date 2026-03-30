@@ -35,6 +35,8 @@ def dd(input_string):
 
 class PiccomaProvider(BaseProvider):
     IDENTIFIER = "piccoma"
+    BASE_URL = "https://piccoma.com"
+    SERIES_PATH = "/web/product/"
 
     def __init__(self):
         self.session_service = SessionService()

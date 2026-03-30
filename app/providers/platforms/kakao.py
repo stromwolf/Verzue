@@ -15,6 +15,8 @@ logger = logging.getLogger("KakaoProvider")
 
 class KakaoProvider(BaseProvider):
     IDENTIFIER = "kakao"
+    BASE_URL = "https://page.kakao.com"
+    SERIES_PATH = "/content/"
     GRAPHQL_URL = "https://bff-page.kakao.com/graphql"
     KWEBTOON_API_BASE = "https://gateway-kw.kakao.com"
 

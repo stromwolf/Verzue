@@ -14,6 +14,7 @@ logger = logging.getLogger("KuaikanProvider")
 class KuaikanProvider(BaseProvider):
     IDENTIFIER = "kuaikan"
     BASE_URL = "https://www.kuaikanmanhua.com"
+    SERIES_PATH = "/web/topic/"
 
     def __init__(self):
         self.session_service = SessionService()

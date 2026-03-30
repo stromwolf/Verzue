@@ -23,6 +23,7 @@ logger = logging.getLogger("MechaProvider")
 class MechaProvider(BaseProvider):
     IDENTIFIER = "mecha"
     BASE_URL = "https://mechacomic.jp"
+    SERIES_PATH = "/books/"
 
     def __init__(self):
         self.session_service = SessionService()

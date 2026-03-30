@@ -193,7 +193,7 @@ class Discovery(commands.Cog):
         await interaction.response.defer()
         try:
             provider = self.pm.get_provider(platform)
-            url = f"{provider.BASE_URL}/series/{series_id}"
+            url = f"{provider.BASE_URL}{provider.SERIES_PATH}{series_id}"
             
             # Fetch Series Info
             data = await provider.get_series_info(url)
@@ -265,7 +265,7 @@ class Discovery(commands.Cog):
         await interaction.response.defer()
         try:
             provider = self.pm.get_provider(platform)
-            url = f"{provider.BASE_URL}/series/{series_id}"
+            url = f"{provider.BASE_URL}{provider.SERIES_PATH}{series_id}"
             
             # Fetch Series Info (Normal fetch to ensure sorting)
             data = await provider.get_series_info(url)
@@ -329,7 +329,7 @@ class Discovery(commands.Cog):
         # 1. Get Provider
         try:
             provider = self.pm.get_provider(platform)
-            url = f"{provider.BASE_URL}/series/{series_id}"
+            url = f"{provider.BASE_URL}{provider.SERIES_PATH}{series_id}"
             
             # 2. Fetch Series Info
             data = await provider.get_series_info(url)
