@@ -50,13 +50,137 @@ class RedisManager:
         await self.client.rpush(queue_name, json.dumps(task_dict))
         return True
 
-    async def dequeue_task(self, queue_name: str, timeout: int = 0):
+    async def dequeue_task(self, queue_name: str, timeout: int = 5):
         """Blocks and pops a task from the front of the Redis List. (timeout=0 means wait forever)"""
         if not self.client: return None
         result = await self.client.blpop(queue_name, timeout=timeout)
         if result:
-            return json.loads(result[1]) # result is a tuple: (queue_name, data)
+            return json.loads(result[1]) # result is a tuple: (queue_key, data)
         return None
+
+    # --- S-GRADE DISTRIBUTED QUEUE (Approach A) ---
+    async def push_task(self, task_dict: dict):
+        """Standardized global queue entry."""
+        return await self.enqueue_task("verzue:queue:global", task_dict)
+
+    async def pop_task(self, timeout: int = 5):
+        """Standardized global queue exit."""
+        return await self.dequeue_task("verzue:queue:global", timeout=timeout)
+
+    # --- ACTIVE TASK TRACKING (Deduplication) ---
+    async def set_active_task(self, key: str, task_id: str):
+        """Marks a series:episode as 'in progress' across all workers."""
+        if not self.client: return
+        await self.client.hset("verzue:active_tasks", key, task_id)
+
+    async def get_active_task(self, key: str):
+        """Checks if a task is already being handled elsewhere."""
+        if not self.client: return None
+        return await self.client.hget("verzue:active_tasks", key)
+
+    async def remove_active_task(self, key: str):
+        """Clears the active flag after completion/failure."""
+        if not self.client: return
+        await self.client.hdel("verzue:active_tasks", key)
+
+    # --- SUBSCRIPTION INDEXING ---
+    async def update_subs_index(self, series_id: str, group_name: str, title: str = None, channel_id: int = None, url: str = None):
+        """Caches a subscription mapping for fast global lookups."""
+        if not self.client: return
+        payload = {"group": group_name}
+        if title: payload["title"] = title
+        if channel_id: payload["channel_id"] = channel_id
+        if url: payload["url"] = url
+        await self.client.hset("verzue:index:subs", series_id, json.dumps(payload))
+
+    async def update_schedule_index(self, group_name: str, day: str, series_id: str, platform: str = None):
+        """Adds a series to group's daily release schedule and group-wide sets."""
+        if not self.client: return
+        # 1. Daily schedule
+        key = f"verzue:schedule:{group_name}:{day.capitalize()}"
+        await self.client.sadd(key, series_id)
+        
+        # 2. Group-wide all set
+        await self.client.sadd(f"verzue:group:{group_name}:all", series_id)
+        
+        # 3. Platform-specific group set
+        if platform:
+            await self.client.sadd(f"verzue:group:{group_name}:platform:{platform.lower()}", series_id)
+
+    async def remove_from_schedule_index(self, group_name: str, day: str, series_id: str, platform: str = None):
+        """Removes a series from group's daily schedule and global group sets."""
+        if not self.client: return
+        key = f"verzue:schedule:{group_name}:{day.capitalize()}"
+        await self.client.srem(key, series_id)
+        await self.client.srem(f"verzue:group:{group_name}:all", series_id)
+        if platform:
+            await self.client.srem(f"verzue:group:{group_name}:platform:{platform.lower()}", series_id)
+
+    async def clear_group_schedule(self, group_name: str):
+        """Clears all schedule and group-wide sets for a group."""
+        if not self.client: return
+        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        keys = [f"verzue:schedule:{group_name}:{d}" for d in days]
+        keys.append(f"verzue:group:{group_name}:all")
+        
+        # Find all platform keys dynamically
+        platforms = ["jumptoon", "piccoma", "mecha", "acqq", "kakao", "kuaikan"]
+        for p in platforms:
+            keys.append(f"verzue:group:{group_name}:platform:{p}")
+            
+        await self.client.delete(*keys)
+
+    async def get_group_subs(self, group_name: str, platform: str = None):
+        """Returns all hydrated subscriptions for a group, optionally filtered by platform."""
+        if not self.client: return []
+        key = f"verzue:group:{group_name}:platform:{platform.lower()}" if platform else f"verzue:group:{group_name}:all"
+        series_ids = await self.client.smembers(key)
+        
+        results = []
+        if series_ids:
+            pipe = self.client.pipeline()
+            for s_id in series_ids:
+                pipe.hget("verzue:index:subs", s_id)
+            raw_data = await pipe.execute()
+            for r in raw_data:
+                if r:
+                    sub_data = json.loads(r)
+                    if not sub_data.get("series_id"): # Ensure series_id is present
+                        # We might need to inject it if not in JSON
+                        pass
+                    results.append(sub_data)
+        return results
+
+    async def get_schedule_for_group(self, group_name: str, day: str):
+        """Returns hydrated subscription data for a specific day."""
+        if not self.client: return []
+        key = f"verzue:schedule:{group_name}:{day.capitalize()}"
+        series_ids = await self.client.smembers(key)
+        
+        results = []
+        if series_ids:
+            # Fetch metadata from index hash
+            pipe = self.client.pipeline()
+            for s_id in series_ids:
+                pipe.hget("verzue:index:subs", s_id)
+            
+            raw_data = await pipe.execute()
+            for r in raw_data:
+                if r:
+                    sub_data = json.loads(r)
+                    results.append(sub_data)
+        return results
+
+    async def get_indexed_sub(self, series_id: str):
+        """O(1) lookup for series subscriptions."""
+        if not self.client: return None
+        data = await self.client.hget("verzue:index:subs", series_id)
+        return json.loads(data) if data else None
+
+    async def remove_indexed_sub(self, series_id: str):
+        """Removes a sub from the fast index."""
+        if not self.client: return
+        await self.client.hdel("verzue:index:subs", series_id)
 
     # --- PUB/SUB FOR REAL-TIME DISCORD UI UPDATES (Phase 3) ---
     async def publish_event(self, channel: str, event_type: str, payload: dict):

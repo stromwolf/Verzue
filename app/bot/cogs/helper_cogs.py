@@ -4,13 +4,17 @@ import asyncio
 from discord import app_commands
 from discord.ext import commands
 
-from datetime import datetime, timedelta
-from config.settings import Settings
-from app.services.group_manager import load_group, add_subscription
-from app.services.redis_manager import RedisManager
-from app.services.gdrive.sync_service import sync_group_folder_name
-
+import io
+import json
+import urllib.parse
 logger = logging.getLogger("HelperCogs")
+
+try:
+    import docx
+except ImportError:
+    import sys
+    logger.error(f"❌ docx not found! sys.path: {sys.path}")
+    docx = None
 
 class HelperSlashCog(commands.Cog):
     """Slash commands mapped directly to the original Verzue Bot logic."""
@@ -23,7 +27,11 @@ class HelperSlashCog(commands.Cog):
         is_owner = interaction.user.id == 1216284053049704600
         is_allowed = interaction.user.id in Settings.CDN_ALLOWED_USERS
         if not (is_owner or is_allowed):
-            await interaction.response.send_message("❌ **Access Denied.** You are not authorized to use admin commands.", ephemeral=True)
+            msg = "❌ **Access Denied.** You are not authorized to use admin commands."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
             return False
         return True
 
@@ -38,9 +46,10 @@ class HelperSlashCog(commands.Cog):
     @app_commands.describe(
         name="The name of the new group (e.g., Thunder Scans)", 
         website="The group's website link",
-        emoji="The discord emoji to use for this group's dashboard (Optional)"
+        emoji="The discord emoji to use for this group's dashboard (Optional)",
+        servers="Optional: Comma-separated Server IDs to link (e.g. 123, 456)"
     )
-    async def add_group(self, interaction: discord.Interaction, name: str, website: str, emoji: str = None):
+    async def add_group(self, interaction: discord.Interaction, name: str, website: str, emoji: str | None = None, servers: str | None = None):
         if not name.strip():
             return await interaction.response.send_message("❌ Cannot create an empty group name.", ephemeral=True)
             
@@ -69,7 +78,24 @@ class HelperSlashCog(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to create group profile JSON: {e}")
             
-        await interaction.response.send_message(f"✅ **Group Profile Created:** `{clean_name}`\n🌐 **Website:** <{clean_website}>\nYou can now use `/register-server` to assign a server to this group.")
+        # Optional: Register servers immediately
+        linked_str = ""
+        if servers:
+            ids = [s.strip() for s in servers.split(",") if s.strip()]
+            success_ids = []
+            for sid in ids:
+                try:
+                    server_id = int(sid)
+                    Settings.SERVER_MAP[server_id] = clean_name
+                    success_ids.append(str(server_id))
+                except ValueError:
+                    continue
+            
+            if success_ids:
+                Settings.save_server_map()
+                linked_str = f"\n🔗 **Linked Servers:** {', '.join(f'`{s}`' for s in success_ids)}"
+
+        await interaction.response.send_message(f"✅ **Group Profile Created:** `{clean_name}`\n🌐 **Website:** <{clean_website}>{linked_str}\nYou can now use `/register-server` to assign more servers.")
 
     # --- AUTOCOMPLETE HELPER ---
     async def group_name_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
@@ -86,18 +112,19 @@ class HelperSlashCog(commands.Cog):
         name="The name of the group to edit", 
         website="New website link (optional)", 
         note="A note for the group (optional)",
-        emoji="New custom emoji for the dashboard (optional)"
+        emoji="New custom emoji for the dashboard (optional)",
+        new_name="Optional: A new name for the group (Requires Owner Confirmation)"
     )
     @app_commands.autocomplete(name=group_name_autocomplete)
-    async def edit_group(self, interaction: discord.Interaction, name: str, website: str = None, note: str = None, emoji: str = None):
+    async def edit_group(self, interaction: discord.Interaction, name: str, website: str | None = None, note: str | None = None, emoji: str | None = None, new_name: str | None = None):
         if not await self.interaction_check(interaction):
             return
 
         if name not in Settings.GROUP_PROFILES:
             return await interaction.response.send_message(f"❌ **Unknown Group:** `{name}` is not a registered group profile.", ephemeral=True)
 
-        if not website and not note and not emoji:
-            return await interaction.response.send_message("⚠️ No changes provided. Please specify a new website, note, or emoji.", ephemeral=True)
+        if not website and not note and not emoji and not new_name:
+            return await interaction.response.send_message("⚠️ No changes provided. Please specify a new website, note, emoji, or new name.", ephemeral=True)
 
         try:
             from app.services.group_manager import save_group
@@ -117,17 +144,52 @@ class HelperSlashCog(commands.Cog):
             save_group(name, data)
             
             msg = f"✅ **Group '{name}' Updated:**\n" + "\n".join(changes)
-            await interaction.response.send_message(msg)
+            
+            if new_name and new_name.strip() and new_name.strip() != name:
+                clean_new = new_name.strip()
+                if clean_new in Settings.GROUP_PROFILES:
+                    msg += f"\n⚠️ **Rename Failed:** `{clean_new}` already exists."
+                else:
+                    await self.initiate_group_rename(interaction, name, clean_new)
+                    msg += f"\n📩 **Rename Request Sent:** rename `{name}` → `{clean_new}` (Awaiting owner approval)"
+
+            if interaction.response.is_done():
+                await interaction.followup.send(msg)
+            else:
+                await interaction.response.send_message(msg)
+            
             logger.info(f"[GroupManager] Updated profile via Helper UI: {name}")
         except Exception as e:
             logger.error(f"Failed to edit group profile: {e}")
-            await interaction.response.send_message(f"❌ **Failed to update group:** {e}", ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(f"❌ **Failed to update group:** {e}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"❌ **Failed to update group:** {e}", ephemeral=True)
+
+    async def initiate_group_rename(self, interaction: discord.Interaction, old_name: str, new_name: str):
+        """Logic to send DM to owner for rename confirmation."""
+        try:
+            owner_id = 1216284053049704600
+            owner = await self.bot.fetch_user(owner_id)
+            if not owner:
+                return logger.warning("Could not find owner to send rename confirmation DM.")
+
+            view = GroupRenameConfirmationView(old_name=old_name, new_name=new_name, requester=interaction.user)
+            embed = discord.Embed(
+                title="⚠️ Group Rename Request",
+                description=f"Admin **{interaction.user}** has requested to rename group **{old_name}** to **{new_name}**.\n\nDo you authorize this action?",
+                color=0xf1c40f
+            )
+            await owner.send(embed=embed, view=view)
+            logger.info(f"[HelperCogs] Rename request sent to owner: {old_name} -> {new_name}")
+        except Exception as e:
+            logger.error(f"Failed to initiate group rename: {e}")
 
     # --- 2. REGISTER SERVER ---
     @app_commands.command(name="register-server", description="[Admin] Link a server or specific channel to a Group Profile")
     @app_commands.describe(
         name="Select the group profile",
-        server="The Server ID to link",
+        server="The Server ID(s) to link (Comma-separated allowed)",
         channel="Optional: Specific Channel ID to link (Only 1419393318147719170 allowed)"
     )
     @app_commands.autocomplete(name=group_name_autocomplete)
@@ -136,7 +198,7 @@ class HelperSlashCog(commands.Cog):
         interaction: discord.Interaction, 
         name: str, 
         server: str, 
-        channel: str = None
+        channel: str | None = None
     ):
         if not await self.interaction_check(interaction):
             return
@@ -144,35 +206,49 @@ class HelperSlashCog(commands.Cog):
         if name not in Settings.GROUP_PROFILES:
             return await interaction.response.send_message(f"❌ **Unknown Group:** `{name}` is not a registered group profile.", ephemeral=True)
             
-        try:
-            target_server_id = int(server.strip())
-        except ValueError:
-            return await interaction.response.send_message("❌ **Invalid Server ID.** Please provide a numeric ID.", ephemeral=True)
+        ids = [s.strip() for s in server.split(",") if s.strip()]
+        success_ids = []
+        target_display = ""
 
         if channel:
+            # Channel case: restricted to one server, usually one ID
+            if len(ids) > 1:
+                return await interaction.response.send_message("❌ **Error.** Channel-level mapping only supports one Server ID at a time.", ephemeral=True)
+            
             try:
+                target_server_id = int(ids[0])
                 target_channel_id = int(channel.strip())
             except ValueError:
-                return await interaction.response.send_message("❌ **Invalid Channel ID.** Please provide a numeric ID.", ephemeral=True)
-            
-            # Specific validation: Channel-level mapping only allowed for server 1419393318147719170
+                return await interaction.response.send_message("❌ **Invalid ID.** Please provide numeric IDs.", ephemeral=True)
+
             if target_server_id != 1419393318147719170:
                 return await interaction.response.send_message(
                     "❌ **Restriction.** Channel-level mapping is only permitted for Server `1419393318147719170`.", 
                     ephemeral=True
                 )
-            
             Settings.SERVER_MAP[target_channel_id] = name
             target_display = f"Channel `{target_channel_id}`"
+            success_ids.append(str(target_channel_id))
         else:
-            Settings.SERVER_MAP[target_server_id] = name
-            target_display = f"Server `{target_server_id}`"
+            # Server case: multiple allowed
+            for sid in ids:
+                try:
+                    target_server_id = int(sid)
+                    Settings.SERVER_MAP[target_server_id] = name
+                    success_ids.append(sid)
+                except ValueError:
+                    continue
+            
+            if not success_ids:
+                return await interaction.response.send_message("❌ **Invalid Server ID(s).** Please provide numeric IDs.", ephemeral=True)
+            
+            target_display = f"Server(s) {', '.join(f'`{s}`' for s in success_ids)}"
             
         Settings.save_server_map()
         
         embed = discord.Embed(
             title="✅ Registration Complete",
-            description=f"{target_display} is now linked to **{name}**.\nThe `/dashboard` will now identify as *Dashboard of {name}* in that scope.",
+            description=f"{target_display} now linked to **{name}**.\nThe `/dashboard` will now identify as *Dashboard of {name}* in that scope.",
             color=0x2ecc21
         )
         await interaction.response.send_message(embed=embed)
@@ -435,6 +511,326 @@ class HelperSlashCog(commands.Cog):
         # but we keep the structure for other future V2 helper components if needed.
         pass
 
+    # --- 9. MANUAL SUBSCRIPTION ADD ---
+
+    def _convert_to_utc(self, day: str, time_str: str, tz_name: str) -> tuple[str, str]:
+        """
+        Normalizes a (day, time, timezone) to (UTC Day, UTC Time).
+        tz_name: 'JST' (+9), 'IST' (+5.5), 'UTC' (+0)
+        """
+        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        day_idx = days.index(day.capitalize())
+        
+        try:
+            h, m = map(int, time_str.split(':'))
+        except:
+            h, m = 0, 0
+            
+        # Create a dummy timestamp (Jan 1, 2024 is a Monday)
+        base = datetime(2024, 1, 1, h, m) + timedelta(days=day_idx)
+        
+        # Subtract offset
+        offset_map = {"JST": 9, "IST": 5.5, "UTC": 0}
+        offset = offset_map.get(tz_name.upper(), 0)
+        
+        utc_dt = base - timedelta(hours=offset)
+        
+        utc_day = days[utc_dt.weekday()]
+        utc_time = utc_dt.strftime("%H:%M")
+        return utc_day, utc_time
+
+    @app_commands.command(name="sub-add", description="[Admin] Manually add a subscription with specific schedule.")
+    @app_commands.describe(
+        url="The series URL",
+        day="Release day in local timezone",
+        timezone="Timezone for the day/time",
+        time="Release time in local timezone (optional, defaults to 00:00)"
+    )
+    @app_commands.choices(day=[
+        app_commands.Choice(name=d, value=d) for d in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    ])
+    @app_commands.choices(timezone=[
+        app_commands.Choice(name="JST (UTC+9)", value="JST"),
+        app_commands.Choice(name="IST (UTC+5.5)", value="IST"),
+        app_commands.Choice(name="UTC", value="UTC"),
+    ])
+    async def sub_add(
+        self, 
+        interaction: discord.Interaction, 
+        url: str, 
+        day: str, 
+        timezone: str, 
+        time: str = "00:00"
+    ):
+        await interaction.response.defer()
+        if not await self.interaction_check(interaction):
+            return
+        
+        try:
+            # 1. Extract Metadata (via main bot)
+            scraper = self.main_bot.task_queue.provider_manager.get_provider_for_url(url)
+            if not scraper:
+                return await interaction.followup.send("❌ Error: No provider found for this URL.")
+                
+            data = await scraper.get_series_info(url, fast=True)
+            title, total_chapters, chapter_list, image_url, series_id, _, _, _, _ = data
+            
+            # 2. Timezone Conversion
+            utc_day, utc_time = self._convert_to_utc(day, time, timezone)
+            
+            # 3. Identification
+            group_name = self._get_current_group(interaction)
+            if not group_name:
+                return await interaction.followup.send("❌ Channel/Server not registered to any group.")
+                
+            # 4. Build Sub Dict
+            sub = {
+                "series_id": series_id,
+                "series_url": url,
+                "platform": scraper.IDENTIFIER,
+                "channel_id": interaction.channel.id,
+                "last_known_chapter_id": str(chapter_list[-1]['id']) if chapter_list else "0",
+                "release_day": utc_day,
+                "release_time": utc_time
+            }
+            
+            # 5. Check if update vs new
+            is_update = any(s["series_id"] == series_id for s in load_group(group_name)["subscriptions"])
+            
+            add_subscription(group_name, sub)
+            
+            action_str = "Updated" if is_update else "Added"
+            embed = discord.Embed(
+                title=f"✅ Manual Subscription {action_str}",
+                description=f"**{title}** (`{series_id}`)\nGroup: **{group_name}**",
+                color=0x2ecc71 if not is_update else 0x3498db
+            )
+            embed.add_field(name="Input Schedule", value=f"`{day} @ {time} {timezone}`", inline=True)
+            embed.add_field(name="UTC Result", value=f"`{utc_day} @ {utc_time}`", inline=True)
+            if image_url: embed.set_thumbnail(url=image_url)
+            
+            await interaction.followup.send(embed=embed)
+                
+        except Exception as e:
+            logger.error(f"Manual Sub Add failed: {e}")
+            await interaction.followup.send(f"❌ Failed to add subscription: `{e}`")
+
+    # --- 10. SESSION MANAGEMENT ---
+
+    @app_commands.command(name="reset-sessions", description="[Admin] Reset all sessions for a platform to HEALTHY status.")
+    @app_commands.describe(platform="The platform to reset (e.g., mecha, jumptoon, piccoma)")
+    @app_commands.choices(platform=[
+        app_commands.Choice(name="Mecha Comic", value="mecha"),
+        app_commands.Choice(name="Jumptoon", value="jumptoon"),
+        app_commands.Choice(name="Piccoma", value="piccoma"),
+        app_commands.Choice(name="Kakao", value="kakao"),
+        app_commands.Choice(name="Kuaikan", value="kuaikan"),
+        app_commands.Choice(name="ACQQ", value="acqq"),
+    ])
+    async def reset_sessions(self, interaction: discord.Interaction, platform: str):
+        await interaction.response.defer(ephemeral=True)
+        if not await self.interaction_check(interaction):
+            return
+        
+        try:
+            aids = await RedisManager().list_sessions(platform)
+            if not aids:
+                return await interaction.followup.send(f"⚠️ No sessions found for platform: `{platform}`", ephemeral=True)
+            
+            count = 0
+            for aid in aids:
+                session = await RedisManager().get_session(platform, aid)
+                if session:
+                    session["status"] = "HEALTHY"
+                    session.pop("error_reason", None)
+                    session.pop("last_refresh_attempt", None) # Clear retry throttle
+                    await RedisManager().set_session(platform, aid, session)
+                    count += 1
+            
+            await interaction.followup.send(f"✅ Successfully reset **{count}** sessions for **{platform}** to `HEALTHY`.", ephemeral=True)
+            logger.info(f"[HelperCogs] Manual session reset for {platform} by {interaction.user}")
+            
+        except Exception as e:
+            logger.error(f"Manual session reset failed: {e}")
+            await interaction.followup.send(f"❌ Failed to reset sessions: `{e}`", ephemeral=True)
+            
+    @app_commands.command(name="list-sessions", description="[Admin] List all sessions and their current status for a platform.")
+    @app_commands.describe(platform="The platform to list (e.g., mecha, jumptoon, piccoma)")
+    @app_commands.choices(platform=[
+        app_commands.Choice(name="Mecha Comic", value="mecha"),
+        app_commands.Choice(name="Jumptoon", value="jumptoon"),
+        app_commands.Choice(name="Piccoma", value="piccoma"),
+        app_commands.Choice(name="Kakao", value="kakao"),
+        app_commands.Choice(name="Kuaikan", value="kuaikan"),
+        app_commands.Choice(name="ACQQ", value="acqq"),
+    ])
+    async def list_sessions(self, interaction: discord.Interaction, platform: str):
+        await interaction.response.defer(ephemeral=True)
+        if not await self.interaction_check(interaction): return
+        
+        try:
+            aids = await RedisManager().list_sessions(platform)
+            if not aids:
+                return await interaction.followup.send(f"ℹ️ No sessions found for **{platform}**.", ephemeral=True)
+            
+            embed = discord.Embed(title=f"📋 Sessions: {platform.capitalize()}", color=0x3498db)
+            for aid in sorted(aids):
+                session = await RedisManager().get_session(platform, aid)
+                if not session: continue
+                
+                status = session.get("status", "UNKNOWN")
+                cookies_count = len(session.get("cookies", []))
+                reason = session.get("error_reason", "None")
+                
+                status_emoji = "🟢" if status == "HEALTHY" else "🔴"
+                val = f"**Status:** {status_emoji} `{status}`\n**Cookies:** `{cookies_count}`\n**Reason:** *{reason}*"
+                embed.add_field(name=f"👤 ID: {aid}", value=val, inline=False)
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+
+    @app_commands.command(name="delete-session", description="[Admin] Permanently delete a session from Redis.")
+    @app_commands.describe(platform="The platform", account_id="The specific Account ID to delete (e.g., primary, cookies)")
+    @app_commands.choices(platform=[
+        app_commands.Choice(name="Mecha Comic", value="mecha"),
+        app_commands.Choice(name="Jumptoon", value="jumptoon"),
+        app_commands.Choice(name="Piccoma", value="piccoma"),
+        app_commands.Choice(name="Kakao", value="kakao"),
+        app_commands.Choice(name="Kuaikan", value="kuaikan"),
+        app_commands.Choice(name="ACQQ", value="acqq"),
+    ])
+    async def delete_session(self, interaction: discord.Interaction, platform: str, account_id: str):
+        await interaction.response.defer(ephemeral=True)
+        if not await self.interaction_check(interaction): return
+        
+        try:
+            session = await RedisManager().get_session(platform, account_id)
+            if not session:
+                return await interaction.followup.send(f"⚠️ Session `{platform}:{account_id}` not found.", ephemeral=True)
+            
+            await RedisManager().delete_session(platform, account_id)
+            await interaction.followup.send(f"✅ Successfully deleted session: `{platform}:{account_id}`", ephemeral=True)
+            logger.info(f"[HelperCogs] Deleted session {platform}:{account_id} by {interaction.user}")
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+
+    # --- 11. COOKIE MANAGEMENT ---
+
+    def _parse_cookie_content(self, content: str) -> list:
+        """Parses string content into a list of cookies (EditThisCookie JSON)."""
+        try:
+            # Clean up the string (sometimes users include markdown code blocks)
+            clean_content = content.strip()
+            if clean_content.startswith("```"):
+                # Remove code block markers
+                lines = clean_content.split("\n")
+                if lines[0].startswith("```"): lines = lines[1:]
+                if lines and lines[-1].strip() == "```": lines = lines[:-1]
+                clean_content = "\n".join(lines).strip()
+            
+            data = json.loads(clean_content)
+            if isinstance(data, list):
+                # Basic validation: ensure it has name/value
+                if all('name' in c and 'value' in c for c in data[:5]):
+                    return data
+            return None
+        except:
+            return None
+
+    def _read_docx_text(self, file_bytes: bytes) -> str:
+        """Extracts text from a .docx file."""
+        if docx is None:
+            logger.error("❌ Cannot parse .docx: python-docx is not installed or failed to load.")
+            return None
+        try:
+            from io import BytesIO
+            doc = docx.Document(BytesIO(file_bytes))
+            return "\n".join([para.text for para in doc.paragraphs])
+        except Exception as e:
+            logger.error(f"Failed to read docx: {e}")
+            return None
+
+    @app_commands.command(name="add-cookies", description="[Admin] Manually update session cookies for a platform.")
+    @app_commands.describe(
+        platform="The platform to update",
+        cookies_text="Paste EditThisCookie JSON here",
+        cookies_file="Upload .docx, .json, or .txt file",
+        account_id="Optional: Specify which account to update (Default: primary)"
+    )
+    @app_commands.choices(platform=[
+        app_commands.Choice(name="Mecha Comic", value="mecha"),
+        app_commands.Choice(name="Jumptoon", value="jumptoon"),
+        app_commands.Choice(name="Piccoma", value="piccoma"),
+        app_commands.Choice(name="Kakao", value="kakao"),
+        app_commands.Choice(name="Kuaikan", value="kuaikan"),
+        app_commands.Choice(name="ACQQ", value="acqq"),
+    ])
+    async def add_cookies(
+        self, 
+        interaction: discord.Interaction, 
+        platform: str, 
+        cookies_text: str | None = None, 
+        cookies_file: discord.Attachment | None = None,
+        account_id: str = "primary"
+    ):
+        await interaction.response.defer(ephemeral=True)
+        if not await self.interaction_check(interaction):
+            return
+        
+        target_account_id = account_id.strip().lower()
+        if not target_account_id: target_account_id = "primary"
+        
+        raw_content = ""
+        
+        # 1. Extract raw text from input
+        if cookies_file:
+            try:
+                file_bytes = await cookies_file.read()
+                if cookies_file.filename.endswith(".docx"):
+                    raw_content = self._read_docx_text(file_bytes)
+                else:
+                    raw_content = file_bytes.decode("utf-8", errors="ignore")
+            except Exception as e:
+                return await interaction.followup.send(f"❌ Failed to read uploaded file: `{e}`", ephemeral=True)
+        
+        if not raw_content and cookies_text:
+            raw_content = cookies_text
+
+        if not raw_content:
+            return await interaction.followup.send("❌ Error: Could not extract any text from the provided inputs.", ephemeral=True)
+
+        # 2. Parse Cookies
+        cookies = self._parse_cookie_content(raw_content)
+        if not cookies:
+            return await interaction.followup.send(
+                "❌ **Invalid Cookie Format.**\nPlease ensure you are using the **JSON Export** from the *EditThisCookie* extension.\n"
+                "It should be a JSON array starting with `[` and ending with `]`.",
+                ephemeral=True
+            )
+
+        # 3. Update Session
+        try:
+            service = SessionService()
+            await service.update_session_cookies(platform, target_account_id, cookies)
+            
+            embed = discord.Embed(
+                title="✅ Cookies Updated",
+                description=(
+                    f"**Platform:** `{platform}`\n"
+                    f"**Account ID:** `{target_account_id}`\n"
+                    f"**Cookies Added:** `{len(cookies)}` count\n\n"
+                    f"The session has been marked as `HEALTHY` and is ready for use."
+                ),
+                color=0x2ecc71
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            logger.info(f"[HelperCogs] Manual cookie update for {platform}:{target_account_id} by {interaction.user}")
+            
+        except Exception as e:
+            logger.error(f"Failed to update cookies: {e}")
+            await interaction.followup.send(f"❌ Failed to update storage: `{e}`", ephemeral=True)
+
 class GroupRemovalConfirmationView(discord.ui.View):
     def __init__(self, group_name, requester):
         super().__init__(timeout=3600) # 1 hour timeout
@@ -487,148 +883,60 @@ class GroupRemovalConfirmationView(discord.ui.View):
         await interaction.response.edit_message(content=f"🚫 Removal of **{self.group_name}** has been cancelled.", embed=None, view=None)
         self.stop()
 
-    # --- 9. MANUAL SUBSCRIPTION ADD ---
 
-    def _convert_to_utc(self, day: str, time_str: str, tz_name: str) -> tuple[str, str]:
-        """
-        Normalizes a (day, time, timezone) to (UTC Day, UTC Time).
-        tz_name: 'JST' (+9), 'IST' (+5.5), 'UTC' (+0)
-        """
-        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        day_idx = days.index(day.capitalize())
-        
-        try:
-            h, m = map(int, time_str.split(':'))
-        except:
-            h, m = 0, 0
-            
-        # Create a dummy timestamp (Jan 1, 2024 is a Monday)
-        base = datetime(2024, 1, 1, h, m) + timedelta(days=day_idx)
-        
-        # Subtract offset
-        offset_map = {"JST": 9, "IST": 5.5, "UTC": 0}
-        offset = offset_map.get(tz_name.upper(), 0)
-        
-        utc_dt = base - timedelta(hours=offset)
-        
-        utc_day = days[utc_dt.weekday()]
-        utc_time = utc_dt.strftime("%H:%M")
-        return utc_day, utc_time
+class GroupRenameConfirmationView(discord.ui.View):
+    def __init__(self, old_name: str, new_name: str, requester):
+        super().__init__(timeout=3600)  # 1 hour timeout
+        self.old_name = old_name
+        self.new_name = new_name
+        self.requester = requester
 
-    @app_commands.command(name="sub-add", description="[Admin] Manually add a subscription with specific schedule.")
-    @app_commands.describe(
-        url="The series URL",
-        day="Release day in local timezone",
-        timezone="Timezone for the day/time",
-        time="Release time in local timezone (optional, defaults to 00:00)"
-    )
-    @app_commands.choices(day=[
-        app_commands.Choice(name=d, value=d) for d in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    ])
-    @app_commands.choices(timezone=[
-        app_commands.Choice(name="JST (UTC+9)", value="JST"),
-        app_commands.Choice(name="IST (UTC+5.5)", value="IST"),
-        app_commands.Choice(name="UTC", value="UTC"),
-    ])
-    async def sub_add(
-        self, 
-        interaction: discord.Interaction, 
-        url: str, 
-        day: str, 
-        timezone: str, 
-        time: str = "00:00"
-    ):
-        if not await self.interaction_check(interaction):
-            return
-            
-        await interaction.response.defer()
+    @discord.ui.button(label="Confirm Rename", style=discord.ButtonStyle.success, emoji="📝")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from app.services.group_manager import rename_group_profile
+        from config.settings import Settings
         
-        try:
-            # 1. Extract Metadata (via main bot)
-            scraper = self.main_bot.task_queue.provider_manager.get_provider_for_url(url)
-            if not scraper:
-                return await interaction.followup.send("❌ Error: No provider found for this URL.")
-                
-            data = await scraper.get_series_info(url)
-            title, total_chapters, chapter_list, image_url, series_id, _, _ = data
+        # 1. Rename the physical file
+        if rename_group_profile(self.old_name, self.new_name):
+            # 2. Update Settings.GROUP_PROFILES
+            if self.old_name in Settings.GROUP_PROFILES:
+                Settings.GROUP_PROFILES.remove(self.old_name)
+                Settings.GROUP_PROFILES.add(self.new_name)
+                Settings.save_group_profiles()
             
-            # 2. Timezone Conversion
-            utc_day, utc_time = self._convert_to_utc(day, time, timezone)
+            # 3. Update Settings.SERVER_MAP
+            # Re-map any ID currently pointing to old_name to new_name
+            to_update = [k for k, v in Settings.SERVER_MAP.items() if v == self.old_name]
+            for k in to_update:
+                Settings.SERVER_MAP[k] = self.new_name
             
-            # 3. Identification
-            group_name = self._get_current_group(interaction)
-            if not group_name:
-                return await interaction.followup.send("❌ Channel/Server not registered to any group.")
-                
-            # 4. Build Sub Dict
-            sub = {
-                "series_id": series_id,
-                "series_url": url,
-                "platform": scraper.IDENTIFIER,
-                "channel_id": interaction.channel.id,
-                "last_known_chapter_id": str(chapter_list[-1]['id']) if chapter_list else "0",
-                "release_day": utc_day,
-                "release_time": utc_time
-            }
+            if to_update:
+                Settings.save_server_map()
+                logger.info(f"[GroupRename] Updated {len(to_update)} mappings for: {self.old_name} → {self.new_name}")
+
+            await interaction.response.edit_message(
+                content=f"✅ Group **{self.old_name}** has been successfully renamed to **{self.new_name}**.",
+                embed=None, view=None
+            )
             
-            # 5. Save
-            success = add_subscription(group_name, sub)
-            if success:
+            # Notify requester
+            try:
                 embed = discord.Embed(
-                    title="✅ Manual Subscription Added",
-                    description=f"**{title}** (`{series_id}`)\nGroup: **{group_name}**",
+                    title="✅ Group Renamed",
+                    description=f"The group **{self.old_name}** has been renamed to **{self.new_name}** after owner confirmation.",
                     color=0x2ecc71
                 )
-                embed.add_field(name="Input Schedule", value=f"`{day} @ {time} {timezone}`", inline=True)
-                embed.add_field(name="UTC Result", value=f"`{utc_day} @ {utc_time}`", inline=True)
-                if image_url: embed.set_thumbnail(url=image_url)
-                
-                await interaction.followup.send(embed=embed)
-            else:
-                await interaction.followup.send(f"❌ Series `{series_id}` is already subscribed in **{group_name}**.")
-                
-        except Exception as e:
-            logger.error(f"Manual Sub Add failed: {e}")
-            await interaction.followup.send(f"❌ Failed to add subscription: `{e}`")
-
-    # --- 10. SESSION MANAGEMENT ---
-
-    @app_commands.command(name="reset-sessions", description="[Admin] Reset all sessions for a platform to HEALTHY status.")
-    @app_commands.describe(platform="The platform to reset (e.g., mecha, jumptoon, piccoma)")
-    @app_commands.choices(platform=[
-        app_commands.Choice(name="Mecha Comic", value="mecha"),
-        app_commands.Choice(name="Jumptoon", value="jumptoon"),
-        app_commands.Choice(name="Piccoma", value="piccoma"),
-        app_commands.Choice(name="Kakao", value="kakao"),
-        app_commands.Choice(name="Kuaikan", value="kuaikan"),
-        app_commands.Choice(name="ACQQ", value="acqq"),
-    ])
-    async def reset_sessions(self, interaction: discord.Interaction, platform: str):
-        if not await self.interaction_check(interaction):
-            return
-            
-        await interaction.response.defer(ephemeral=True)
+                await self.requester.send(embed=embed)
+            except: pass
+        else:
+            await interaction.response.edit_message(content=f"❌ Failed to rename group **{self.old_name}** to **{self.new_name}**.", embed=None, view=None)
         
-        try:
-            aids = await RedisManager().list_sessions(platform)
-            if not aids:
-                return await interaction.followup.send(f"⚠️ No sessions found for platform: `{platform}`", ephemeral=True)
-            
-            count = 0
-            for aid in aids:
-                session = await RedisManager().get_session(platform, aid)
-                if session:
-                    session["status"] = "HEALTHY"
-                    session.pop("error_reason", None)
-                    await RedisManager().set_session(platform, aid, session)
-                    count += 1
-            
-            await interaction.followup.send(f"✅ Successfully reset **{count}** sessions for **{platform}** to `HEALTHY`.", ephemeral=True)
-            logger.info(f"[HelperCogs] Manual session reset for {platform} by {interaction.user}")
-            
-        except Exception as e:
-            logger.error(f"Manual session reset failed: {e}")
-            await interaction.followup.send(f"❌ Failed to reset sessions: `{e}`", ephemeral=True)
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content=f"🚫 Rename of **{self.old_name}** has been cancelled.", embed=None, view=None)
+        self.stop()
 
 async def setup(bot):
     await bot.add_cog(HelperSlashCog(bot))

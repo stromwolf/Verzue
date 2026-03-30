@@ -14,6 +14,8 @@ from app.bot.helper_bot import HelperBot
 from app.services.session_service import SessionService
 from app.services.session_healer import SessionHealer
 from app.services.health_monitor import HealthMonitor
+from app.services.task_listener import TaskListener
+from app.services.group_manager import sync_index_to_redis
 
 async def heartbeat():
     """Keeps the event loop active to prevent container sleep/throttling."""
@@ -70,6 +72,8 @@ async def main():
     brain = RedisManager()
     if await brain.check_connection():
         logger.info("🧠 Global Brain: CONNECTED (Local V-Node)")
+        # 🟢 S-GRADE: Sync local group data to Redis Index on startup
+        await sync_index_to_redis()
     else:
         logger.error("🧠 Global Brain: DISCONNECTED. Check REDIS_URL.")
 
@@ -77,13 +81,15 @@ async def main():
     session_service = SessionService()
     healer = SessionHealer(session_service)
     monitor = HealthMonitor(session_service)
+    task_listener = TaskListener()
     
     asyncio.create_task(healer.start())
     asyncio.create_task(monitor.start())
-    logger.info("🏥 Autonomous Health Services: ACTIVE (Healer & Monitor)")
+    asyncio.create_task(task_listener.start())
+    logger.info("🏥 Autonomous Health Services: ACTIVE (Healer, Monitor & TaskListener)")
 
     # ... start queue and bot ...
-    bot = MechaBot(token=Settings.DISCORD_TOKEN, task_queue=queue)
+    bot = MechaBot(token=Settings.DISCORD_TOKEN, task_queue=queue, redis_brain=brain)
     
     # 3. Init Helper Bot
     helper_bot = None

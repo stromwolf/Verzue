@@ -16,6 +16,7 @@ from curl_cffi.requests import AsyncSession
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError
+from config.settings import Settings
 
 logger = logging.getLogger("MechaProvider")
 
@@ -41,10 +42,10 @@ class MechaProvider(BaseProvider):
         session_obj = await self.session_service.get_active_session("mecha")
         if not session_obj:
             logger.warning("[Mecha] No healthy sessions in vault. Using guest session.")
-            return AsyncSession(impersonate="chrome120")
+            return AsyncSession(impersonate="chrome120", proxy=Settings.get_proxy())
 
         self.active_account_id = session_obj["account_id"]
-        async_session = AsyncSession(impersonate="chrome120")
+        async_session = AsyncSession(impersonate="chrome120", proxy=Settings.get_proxy())
         async_session.headers.update(self.default_headers)
         
         for c in session_obj["cookies"]:
@@ -108,14 +109,22 @@ class MechaProvider(BaseProvider):
                     chapter_url = urljoin(self.BASE_URL, btn.get('href'))
 
             seen_ids.add(cid)
+            # 🟢 S-GRADE: Improved Title Formatting (Mar 27 Request)
+            # Full Title: "001話 - プロローグ"
+            full_title = f"{num_text} - {title_text}" if title_text else num_text
+            
             page_items.append({
-                'id': cid, 'title': f"{num_text} {title_text}",
+                'id': cid, 
+                'title': full_title, # Combined for legacy and Drive
+                'notation': num_text, # "001話"
+                'title_only': title_text, # "プロローグ"
                 'url': chapter_url,
-                'is_locked': is_locked, 'is_new': False
+                'is_locked': is_locked, 
+                'is_new': False
             })
         return page_items
 
-    async def get_series_info(self, url: str):
+    async def get_series_info(self, url: str, fast: bool = False):
         auth_session = await self._get_authenticated_session()
         base_series_url = url.split('?')[0]
         res = await auth_session.get(f"{base_series_url}?page=1", timeout=30)
@@ -145,7 +154,11 @@ class MechaProvider(BaseProvider):
         seen_ids = set()
         all_chapters.extend(self._parse_page_chapters(soup, seen_ids))
         
-        if max_page > 1:
+        if fast:
+            logger.info(f"[Mecha] Fast Fetch (Page 1 Only): {title}")
+            # Even in fast mode, we return what was on page 1
+            # But we skip the 'last page' sync below
+        elif max_page > 1:
             res_last = await auth_session.get(f"{base_series_url}?page={max_page}", timeout=15)
             if res_last.status_code == 200:
                 all_chapters.extend(self._parse_page_chapters(BeautifulSoup(res_last.text, 'html.parser'), seen_ids))
@@ -177,8 +190,26 @@ class MechaProvider(BaseProvider):
                     release_time = "15:00" # Midnight JST = 15:00 UTC
                     break
 
+        # 5. Status Detection (Mar 25 Request)
+        status_label = None
+        if "完結" in res.text:
+            # More precise check via soup if needed, but '完結' is quite unique in this context
+            if soup.find("span", class_="c-tag-completed"):
+                status_label = "Completed"
+        
+        # 🟢 FULL COLOR / WEBTOON DETECTION (Mar 27 Request)
+        if "フルカラー" in res.text:
+            # Full Color works are typically Webtoons on Mecha
+            if status_label != "Novel":
+                status_label = "Mangatoon"
+
+        # 🟢 GENRE DETECTION (Mar 27 Request)
+        genre_label = None
+        if "少女漫画" in res.text:
+            genre_label = "Shojo"
+
         series_id = base_series_url.split('/')[-1]
-        return title, total_reported, all_chapters, image_url, str(series_id), release_day, release_time
+        return title, total_reported, all_chapters, image_url, str(series_id), release_day, release_time, status_label, genre_label
 
     async def fetch_more_chapters(self, url: str, total_pages: int, seen_ids: set, skip_pages: list = None):
         auth_session = await self._get_authenticated_session()
@@ -200,10 +231,8 @@ class MechaProvider(BaseProvider):
         # S-GRADE: Use the dynamic URL provided in the task (extracted during scan)
         target_url = task.url
         viewer_url = await self._check_chapter_access(auth_session, target_url, real_id)
-        
         if not viewer_url:
-            if await self.fast_purchase(task):
-                viewer_url = await self._check_chapter_access(auth_session, target_url, real_id)
+            viewer_url = await self.fast_purchase(task)
         
         if not viewer_url: raise ScraperError("Failed to access chapter.")
         await self.session_service.record_session_success("mecha")
@@ -229,16 +258,16 @@ class MechaProvider(BaseProvider):
             img_tasks.append({'src': target['src'], 'pg': pg['pageIndex'], 'filename': f"page_{pg['pageIndex']:03d}.png"})
 
         total = len(img_tasks)
-        completed = 0
+        stats = {"completed": 0}
         from app.core.logger import ProgressBar
         progress = ProgressBar(task.req_id, "Downloading", "Mecha", total)
-        progress.update(completed)
+        progress.update(stats["completed"])
 
         async def fetch_one(t):
-            nonlocal completed
             async with self._download_semaphore:
                 img_url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
-                img_res = await auth_session.get(img_url, timeout=30)
+                t_get = auth_session.get(img_url, timeout=30)
+                img_res = await t_get
                 enc_data = img_res.content
                 
                 # Decrypt AES-CBC
@@ -250,8 +279,8 @@ class MechaProvider(BaseProvider):
                 
                 with open(os.path.join(output_dir, t['filename']), 'wb') as f: f.write(plaintext)
             
-            completed += 1
-            progress.update(completed)
+            stats["completed"] += 1
+            progress.update(stats["completed"])
 
         await asyncio.gather(*(fetch_one(t) for t in img_tasks))
         progress.finish()
@@ -263,8 +292,11 @@ class MechaProvider(BaseProvider):
             headers = {"Referer": f"{self.BASE_URL}/books"}
             res = await session.get(target_url, timeout=15, headers=headers, allow_redirects=True)
             
+            logger.debug(f"[Mecha] Chapter access check for {real_id}: Status {res.status_code} | URL {res.url}")
+            
             # DETECT SESSION FAILURE: Redirected to login
             if "/login" in str(res.url) or "ログインする" in res.text:
+                logger.info(f"[Mecha] Login required/Redirected for {real_id}. Text preview: {res.text[:100]}...")
                 # If we are using a guest session (no account ID), this is expected if the chapter isn't free
                 if self.active_account_id:
                     logger.warning(f"[Mecha] Redirected to login on chapter {real_id}. Reporting session failure for {self.active_account_id}")
@@ -276,43 +308,112 @@ class MechaProvider(BaseProvider):
             if 'contents_vertical' in str(res.url):
                 return str(res.url)
 
-            # If we get a login page (redirected but 200), look for viewer info anyway
-            # Mecha sometimes embeds the 'Free' viewer URL in a different way
-            body = res.text
+            # 🟢 S-GRADE FALLBACK: Try the /download endpoint directly if no viewer URL found
+            if 'contents_vertical' not in body:
+                download_url = f"{self.BASE_URL}/chapters/{real_id}/download"
+                logger.info(f"[Mecha] Viewer URL not in page, trying fallback: {download_url}")
+                dl_res = await session.get(download_url, timeout=10, allow_redirects=True)
+                if 'contents_vertical' in dl_res.text or 'viewer' in str(dl_res.url):
+                    body = dl_res.text
+                    target_url = str(dl_res.url)
+                    if 'contents_vertical' in target_url: return target_url
+
+            # Final Regex Search in body
             if 'contents_vertical' in body:
-                match = re.search(r'\"(https?://mechacomic\.jp/viewer\?.*?contents_vertical=.*?)\"', body)
-                if not match:
-                    match = re.search(r'(https?://mechacomic\.jp/viewer\?[^"]*contents_vertical=[^"]*)', body.replace('\\/', '/'))
-                if match: return match.group(1).replace('\\/', '/')
+                # Try multiple regex patterns for different JS/HTML layouts
+                patterns = [
+                    r'\"(https?://mechacomic\.jp/viewer\?.*?contents_vertical=.*?)\"',
+                    r'\'(https?://mechacomic\.jp/viewer\?.*?contents_vertical=.*?)\'',
+                    r'viewer_url\s*=\s*[\"\'](https?://.*?contents_vertical=.*?)[\"\']',
+                    r'(https?://mechacomic\.jp/viewer\?[^"\'\s]*contents_vertical=[^"\'\s]*)'
+                ]
+                for p in patterns:
+                    match = re.search(p, body.replace('\\/', '/'))
+                    if match: return match.group(1)
             
-            # Fallback: Sometimes the URL is in a different format or script
-            match = re.search(r'viewer_url\s*=\s*[\"\'](https?://.*?contents_vertical=.*?)[\"\']', body)
-            if match: return match.group(1).replace('\\/', '/')
+            # 🟢 S-GRADE DEBUG: Save HTML to file for investigation if still failing
+            try:
+                from config.settings import Settings
+                debug_path = Settings.LOG_DIR / f"mecha_fail_{real_id}.html"
+                with open(debug_path, "w", encoding="utf-8") as f:
+                    f.write(body)
+                logger.debug(f"[Mecha] Saved failed response HTML to {debug_path}")
+            except: pass
+
+            logger.warning(f"[Mecha] Chapter access check for {real_id} finished without finding viewer_url. Status: {res.status_code}")
             
         except Exception as e:
             logger.debug(f"[Mecha] Chapter access check failed for {real_id}: {e}")
         return None
 
-    async def fast_purchase(self, task) -> bool:
+    async def fast_purchase(self, task) -> str | None:
+        """
+        S-GRADE: Handles both POST purchase forms and GET 'Read' buttons.
+        Returns: viewer_url (str) if successful, else None.
+        """
         real_id = task.episode_id
         auth_session = await self._get_authenticated_session()
         res = await auth_session.get(f"{self.BASE_URL}/chapters/{real_id}", timeout=15)
-        if res.status_code != 200: return False
-        if 'contents_vertical' in res.text: return True
+        
+        if res.status_code != 200: 
+            logger.debug(f"[Mecha] Fast purchase fetch for {real_id} returned {res.status_code}")
+            return None
+            
+        body = res.text
+        viewer_url = await self._check_chapter_access(auth_session, f"{self.BASE_URL}/chapters/{real_id}", real_id)
+        if viewer_url: return viewer_url
 
-        soup = BeautifulSoup(res.text, 'html.parser')
-        buy_btn = soup.select_one("input.js-bt_buy_and_download, input.c-btn-buy, input.c-btn-free, input.c-btn-read-end")
-        if not buy_btn: return False
+        soup = BeautifulSoup(body, 'html.parser')
+        
+        # Scope search to the current chapter container to avoid 'Next Chapter' link mix-ups
+        current_container = soup.select_one(".p-buyConfirm-currentChapter")
+        if not current_container: current_container = soup # Fallback to whole page
+        
+        # 1. Look for Anchor-based 'Read' buttons (often used for free/owned chapters)
+        read_link = current_container.select_one("a.c-btn-read-end, a.c-btn-free, a.js-bt_read")
+        if read_link and read_link.get("href"):
+            target_url = urljoin(self.BASE_URL, read_link["href"])
+            logger.info(f"[Mecha] Following GET link for {real_id}: {target_url}")
+            follow_res = await auth_session.get(target_url, timeout=15, allow_redirects=True)
+            if follow_res.status_code in [200, 302]:
+                if 'contents_vertical' in str(follow_res.url): return str(follow_res.url)
+                # Try to extract from body
+                return await self._check_chapter_access(auth_session, target_url, real_id)
+
+        # 2. Look for Form-based buttons
+        buy_btn = current_container.select_one("input.js-bt_buy_and_download, input.c-btn-buy, input.c-btn-free, input.c-btn-read-end, button.c-btn-read-end")
+        if not buy_btn:
+            logger.debug(f"[Mecha] Fast purchase for {real_id}: No buy/read button found.")
+            return None
         
         form = buy_btn.find_parent("form")
-        if not form: return False
-        action = urljoin(self.BASE_URL, form.get("action", f"/chapters/{real_id}/buy_and_download"))
+        if not form: return None
+        
+        method = form.get("method", "post").lower()
+        action = urljoin(self.BASE_URL, form.get("action", f"/chapters/{real_id}/download"))
+        
         payload = {h.get("name"): h.get("value", "") for h in form.find_all("input", type="hidden") if h.get("name")}
-        payload[buy_btn.get("name", "commit")] = buy_btn.get("value", "購入する")
+        if buy_btn.get("name"):
+            payload[buy_btn["name"]] = buy_btn.get("value", "")
         
         headers = {"Referer": f"{self.BASE_URL}/chapters/{real_id}", "Origin": self.BASE_URL}
-        post_res = await auth_session.post(action, data=payload, headers=headers, timeout=15)
-        return post_res.status_code in [200, 302] and ('contents_vertical' in post_res.text or 'viewer' in post_res.url)
+        
+        if method == "get":
+            logger.info(f"[Mecha] Attempting GET purchase/read for {real_id} via {action}...")
+            post_res = await auth_session.get(action, params=payload, headers=headers, timeout=15)
+        else:
+            logger.info(f"[Mecha] Attempting POST purchase/read for {real_id} via {action}...")
+            post_res = await auth_session.post(action, data=payload, headers=headers, timeout=15)
+        
+        success_url = None
+        if post_res.status_code in [200, 302]:
+            if 'contents_vertical' in str(post_res.url): 
+                success_url = str(post_res.url)
+            else:
+                success_url = await self._check_chapter_access(auth_session, action, real_id)
+
+        logger.info(f"[Mecha] Fast purchase for {real_id}: {'Success' if success_url else 'Failed'} (Status {post_res.status_code})")
+        return success_url
 
     async def run_ritual(self, session):
         logger.info("[Mecha] Running behavioral ritual...")
@@ -321,3 +422,64 @@ class MechaProvider(BaseProvider):
         await session.get(f"{self.BASE_URL}/free")
         await asyncio.sleep(max(1, random.gauss(2, 0.5)))
         await session.get(f"{self.BASE_URL}/account")
+
+    async def get_new_series_list(self) -> list[dict]:
+        """Scrapes the 'Exclusive New' page for MechaComic (JP)."""
+        try:
+            auth_session = await self._get_authenticated_session()
+            
+            # Try multiple potential "New" endpoints to be robust against 404s
+            endpoints = ["/books/exclusive", "/books/exclusive_top", "/books/new"]
+            res = None
+            
+            for ep in endpoints:
+                target = f"{self.BASE_URL}{ep}"
+                if ep == "/books/exclusive": target += "?sort=new_book"
+                
+                logger.debug(f"[Mecha] Trying discovery endpoint: {target}")
+                try:
+                    res = await auth_session.get(target, timeout=15)
+                    if res.status_code == 200: 
+                        logger.info(f"[Mecha] Discovery successful via {ep}")
+                        break
+                except Exception:
+                    continue
+            
+            if not res or res.status_code != 200:
+                logger.error(f"[Mecha] All discovery endpoints failed. (Last Code: {res.status_code if res else 'None'})")
+                return []
+                
+            soup = BeautifulSoup(res.text, 'html.parser')
+            new_series = []
+            
+            # Selector for MechaComic book list items
+            items = soup.select('.p-bookList_item')
+            for item in items:
+                # Title element is in .p-book_title a
+                title_elem = item.select_one('.p-book_title a')
+                if not title_elem: continue
+                
+                title = title_elem.get_text(strip=True)
+                href = title_elem.get('href', '')
+                
+                match = re.search(r'/books/(\d+)', href)
+                if not match: continue
+                
+                sid = match.group(1)
+                
+                # Image is in .p-book_jacket img
+                img_elem = item.select_one('.p-book_jacket img.jacket_image_l')
+                poster = img_elem.get('src') if img_elem else None
+                
+                new_series.append({
+                    "series_id": sid,
+                    "title": title,
+                    "poster_url": poster,
+                    "url": urljoin(self.BASE_URL, href)
+                })
+                
+            logger.info(f"[Mecha] Found {len(new_series)} potential new series.")
+            return new_series
+        except Exception as e:
+            logger.error(f"[Mecha] Error fetching new series: {e}")
+            return []

@@ -7,7 +7,7 @@ from app.core.events import EventBus
 from config.settings import Settings
 
 class MechaBot(commands.Bot):
-    def __init__(self, token: str, task_queue):
+    def __init__(self, token: str, task_queue, redis_brain=None):
         # Enable message content intent
         intents = discord.Intents.default()
         intents.message_content = True
@@ -20,6 +20,7 @@ class MechaBot(commands.Bot):
         
         self.token_str = token
         self.task_queue = task_queue
+        self.redis_brain = redis_brain
         self.logger = logging.getLogger("Bot")
 
     async def setup_hook(self):
@@ -28,7 +29,8 @@ class MechaBot(commands.Bot):
         extensions = [
             "app.bot.cogs.admin",
             "app.bot.cogs.dashboard",
-            "app.bot.cogs.subscriptions"
+            "app.bot.cogs.subscriptions",
+            "app.bot.cogs.discovery"
         ]
         
         for ext in extensions:

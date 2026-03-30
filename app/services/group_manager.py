@@ -4,8 +4,10 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from config.settings import Settings
+from app.services.redis_manager import RedisManager
 
 logger = logging.getLogger("GroupManager")
+redis_brain = RedisManager()
 
 
 def _group_filename(group_name: str) -> Path:
@@ -33,6 +35,25 @@ def delete_group(group_name: str) -> bool:
     return False
 
 
+def rename_group_profile(old_name: str, new_name: str) -> bool:
+    """Renames a group's profile file on disk. Returns True if successful."""
+    old_path = _group_filename(old_name)
+    new_path = _group_filename(new_name)
+    if not old_path.exists():
+        logger.error(f"[GroupManager] Cannot rename: {old_name} profile does not exist.")
+        return False
+    if new_path.exists():
+        logger.error(f"[GroupManager] Cannot rename: {new_name} profile already exists.")
+        return False
+    try:
+        old_path.rename(new_path)
+        logger.info(f"[GroupManager] Renamed group profile: {old_name} → {new_name}")
+        return True
+    except Exception as e:
+        logger.error(f"[GroupManager] Failed to rename {old_path.name} to {new_path.name}: {e}")
+        return False
+
+
 def load_group(group_name: str) -> dict:
     """Loads a group profile JSON. Returns a default structure if not found."""
     path = _group_filename(group_name)
@@ -53,6 +74,37 @@ def save_group(group_name: str, data: dict):
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"[GroupManager] Failed to save {path.name}: {e}")
+    
+    # 🟢 S-GRADE: Async update to Redis Index (Fire and Forget)
+    async def _bg_sync():
+        await redis_brain.clear_group_schedule(group_name)
+        for sub in data.get("subscriptions", []):
+            series_id = sub.get("series_id")
+            title = sub.get("series_title")
+            day = sub.get("release_day")
+            ch_id = sub.get("channel_id")
+            url = sub.get("series_url") or ""
+            
+            # Determine platform
+            platform = None
+            if "jumptoon" in url.lower(): platform = "jumptoon"
+            elif "piccoma" in url.lower(): platform = "piccoma"
+            elif "mecha" in url.lower(): platform = "mecha"
+            
+            # Update metadata index
+            await redis_brain.update_subs_index(series_id, group_name, title, ch_id, url)
+            
+            # Update daily schedule index
+            if day:
+                await redis_brain.update_schedule_index(group_name, day, series_id, platform=platform)
+
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(_bg_sync())
+    except Exception:
+        pass
 
 
 def ensure_group_file(group_name: str):
@@ -65,14 +117,25 @@ def ensure_group_file(group_name: str):
 
 def add_subscription(group_name: str, sub: dict) -> bool:
     """
-    Adds a subscription to a group profile.
-    Returns False if the series_id is already subscribed in this group.
+    Adds or updates a subscription in a group profile.
+    If the series_id exists, it updates the channel and schedule.
     """
     data = load_group(group_name)
-    existing_ids = {s["series_id"] for s in data["subscriptions"]}
-    if sub["series_id"] in existing_ids:
-        return False
-    data["subscriptions"].append(sub)
+    existing_index = -1
+    for i, s in enumerate(data["subscriptions"]):
+        if s["series_id"] == sub["series_id"]:
+            existing_index = i
+            break
+            
+    if existing_index >= 0:
+        # Update existing
+        data["subscriptions"][existing_index].update(sub)
+        logger.info(f"[GroupManager] Updated subscription for {sub['series_id']} in {group_name}")
+    else:
+        # Add new
+        data["subscriptions"].append(sub)
+        logger.info(f"[GroupManager] Added new subscription for {sub['series_id']} in {group_name}")
+        
     save_group(group_name, data)
     return True
 
@@ -83,17 +146,35 @@ def remove_subscription(group_name: str, target_url: str) -> bool:
     Returns True if removed, False if not found.
     """
     data = load_group(group_name)
-    before = len(data["subscriptions"])
-    
     target_clean = _clean_url(target_url)
     
+    # S-GRADE: Find series_id BEFORE removing so we can clean Redis Index
+    series_id_to_remove = None
+    for s in data.get("subscriptions", []):
+        if _clean_url(s.get("series_url", "")) == target_clean:
+            series_id_to_remove = s.get("series_id")
+            break
+    
+    if not series_id_to_remove:
+        return False
+        
     data["subscriptions"] = [
         s for s in data["subscriptions"]
         if _clean_url(s["series_url"]) != target_clean
     ]
-    if len(data["subscriptions"]) == before:
-        return False
+    
     save_group(group_name, data)
+
+    # 🟢 S-GRADE: Async removal from Redis Index (Fire and Forget)
+    if series_id_to_remove:
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(redis_brain.remove_indexed_sub(series_id_to_remove))
+        except Exception:
+            pass
+
     return True
 
 
@@ -123,11 +204,16 @@ def update_last_chapter(group_name: str, series_id: str, chapter_id: str):
             return
 
 
-def is_series_subscribed_globally(series_id: str) -> tuple[bool, str]:
+async def is_series_subscribed_globally(series_id: str) -> tuple[bool, str]:
     """
-    Checks across ALL group profiles if a series is already subscribed.
-    Returns (True, group_name) if found, (False, '') otherwise.
+    Checks across Redis Index first, then falls back to disk.
     """
+    # 1. Check Redis Fast Index
+    indexed = await redis_brain.get_indexed_sub(series_id)
+    if indexed:
+        return True, indexed["group"]
+
+    # 2. Fallback to Disk & Update Index
     if not Settings.GROUPS_DIR.exists():
         return False, ''
     for path in Settings.GROUPS_DIR.glob("*.json"):
@@ -136,8 +222,9 @@ def is_series_subscribed_globally(series_id: str) -> tuple[bool, str]:
                 data = json.load(f)
             for sub in data.get("subscriptions", []):
                 if sub.get("series_id") == series_id:
-                    # Derive group name from filename (reverse of _group_filename)
                     name = path.stem.replace('_', ' ')
+                    # Repopulate index
+                    await redis_brain.update_subs_index(series_id, name, sub.get("series_title"))
                     return True, name
         except Exception:
             continue
@@ -162,6 +249,15 @@ def get_all_subscriptions() -> list[tuple[str, dict]]:
         except Exception as e:
             logger.error(f"[GroupManager] Error reading {path.name}: {e}")
     return results
+
+
+def get_series_by_channel(channel_id: int) -> tuple[str, dict] | None:
+    """Finds which series is subscribed to the given channel ID."""
+    all_subs = get_all_subscriptions()
+    for group_name, sub in all_subs:
+        if sub.get("channel_id") == channel_id:
+            return group_name, sub
+    return None
 
 
 def set_admin_settings(group_name: str, channel_id: int, role_id: int = None):
@@ -248,3 +344,36 @@ def get_interested_groups(series_url: str) -> list[tuple[str, str]]:
         except Exception as e:
             logger.error(f"[GroupManager] Error reading {path.name}: {e}")
     return results
+
+
+async def sync_index_to_redis():
+    """One-time startup sync to populate Redis from JSON files."""
+    logger.info("🔄 [GroupManager] Syncing local group data to Redis Index...")
+    if not Settings.GROUPS_DIR.exists(): return
+    
+    count = 0
+    for path in Settings.GROUPS_DIR.glob("*.json"):
+        group_name = path.stem.replace('_', ' ')
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            for sub in data.get("subscriptions", []):
+                series_id = sub.get("series_id")
+                title = sub.get("series_title")
+                day = sub.get("release_day")
+                ch_id = sub.get("channel_id")
+                url = sub.get("series_url") or ""
+                
+                # Determine platform
+                platform = None
+                if "jumptoon" in url.lower(): platform = "jumptoon"
+                elif "piccoma" in url.lower(): platform = "piccoma"
+                elif "mecha" in url.lower(): platform = "mecha"
+                
+                await redis_brain.update_subs_index(series_id, group_name, title, ch_id, url)
+                if day:
+                    await redis_brain.update_schedule_index(group_name, day, series_id, platform=platform)
+                count += 1
+        except Exception as e:
+            logger.error(f"Failed to sync {path.name}: {e}")
+    logger.info(f"✅ [GroupManager] Synced {count} subscriptions to Redis.")

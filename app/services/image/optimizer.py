@@ -15,7 +15,7 @@ class JumptoonLCG:
         return self.state
 
 class ImageOptimizer:
-    # Jumptoon Scramble Configurations from JS (page-634888...)
+    # Jumptoon Scramble Configurations from JS (page-4cac8ba2cf272a09.js)
     CONFIGS = {
         "V1": {"splitWidth": 12, "paddingWidth": 3, "blankWidth": 3},
         "V2": {"splitWidth": 20, "paddingWidth": 15, "blankWidth": 1},
@@ -34,13 +34,11 @@ class ImageOptimizer:
     def get_jumptoon_effective_width(img_w: int) -> int:
         """
         Calculates what the width of a Jumptoon image WOULD BE after unscrambling.
-        If the image is already narrow (clean), returns the original width.
+        Used for UI calculations before actual download.
         """
         conf = ImageOptimizer.CONFIGS["V2"]
         l_block = conf["splitWidth"] + conf["blankWidth"] + 2 * conf["paddingWidth"]
         
-        # Scrambled images are always >= 1000px wide for Jumptoon v2.
-        # They are also always a multiple of 51.
         if img_w >= 1000 and img_w % l_block == 0:
             num_blocks = img_w // l_block
             return num_blocks * conf["splitWidth"]
@@ -50,10 +48,7 @@ class ImageOptimizer:
     def unscramble_jumptoon_v2(img_path, seed_val, version="V2", requested_width=None):
         """
         🟢 EXACT RECONSTRUCTION OF JS LOGIC
-        - img_path: Path to the scrambled image
-        - seed_val: Integer sum of code points (Deep Seed)
-        - version: "V1" or "V2"
-        - requested_width: The width from the manifest (used for remainder calc)
+        Reconstructs images scrambled with the mesh-based padded atlas method.
         """
         try:
             with Image.open(img_path) as src:
@@ -66,26 +61,27 @@ class ImageOptimizer:
                 o = conf["paddingWidth"]
                 l_block = a + n + 2 * o # 51 for V2
                 
-                # 🟢 SAFETY: If the image is already narrow or not a multiple of block size, 
-                # return it as-is.
+                logger.debug(f"🔍 [Jumptoon] Unscrambling: {os.path.basename(img_path)} | Raw: {raw_w}x{raw_h} | Seed: {seed_val} | Version: {version} | ReqWidth: {requested_width}")
+                # Debug save: See what we are dealing with
+                if not os.path.exists("downloads/debug_raw.png"):
+                    src.save("downloads/debug_raw.png")
+
+                # Safety check for non-scrambled or invalid images
                 if raw_w < 1000 or (raw_w % l_block != 0):
+                    logger.debug(f"🔍 [Jumptoon] Skipping unscramble: Width {raw_w} not suitable for {version} (mult of {l_block} required)")
                     return src.copy()
 
                 num_blocks = raw_w // l_block
+                c = int(requested_width) % a if requested_width else 0
                 
-                # If requested_width isn't provided, we can't do the remainder block 'c' 
-                # exactly as JS does. However, for most Jumptoon images, it's 0.
-                if requested_width is None:
-                    # Best effort: assume no remainder if width is exactly mul of 51
-                    c = 0 
-                else:
-                    c = int(requested_width) % a
+                logger.debug(f"⚙️ [Jumptoon] Params: num_blocks={num_blocks}, c={c}, l_block={l_block}")
 
-                # 1. Fisher-Yates Shuffle (d)
+                # 1. Fisher-Yates Shuffle Logic (d)
+                # d contains the shuffled indices
                 d = list(range(num_blocks))
                 s_limit = num_blocks
                 if c != 0:
-                    s_limit -= 1 # Exclude remainder block from shuffle
+                    s_limit -= 1 # Exclude remainder block from shuffle if present
                 
                 lcg = JumptoonLCG(seed_val)
                 for i in range(s_limit, 1, -1):
@@ -93,36 +89,31 @@ class ImageOptimizer:
                     d[target], d[i - 1] = d[i - 1], d[target]
 
                 # 2. Inversion Map (p)
-                # JS: p = Array.from({length: u}); for (let e of d) p[d[e]] = e;
+                # Maps destination position back to source block index
                 p = [0] * num_blocks
-                for original_pos, result_pos in enumerate(d):
-                    p[result_pos] = original_pos
+                for i, original_pos in enumerate(d):
+                    p[original_pos] = i # p[d[e]] = e in JS
 
-                # 3. Reconstruct
-                # Final width should be num_blocks * a + c
+                # 3. Canvas Reconstruction
                 final_w = num_blocks * a + c
                 canvas = Image.new("RGB", (final_w, raw_h))
                 
                 for i in range(num_blocks):
-                    # Strip source: p[i] * l_block + o
-                    # Strip dest: i * a
+                    # Strip source: p[i] * l_block + o (skip left padding)
+                    # Strip destination: i * a
                     src_x = p[i] * l_block + o
                     dest_x = i * a
                     strip = src.crop((src_x, 0, src_x + a, raw_h))
                     canvas.paste(strip, (dest_x, 0))
                 
                 if c > 0:
-                    # Remainder block: src = num_blocks * l_block + o, dest = num_blocks * a
+                    # Handle the final remainder block
                     src_x = num_blocks * l_block + o
                     dest_x = num_blocks * a
                     strip = src.crop((src_x, 0, src_x + c, raw_h))
                     canvas.paste(strip, (dest_x, 0))
                     
-                src.close()
                 return canvas
-        except Exception as e:
-            logger.error(f"Unscramble failed: {e}")
-            return None
         except Exception as e:
             logger.error(f"Unscramble failed: {e}")
             return None

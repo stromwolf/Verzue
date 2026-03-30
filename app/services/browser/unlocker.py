@@ -18,7 +18,7 @@ class BatchUnlocker:
         self.provider_manager = ProviderManager()
         self.session_service = SessionService()
         
-        # We can handle more concurrent browser tasks now that we use Playwright!
+        # We can handle more concurrent unlocking tasks now.
         self.worker_stats = {i: {"service": None, "progress": 0, "purchase_status": "Idle", "task": None, "view": None, "busy": False} for i in range(5)}
 
     def start_workers(self):
@@ -27,7 +27,7 @@ class BatchUnlocker:
         
         for i in range(5):
             self.workers.append(asyncio.create_task(self._worker_loop(i)))
-        logger.info("🚀 BatchUnlocker started with 5 dynamic Playwright workers.")
+        logger.info("🚀 BatchUnlocker started with 5 dynamic workers.")
 
     def _get_service(self, url: str) -> str:
         url_lower = url.lower()
@@ -40,9 +40,12 @@ class BatchUnlocker:
     async def unlock_batch(self, tasks: list, view_ref=None):
         if not tasks: return []
         self.start_workers()
-
-        # Ensure browser is warmed up
-        await self.browser.start()
+        
+        # 🟢 S-GRADE: Selective Warmup.
+        # No platforms strictly require Playwright now for unlocking.
+        requires_browser = False 
+        if requires_browser:
+            await self.browser.start()
 
         futures = []
         async with self.queue_lock:
@@ -63,7 +66,7 @@ class BatchUnlocker:
         return failed
 
     async def _worker_loop(self, context_id):
-        logger.info(f"👷 Playwright Context {context_id} online and awaiting tasks.")
+        logger.info(f"👷 Unlocking Context {context_id} online and awaiting tasks.")
         while True:
             async with self.queue_lock:
                 while not self.queue:
@@ -114,32 +117,10 @@ class BatchUnlocker:
                     update_progress(90, "API Purchase Successful")
                     return
                 
-                # 🛡️ PLAYWRIGHT FALLBACK
-                update_progress(30, "Browser Handshake Fallback")
-                selectors = [
-                    ".p-buyConfirm-currentChapter input.js-bt_buy_and_download",
-                    ".p-buyConfirm-currentChapter input.c-btn-read-end",
-                    ".p-buyConfirm-currentChapter input.c-btn-free",
-                    "input.js-bt_buy_and_download", "button.js-bt_buy_and_download",
-                ]
-                
-                # Fetch target account from Vault
-                session_obj = await self.session_service.get_active_session("mecha")
-                if not session_obj: raise Exception("No active Mecha session for handshake.")
-                
-                new_cookies, viewer_url = await self.browser.run_isolated_handshake(
-                    task.url, session_obj['cookies'], selectors
-                )
-                
-                if viewer_url:
-                    update_progress(90, "Handshake Success")
-                    # Update Vault with new cookies
-                    await self.session_service.update_session_cookies("mecha", session_obj['account_id'], new_cookies)
-                else:
-                    raise Exception("Browser Fallback failed to acquire viewer URL.")
+                raise Exception("Mecha API fast-purchase failed. Session might be expired or chapter requires purchase.")
                     
             except Exception as e:
-                logger.error(f"Worker {context_id} task processing failed: {e}")
+                logger.error(f"Worker {context_id} Mecha task failed: {e}")
                 raise e
         elif service == "piccoma":
             update_progress(15, "API Coin Purchase Attempt")
@@ -156,5 +137,20 @@ class BatchUnlocker:
             except Exception as e:
                 logger.error(f"Worker {context_id} Piccoma purchase failed: {e}")
                 raise e
+        elif service == "jumptoon":
+            update_progress(15, "API Ticket Unlock Attempt")
+            try:
+                provider = self.provider_manager.get_provider("jumptoon")
+                success = await provider.fast_purchase(task)
+                
+                if success:
+                    update_progress(90, "Ticket Unlock Successful")
+                    return
+                
+                raise Exception("Jumptoon ticket unlock failed via API")
+                    
+            except Exception as e:
+                logger.error(f"Worker {context_id} Jumptoon unlock failed: {e}")
+                raise e
         else:
-            raise Exception(f"Service {service} not supported in Playwright yet.")
+            raise Exception(f"Service {service} not supported in BatchUnlocker yet.")

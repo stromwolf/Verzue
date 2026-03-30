@@ -16,13 +16,11 @@ class TaskQueue:
         # ==========================================
         # 🃏 THE DEALER (Round-Robin State)
         # ==========================================
-        self.queues: dict[str, deque] = {}  # Maps req_id to a deque of tasks
-        self.req_order: list[str] = []      # The "circle" of active users
-        self.req_index: int = 0             # Whose turn it is
-        self.total_tasks: int = 0
+        self.total_tasks = 0
         self.task_condition = asyncio.Condition() # Thread-safe waker for workers
         
-        self.active_tasks_map: dict[str, ChapterTask] = {} # For local deduplication
+        from app.services.redis_manager import RedisManager
+        self.redis = RedisManager()
 
         # ==========================================
         # ⚖️ THE PIT BOSS (RAM Auto-Scaler)
@@ -42,63 +40,46 @@ class TaskQueue:
             self.unlocker = BatchUnlocker(self.browser_service)
 
     async def add_task(self, task: ChapterTask):
-        """Producer: Bot pushes task to the Round-Robin dealer."""
+        """Producer: Bot pushes task to the Redis global queue."""
         key = f"{task.series_id_key}:{task.episode_id}"
 
-        if key in self.active_tasks_map:
-            logger.info(f"🎫 TICKET: Attaching R-ID {task.req_id} to existing task for {task.title}")
-            return self.active_tasks_map[key]
+        # 🟢 S-GRADE: Cross-Process Deduplication via Redis
+        active_id = await self.redis.get_active_task(key)
+        if active_id:
+            logger.info(f"🎫 TICKET: Task {key} is already active/queued. Attaching R-ID {task.req_id}.")
+            return task
 
-        self.active_tasks_map[key] = task
         task.status = TaskStatus.QUEUED
         
-        # --- Deal the card to the user's specific deck ---
-        async with self.task_condition:
-            if task.req_id not in self.queues:
-                self.queues[task.req_id] = deque()
-                self.req_order.append(task.req_id)
-            
-            self.queues[task.req_id].append(task)
-            self.total_tasks += 1
-            self.task_condition.notify() # Wake up an idle worker!
+        # --- Push to Redis Global Queue ---
+        await self.redis.set_active_task(key, str(task.id))
+        await self.redis.push_task(task.to_dict())
         
-        logger.info(f"📥 Queued (Round-Robin): [{task.series_title}] {task.title} | User: {task.req_id}")
+        async with self.task_condition:
+            self.total_tasks += 1
+            self.task_condition.notify() # Wake up an idle local worker loop
+        
+        logger.info(f"📥 Queued (Redis Global): [{task.series_title}] {task.title} | User: {task.req_id}")
         return task
 
     async def _get_next_task(self) -> ChapterTask:
-        """The Dealer: Grabs one task from the next active user in the circle."""
-        async with self.task_condition:
-            while self.total_tasks == 0:
-                # If we were woken up just to be killed, return None to trigger exit
-                if self.workers_to_kill > 0: return None
+        """The Dealer: Grabs one task from Redis global queue."""
+        while True:
+            # 1. Check if we have tasks in Redis
+            task_data = await self.redis.pop_task(timeout=5)
+            
+            if task_data:
+                # Convert back to object
+                task = ChapterTask.from_dict(task_data)
+                async with self.task_condition:
+                    if self.total_tasks > 0: self.total_tasks -= 1
+                return task
                 
-                await self.task_condition.wait() # Sleep until a task arrives
-                
-                if self.workers_to_kill > 0: return None 
-
-            # Loop through the decks fairly
-            while True:
-                if self.req_index >= len(self.req_order):
-                    self.req_index = 0
-
-                req_id = self.req_order[self.req_index]
-                q = self.queues[req_id]
-
-                if len(q) > 0:
-                    task = q.popleft()
-                    self.total_tasks -= 1
-                    
-                    # Clean up empty decks immediately so we don't deal to ghosts
-                    if len(q) == 0:
-                        del self.queues[req_id]
-                        self.req_order.pop(self.req_index)
-                        # Do not increment req_index, as next element shifted left
-                    else:
-                        self.req_index += 1
-                        
-                    return task
-                else:
-                    self.req_index += 1
+            # 2. If no tasks, check if we should shut down
+            if self.workers_to_kill > 0: return None
+            
+            # 3. Brief wait if queue was empty
+            await asyncio.sleep(1)
 
     # ==========================================
     # WORKER & PIT BOSS LOGIC
@@ -166,7 +147,7 @@ class TaskQueue:
                 
                 # If task is None, it means the Pit Boss woke us up specifically to die
                 if task is None:
-                    self.workers_to_kill -= 1
+                    # Note: Workers_to_kill decrement already handled in _get_next_task or _worker_loop 141
                     logger.warning(f"👋 Worker {worker_id} cashing out from idle state to free up RAM.")
                     break
                 
@@ -185,8 +166,7 @@ class TaskQueue:
                     logger.error(f"❌ Worker {worker_id} crashed on {task.title}: {e}")
                     await EventBus.emit("task_failed", task, str(e))
                 finally:
-                    if dedup_key in self.active_tasks_map:
-                        del self.active_tasks_map[dedup_key]
+                    await self.redis.remove_active_task(dedup_key)
                     req_id_context.reset(token)
                     
         finally:

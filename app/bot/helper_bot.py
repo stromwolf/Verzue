@@ -19,15 +19,18 @@ class HelperBot(commands.Bot):
 
     async def setup_hook(self):
         """Loads extensions and syncs commands."""
-        extension = "app.bot.cogs.helper_cogs"
-        try:
-            await self.load_extension(extension)
-            self.logger.info(f"🧩 Helper Loaded: {extension}")
-        except Exception as e:
-            self.logger.error(f"❌ Failed to load Helper Cog {extension}: {e}")
+        extensions = ["app.bot.cogs.helper_cogs", "app.bot.cogs.discovery", "app.bot.cogs.discovery_commands"]
+        for ext in extensions:
+            try:
+                await self.load_extension(ext)
+                self.logger.info(f"🧩 Helper Loaded: {ext}")
+            except Exception as e:
+                self.logger.error(f"❌ Failed to load Helper Cog {ext}: {e}")
 
         # Sync Slash Commands
         try:
+            cmds = self.tree.get_commands()
+            self.logger.info(f"🔍 Commands in Tree: {[c.name for c in cmds]}")
             synced = await self.tree.sync()
             self.logger.info(f"⚡ Helper Synced {len(synced)} slash commands.")
         except Exception as e:

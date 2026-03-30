@@ -9,6 +9,7 @@ from curl_cffi.requests import AsyncSession
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError
+from config.settings import Settings
 
 logger = logging.getLogger("KakaoProvider")
 
@@ -28,7 +29,7 @@ class KakaoProvider(BaseProvider):
 
     async def _get_authenticated_session(self):
         session_obj = await self.session_service.get_active_session("kakao")
-        async_session = AsyncSession(impersonate="chrome120")
+        async_session = AsyncSession(impersonate="chrome120", proxy=Settings.get_proxy())
         async_session.headers.update(self.default_headers)
         
         if session_obj:
@@ -46,12 +47,12 @@ class KakaoProvider(BaseProvider):
             return res.status_code == 200
         except: return False
 
-    async def get_series_info(self, url: str):
+    async def get_series_info(self, url: str, fast: bool = False):
         if "webtoon.kakao.com" in url:
-            return await self._get_webtoon_info(url)
-        return await self._get_page_info(url)
+            return await self._get_webtoon_info(url, fast=fast)
+        return await self._get_page_info(url, fast=fast)
 
-    async def _get_webtoon_info(self, url: str):
+    async def _get_webtoon_info(self, url: str, fast: bool = False):
         match = re.search(r'/content/[^/]+/(\d+)', url)
         if not match: raise ScraperError("Invalid Webtoon URL")
         content_id = match.group(1)
@@ -73,6 +74,10 @@ class KakaoProvider(BaseProvider):
         except: pass
 
         all_chapters = []
+        if fast:
+            logger.info(f"[Kakao] Fast Fetch (Webtoon Meta Only): {title}")
+            return title, 0, [], image_url, content_id, None, None, None, None
+
         offset = 0
         limit = 100
         while True:
@@ -95,9 +100,9 @@ class KakaoProvider(BaseProvider):
             if offset + len(episodes) >= total_count: break
             offset += len(episodes)
 
-        return title, len(all_chapters), all_chapters, image_url, content_id, None, None
+        return title, len(all_chapters), all_chapters, image_url, content_id, None, None, None, None
 
-    async def _get_page_info(self, url: str):
+    async def _get_page_info(self, url: str, fast: bool = False):
         match = re.search(r'/content/(\d+)', url)
         if not match: raise ScraperError("Invalid Page URL")
         series_id = match.group(1)
@@ -125,6 +130,10 @@ class KakaoProvider(BaseProvider):
         }
         """
         all_chapters = []
+        if fast:
+            logger.info(f"[Kakao] Fast Fetch (Page Meta Only): {title}")
+            return title, 0, [], image_url, series_id, None, None, None, None
+
         cursor = None
         has_next = True
         while has_next:
@@ -142,7 +151,7 @@ class KakaoProvider(BaseProvider):
             has_next = data['pageInfo']['hasNextPage']
             cursor = data['pageInfo']['endCursor']
             
-        return title, len(all_chapters), all_chapters, image_url, series_id, None, None
+        return title, len(all_chapters), all_chapters, image_url, series_id, None, None, None, None
 
     async def scrape_chapter(self, task, output_dir: str):
         if "webtoon.kakao.com" in task.url:

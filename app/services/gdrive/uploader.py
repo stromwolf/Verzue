@@ -24,9 +24,10 @@ class GDriveUploader:
 
     def find_folder(self, name: str, parent_id: str):
         """Finds ONLY folders (Shared Drive Compatible, Case-Insensitive)."""
+        # Escape single quotes for Google Drive API query syntax
         safe_name = name.replace("'", "\\'")
-        # Use 'contains' to get a superset, then filter for exact case-insensitive match
-        query = f"mimeType='application/vnd.google-apps.folder' and name contains '{safe_name}' and '{parent_id}' in parents and trashed=false"
+        # Use exact name match for folders
+        query = f"mimeType='application/vnd.google-apps.folder' and name = '{safe_name}' and '{parent_id}' in parents and trashed=false"
         try:
             results = self.client.get_service().files().list(
                 q=query, 
@@ -35,6 +36,18 @@ class GDriveUploader:
                 includeItemsFromAllDrives=True
             ).execute()
             files = results.get('files', [])
+            
+            # If search returns nothing, try a broader search as fallback (e.g. if case-sensitivity is an issue)
+            if not files:
+                broad_query = f"mimeType='application/vnd.google-apps.folder' and name contains '{safe_name}' and '{parent_id}' in parents and trashed=false"
+                results = self.client.get_service().files().list(
+                    q=broad_query, 
+                    fields="files(id, name)", 
+                    supportsAllDrives=True, 
+                    includeItemsFromAllDrives=True
+                ).execute()
+                files = results.get('files', [])
+
             for f in files:
                 if f['name'].lower() == name.lower():
                     return f['id']
@@ -65,18 +78,34 @@ class GDriveUploader:
             return None
 
     def find_item(self, name: str, parent_id: str):
-        """Finds ANY item (Shared Drive Compatible)."""
+        """Finds ANY item (Shared Drive Compatible, Case-Insensitive fallback)."""
         safe_name = name.replace("'", "\\'")
+        # Try exact match first (case-sensitive in Drive API)
         query = f"name='{safe_name}' and '{parent_id}' in parents and trashed=false"
         try:
             results = self.client.get_service().files().list(
                 q=query, 
-                fields="files(id)", 
+                fields="files(id, name)", 
                 supportsAllDrives=True, 
                 includeItemsFromAllDrives=True
             ).execute()
             files = results.get('files', [])
-            return files[0]['id'] if files else None
+            
+            # Fallback for case-insensitive match if exact fails
+            if not files:
+                broad_query = f"name contains '{safe_name}' and '{parent_id}' in parents and trashed=false"
+                results = self.client.get_service().files().list(
+                    q=broad_query, 
+                    fields="files(id, name)", 
+                    supportsAllDrives=True, 
+                    includeItemsFromAllDrives=True
+                ).execute()
+                files = results.get('files', [])
+            
+            for f in files:
+                if f['name'].lower() == name.lower():
+                    return f['id']
+            return None
         except Exception as e:
             logger.error(f"Item search failed for '{name}': {e}")
             return None
@@ -143,6 +172,7 @@ class GDriveUploader:
             else:
                 mime_type = 'image/jpeg'
 
+        logger.info(f"⏳ Beginning upload of {file_name}...")
         for attempt in range(5):
             try:
                 metadata = {'name': file_name, 'parents': [parent_id]}
@@ -158,8 +188,15 @@ class GDriveUploader:
                 logger.debug(f"⬆️ Uploaded {file_name} ({mime_type})")
                 return
             except Exception as e:
-                err_msg = str(e)
-                if "SSL" in err_msg or "version number" in err_msg or "Connection reset" in err_msg:
+                err_msg = str(e).lower()
+                is_timeout = "timeout" in err_msg or "deadline" in err_msg
+                
+                if is_timeout:
+                    logger.warning(f"⏰ Network Timeout during upload of {file_name} (Attempt {attempt+1})")
+                    time.sleep(5) # Give it some room to breathe
+                    continue
+
+                if "ssl" in err_msg or "version number" in err_msg or "connection reset" in err_msg:
                     logger.warning(f"⚠️ SSL/Transient error during upload of {file_name} (Attempt {attempt+1}): {e}")
                     time.sleep(2 * (attempt + 1))
                     continue

@@ -10,8 +10,7 @@ class BrowserUtils:
     async def load_cookies(context: BrowserContext, url: str):
         """Aggregates cookies from all account files into the Playwright context."""
         url_lower = url.lower()
-        platform = "mecha" if "mechacomic.jp" in url_lower else \
-                   "jumptoon" if "jumptoon.com" in url_lower else \
+        platform = "jumptoon" if "jumptoon.com" in url_lower else \
                    "kakao" if "kakao.com" in url_lower else None
         
         cookie_paths = []
@@ -61,8 +60,7 @@ class BrowserUtils:
     async def save_cookies(context: BrowserContext, url: str):
         """Saves current Playwright context cookies back to the account file."""
         url_lower = url.url.lower() if hasattr(url, 'url') else url.lower()
-        platform = "mecha" if "mechacomic.jp" in url_lower else \
-                   "jumptoon" if "jumptoon.com" in url_lower else \
+        platform = "jumptoon" if "jumptoon.com" in url_lower else \
                    "kakao" if "kakao.com" in url_lower else None
         
         if not platform: return

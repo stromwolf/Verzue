@@ -10,10 +10,10 @@ class BaseProvider(ABC):
     """
     
     @abstractmethod
-    async def get_series_info(self, url: str):
+    async def get_series_info(self, url: str) -> tuple[str, int, list[dict], str | None, str, str | None, str | None, str | None, str | None]:
         """
-        Fetches metadata for a series/manga.
-        Returns: (title, total_chapters, all_chapters, image_url, id, release_day, release_time)
+        Returns:
+            (title, total_chapters, all_chapters, image_url, series_id, release_day, release_time, status_label, genre_label)
         """
         pass
 

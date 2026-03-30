@@ -84,9 +84,10 @@ class AdminCog(commands.Cog):
             
             # Disconnect
             await self.bot.close()
-            # Note: sys.exit(0) can cause noise in logs, 
-            # but is necessary to stop the current process.
-            sys.exit(0)
+            # 🟢 Use os._exit to kill the process immediately without 
+            # triggering discord.py's task exception logger.
+            import os
+            os._exit(0)
             
         except Exception as e:
             logger.error(f"Restart Failed: {e}")
@@ -124,7 +125,7 @@ class AdminCog(commands.Cog):
             
             # 2. Fetch Info
             data = await scraper.get_series_info(url)
-            title, total_chapters, chapter_list, image_url, series_id, release_day, release_time = data
+            title, total_chapters, chapter_list, image_url, series_id, release_day, release_time, status_label, genre_label = data
             
             # 3. Format Response
             latest = chapter_list[-1] if chapter_list else {"notation": "N/A", "id": "N/A"}

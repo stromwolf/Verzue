@@ -74,7 +74,10 @@ class BrowserService:
             logger.info(f"🛡️ [Handshake] Navigating to {url}...")
             
             # 1. Set Cookies
-            domain = "mechacomic.jp"
+            from urllib.parse import urlparse
+            parsed_uri = urlparse(url)
+            domain = parsed_uri.netloc.replace("www.", "")
+            
             formatted_cookies = []
             for c in cookie_list:
                 formatted_cookies.append({
@@ -105,15 +108,9 @@ class BrowserService:
                 except:
                     continue
 
-            # 4. Check for Viewer URL
-            current_url = page.url
-            if "contents_vertical" in current_url:
-                viewer_url = current_url
-            else:
-                content = await page.content()
-                match = re.search(r'\"(https?://mechacomic\.jp/viewer\?.*?contents_vertical=.*?)\"', content)
-                if match:
-                    viewer_url = match.group(1).replace('\\/', '/')
+            # 4. Success Check based on URL
+            if "contents_vertical" in page.url or "viewer" in page.url:
+                viewer_url = page.url
 
             # 5. Extract Session Cookies
             new_cookies = await self.context.cookies()

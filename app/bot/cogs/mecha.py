@@ -39,18 +39,30 @@ class MechaCog(commands.Cog):
             pass
 
         # 2. STRICT VALIDATION (The Bouncer)
-        if "mechacomic.jp" not in url:
-            error_embed = discord.Embed(
-                title="⛔ Invalid Link",
-                description=(
-                    "**Protocol Violation**\n"
-                    "The `/mecha` command only accepts links from `mechacomic.jp`.\n\n"
-                    "• For Jumptoon, use `/jumptoon`\n"
-                    "• For Kakao, use `/kakao`"
-                ),
-                color=0xe74c3c
-            )
-            return await interaction.followup.send(embed=error_embed, ephemeral=True)
+        if "mechacomic.jp" not in url.lower():
+            error_payload = {
+                "flags": 32768,
+                "components": [{
+                    "type": 17,
+                    "components": [
+                        {
+                            "type": 10,
+                            "content": "⛔ **Protocol Violation**\nExpected `mechacomic.jp` link."
+                        },
+                        {
+                            "type": 1,
+                            "components": [
+                                {
+                                    "type": 2, "style": 2, "label": "Back to Dashboard",
+                                    "custom_id": "v2Dash_Home", "emoji": {"name": "🏠"}
+                                }
+                            ]
+                        }
+                    ]
+                }]
+            }
+            route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+            return await self.bot.http.request(route, json=error_payload)
 
         # 3. SEMAPHORE GATEKEEPER (Max 3 Concurrent Processing)
         # If 3 users are already fetching metadata, the 4th waits here automatically.
@@ -73,12 +85,8 @@ class MechaCog(commands.Cog):
                 # S-Grade Async
                 data = await scraper.get_series_info(url)
                 
-                title = data[0]
-                total_chapters = data[1]
-                chapter_list = data[2]
-                image_url = data[3]
-                series_id = data[4]
-
+                title, total_chapters, chapter_list, image_url, series_id, release_day, release_time, status_label, genre_label = data
+                
                 # 6. Pack Context
                 ctx_data = {
                     'url': url,
@@ -87,6 +95,8 @@ class MechaCog(commands.Cog):
                     'total_chapters': total_chapters,
                     'image_url': image_url,
                     'series_id': series_id,
+                    'status_label': status_label,
+                    'genre_label': genre_label,
                     'req_id': req_id,
                     'user': interaction.user
                 }

@@ -31,6 +31,32 @@ class JumptoonCog(commands.Cog):
         token = req_id_context.set(req_id)
 
         try:
+            # 2.1 STRICT VALIDATION
+            if "jumptoon.com" not in url.lower():
+                error_payload = {
+                    "flags": 32768, # V2 Dashboard style
+                    "components": [{
+                        "type": 17, # CONTAINER
+                        "components": [
+                            {
+                                "type": 10, # TEXT_DISPLAY
+                                "content": "⛔ **Protocol Violation**\nExpected `jumptoon.com` link."
+                            },
+                            {
+                                "type": 1, # ACTION_ROW
+                                "components": [
+                                    {
+                                        "type": 2, "style": 2, "label": "Back to Dashboard",
+                                        "custom_id": "v2Dash_Home", "emoji": {"name": "🏠"}
+                                    }
+                                ]
+                            }
+                        ]
+                    }]
+                }
+                route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+                return await self.bot.http.request(route, json=error_payload)
+
             # 3. MAX LEVEL LOGGING
             logger.info("="*50)
             logger.info(f"📥 NEW REQUEST: Jumptoon Service")
@@ -41,24 +67,22 @@ class JumptoonCog(commands.Cog):
             # 4. Metadata Fetch
             scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
             
-            # 5. Fetch Series Info (Returns 5 values: title, total, chapters, image_url, series_id)
-            # We run this in a thread to keep the Discord heartbeat alive
-            logger.info(f"🔍 Processing metadata request for: {url}")
-            data = await scraper.get_series_info(url)
+            # 5. Fetch Series Info (Returns 8 values)
+            logger.info(f"🔍 Processing metadata request (FAST) for: {url}")
+            data = await scraper.get_series_info(url, fast=True)
             
-            title = data[0]
-            total_chapters = data[1]
-            chapter_list = data[2]
-            image_url = data[3]
-            series_id = data[4] # e.g. JT00130
+            title, total_chapters, chapter_list, image_url, series_id, release_day, release_time, status_label, genre_label = data
 
             # 6. Pack Context for the Universal Dashboard
             ctx_data = {
                 'url': url,
                 'title': title,
                 'chapters': chapter_list,
+                'total_chapters': total_chapters,
                 'image_url': image_url,
                 'series_id': series_id,
+                'status_label': status_label,
+                'genre_label': genre_label,
                 'req_id': req_id,
                 'user': interaction.user
             }

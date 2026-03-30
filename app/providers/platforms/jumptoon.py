@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import json
 import logging
 import math
@@ -12,6 +13,7 @@ from curl_cffi import requests as curl_requests
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError
+from config.settings import Settings
 
 logger = logging.getLogger("JumptoonProvider")
 
@@ -31,18 +33,18 @@ class JumptoonProvider(BaseProvider):
             'Accept-Language': 'ja,en-US;q=0.9',
             'Referer': 'https://jumptoon.com/'
         }
-        # S-Grade Backpressure Control: Limit concurrent downloads per instance
-        self._download_semaphore = asyncio.Semaphore(10)
+        # S-Grade Backpressure Control: Restricted concurrency (3-5) to prevent bandwidth saturation
+        self._download_semaphore = asyncio.Semaphore(random.randint(3, 5))
 
     async def _get_authenticated_session(self):
         """Fetches a healthy session from the Vault and initializes an AsyncSession."""
         session_obj = await self.session_service.get_active_session("jumptoon")
         if not session_obj:
             logger.warning("[Jumptoon] No healthy sessions in vault. Using guest session.")
-            return curl_requests.AsyncSession(impersonate="chrome")
+            return curl_requests.AsyncSession(impersonate="chrome", proxy=Settings.get_proxy())
 
         self.active_account_id = session_obj["account_id"]
-        async_session = curl_requests.AsyncSession(impersonate="chrome")
+        async_session = curl_requests.AsyncSession(impersonate="chrome", proxy=Settings.get_proxy())
         async_session.headers.update(self.default_headers)
         
         for c in session_obj["cookies"]:
@@ -58,7 +60,7 @@ class JumptoonProvider(BaseProvider):
         """Checks if the provided session is still authenticated."""
         try:
             res = await session.get(f"{self.BASE_URL}/mypage", timeout=15, allow_redirects=False)
-            valid = res.status_code == 200
+            valid = res.status_code == 200 and "ログイン・新規登録" not in res.text
             if not valid and self.active_account_id:
                 await self.session_service.report_session_failure("jumptoon", self.active_account_id, "Session invalidated @ /mypage")
             elif valid:
@@ -68,9 +70,9 @@ class JumptoonProvider(BaseProvider):
             logger.error(f"Session validation error: {e}")
             return False
 
-    async def get_series_info(self, url: str):
+    async def get_series_info(self, url: str, fast: bool = False):
         """Phase 1: Intelligence. Extraction with Telemetry."""
-        # Robust Series ID extraction
+        # 1. Normalization: Extract series ID regardless of deep links (e.g., ?page=2 or /episodes/)
         series_id_match = re.search(r'/series/([^/?#]+)', url)
         if series_id_match:
             series_id = series_id_match.group(1)
@@ -78,23 +80,30 @@ class JumptoonProvider(BaseProvider):
             series_id = url.split("?")[-1] if "?" in url else url.split("/")[-1]
             if not series_id or series_id == "episodes": 
                 series_id = url.split("/")[-2]
-        
-        logger.info(f"[Jumptoon] 🔍 Intelligence Phase for: {series_id}")
-        auth_session = await self._get_authenticated_session()
-        
+                
+        # Move to base series page for consistent metadata (title, total_chapters)
         fetch_url = f"{self.BASE_URL}/series/{series_id}/"
-        logger.debug(f"[Jumptoon] Fetching metadata from: {fetch_url}")
-        res = await auth_session.get(fetch_url, timeout=30)
+        logger.info(f"[Jumptoon] 🔍 Intelligence Phase for: {series_id}")
+        
+        # 2. Page Fetch & Auth
+        auth_session = await self._get_authenticated_session()
+        res = await auth_session.get(fetch_url, timeout=30, allow_redirects=True)
+        
+        if res.status_code in (301, 302, 303, 307, 308):
+            loc = res.headers.get("Location", "Unknown")
+            raise ScraperError(f"Auth Expired or Age Restricted accessing {fetch_url}. Redirected to {loc}")
+            
         if res.status_code != 200:
-            raise ScraperError(f"Failed to fetch series: {res.status_code}")
+            raise ScraperError(f"Failed to access Jumptoon: HTTP {res.status_code} on {fetch_url}")
         
-        await self.session_service.record_session_success("jumptoon")
         html_content = res.text
-        # Super-Clean Metadata Extraction: Root-Anchored Version
-        # Flatten all variations of JSON escaping (1 to 5+ backslashes) into simple quotes
-        clean_html = re.sub(r'\\+"', '"', html_content).replace('\\/', '/')
-        
-        # 1. Total Chapter Count (Scan whole page for specific keys)
+        clean_html = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), html_content)
+        clean_html = re.sub(r'\\+"', '"', clean_html).replace('\\/', '/')
+
+        # Extract Series ID from HTML if available (more reliable than URL)
+        id_match = re.search(r'"seriesId"\s*:\s*"([^"]+)"', clean_html)
+        if id_match: series_id = id_match.group(1)
+
         total_chapters = 0
         count_patterns = [
             r'"totalEpisodeCount"\s*:\s*"(\d+)"',
@@ -108,39 +117,29 @@ class JumptoonProvider(BaseProvider):
                 total_chapters = int(m.group(1))
                 break
         
-        # Fallback for HTML formatted count if JSON keys missing
         if total_chapters == 0:
             h2_count = re.search(r'<h2>全\s*(?:<!-- -->)?\s*(\d+)\s*(?:<!-- -->)?\s*話</h2>', html_content)
             if h2_count: total_chapters = int(h2_count.group(1))
 
-        # 2. Title Extraction (Root-Anchored Priority)
-        # The series title is always the first "name" property at the root of the "series" object.
-        # This bypasses nested objects like "publisher":{"name":"集英社"} or "magazine":{"name":"ジャンプTOON"}
+        # 2. Title Extraction
         title = series_id
         series_match = re.search(r'"series"\s*:\s*\{', clean_html)
         if series_match:
-            # Look at a window immediately following the series start
             window = clean_html[series_match.end() : series_match.end() + 2000]
-            # The FIRST "name" match in this window is the actual series title
             name_match = re.search(r'"name"\s*:\s*"([^"]+)"', window)
             if name_match:
                 title = name_match.group(1)
 
-        # Robust Unicode Decoding (handles \uXXXX from the stream)
         try:
             if "\\u" in title:
                 title = title.encode('utf-8').decode('unicode_escape')
         except: pass
-        
-        # Final cleanup for title
         title = title.replace('&amp;', '&').strip()
         
         if not title or title == series_id:
-            # Fallback to H1 (cleaned) or Page Title
             h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', html_content)
             if h1_match: 
                 title = BeautifulSoup(h1_match.group(1), "html.parser").get_text().strip()
-            
             if not title or title == series_id:
                 t_tag = re.search(r'<title>(.*?)</title>', html_content, re.I)
                 if t_tag:
@@ -152,78 +151,59 @@ class JumptoonProvider(BaseProvider):
         if img_match:
             image_url = img_match.group(1) + '?auto=avif-webp&width=3840'
         
-        # 4. Release Day Extraction (V2 Feature)
-        release_day = None
-        day_map = {
-            "日曜": "Saturday",
-            "月曜": "Sunday",
-            "火曜": "Monday",
-            "水曜": "Tuesday",
-            "木曜": "Wednesday",
-            "金曜": "Thursday",
-            "土曜": "Friday"
-        }
-        
-        # Look for the mgvwcj0 span (e.g., 毎週日曜更新)
-        schedule_match = re.search(r'class="mgvwcj0"[^>]*>([^<]+)</span>', html_content)
-        if schedule_match:
-            text = schedule_match.group(1)
-            for jp_day, en_day in day_map.items():
-                if jp_day in text:
-                    release_day = en_day
-                    break
-        
-        # If schedule text failed, try parsing COMING SOON date from time tag
-        if not release_day:
-            # Look for 0000/00/00 or 00/00 in time tags with class _4s6uv40
-            time_matches = re.findall(r'class="[^"]*_4s6uv40"[^>]*>([^<]+)</time>', html_content)
-            for tm in time_matches:
-                # Basic check: does it have non-zero digits and a slash?
-                if "/" in tm and any(c.isdigit() and c != '0' for c in tm):
-                    # We found a real date! (e.g., 2026/03/23(月))
-                    for jp_day, en_day in day_map.items():
-                        if jp_day in tm:
-                            release_day = en_day
-                            break
-                    if release_day: break
+        # 4. Status Label Extraction (Oneshot / Completed)
+        # 🟢 S-GRADE: Subscription Block Rule (Mar 25 Request)
+        status_label = None
+        if "読切" in html_content: status_label = "Oneshot"
+        elif "完結" in html_content: status_label = "Completed"
 
-        logger.info(f"[Jumptoon] Captured: {title} ({series_id}) - {total_chapters} chapters")
+        # 🟢 Extract Release Day (S-Grade Automation)
+        release_day = None
+        day_match = re.search(r'"publishDayNames"\s*:\s*\["([^"]+)"\]', clean_html)
+        if day_match:
+            release_day = day_match.group(1).capitalize() # e.g. "Monday"
         
-        pg_size = 10
-        total_pages = math.ceil(total_chapters / pg_size) if total_chapters > 0 else 1
-        
-        all_chapters = []
-        seen_ids = set()
-        
-        # CRITICAL: Extract UP/Coming Soon IDs from the initial HTML ONCE.
-        # These sets are shared across ALL subsequent _parse_page_data calls
-        # so that the is_new flag persists even when chapter JSON comes from
-        # a different page than the one containing the <li> UP tags.
+        # 🟢 Initialize tracking sets early to prevent UnboundLocalError in fast-fetch
         up_ids = set()
         coming_soon_ids = set()
         self._extract_tag_ids(html_content, up_ids, coming_soon_ids)
-        
-        # Initial page extraction: Check main page first
+
+        if fast:
+            logger.info(f"[Jumptoon] Fast Fetch (Page 1 Only): {title} ({series_id})")
+            # 🟢 S-GRADE: Return Page 1 chapters instead of empty list for instant UI
+            all_chapters = self._parse_page_data(html_content, sees_ids=set(), up_ids=up_ids, coming_soon_ids=coming_soon_ids)
+            return title, total_chapters, all_chapters, image_url, series_id, release_day, None, status_label, None
+
+        # --- FULL CRAWL LOGIC (Only if not fast) ---
+        pg_size = 30
+        total_pages = math.ceil(total_chapters / pg_size) if total_chapters > 0 else 1
+        all_chapters = []
+        seen_ids = set()
+        # up_ids and coming_soon_ids are already initialized above
         all_chapters.extend(self._parse_page_data(html_content, sees_ids=seen_ids, up_ids=up_ids, coming_soon_ids=coming_soon_ids))
         
-        # If we have less than a full page, or no chapters, we must fetch the first episode page explicitly
         if len(all_chapters) < pg_size or not all_chapters:
             p1_url = f"{self.BASE_URL}/series/{series_id}/episodes/?page=1"
-            p1_res = await auth_session.get(p1_url, timeout=30)
+            p1_res = await auth_session.get(p1_url, timeout=30, allow_redirects=True)
+            if p1_res.status_code in (301, 302, 303, 307, 308):
+                loc = p1_res.headers.get("Location", "Unknown")
+                raise ScraperError(f"Auth Expired or Age Restricted accessing {p1_url}. Redirected to {loc}")
+                
             if p1_res.status_code == 200:
                 self._extract_tag_ids(p1_res.text, up_ids, coming_soon_ids)
                 p1_chaps = self._parse_page_data(p1_res.text, sees_ids=seen_ids, up_ids=up_ids, coming_soon_ids=coming_soon_ids)
                 all_chapters.extend(p1_chaps)
         
-        # Fallback chapter count check
         if total_chapters == 0 and all_chapters:
             total_chapters = len(all_chapters)
-            logger.warning(f"[Jumptoon] Fallback count used: {total_chapters}")
 
-        # Subsequent pages
-        for page_num in range(2, total_pages + 1):
+        for page_num in range(2, int(total_pages) + 1):
             p_url = f"{self.BASE_URL}/series/{series_id}/episodes/?page={page_num}"
-            p_res = await auth_session.get(p_url, timeout=30)
+            p_res = await auth_session.get(p_url, timeout=30, allow_redirects=True)
+            if p_res.status_code in (301, 302, 303, 307, 308):
+                loc = p_res.headers.get("Location", "Unknown")
+                raise ScraperError(f"Auth Expired or Age Restricted accessing {p_url}. Redirected to {loc}")
+                
             if p_res.status_code == 200:
                 self._extract_tag_ids(p_res.text, up_ids, coming_soon_ids)
                 pg_chaps = self._parse_page_data(p_res.text, sees_ids=seen_ids, up_ids=up_ids, coming_soon_ids=coming_soon_ids)
@@ -231,46 +211,141 @@ class JumptoonProvider(BaseProvider):
                 all_chapters.extend(pg_chaps)
             else: break
 
-        # Chapter Sorting: Robust fallback
         def extract_sort_key(ch):
-            # Try numeric 'number' first
+            # 1. Primary: Use the numeric 'number' if available
             num = ch.get('number')
-            if num and str(num).isdigit():
-                return int(num)
-            # Try parsing from notation (第1話 -> 1)
+            if num and str(num).isdigit(): return int(num)
+            
+            # 2. Secondary: Regex extraction from notation (e.g. 第1話 -> 1)
             not_match = re.search(r'(\d+)', ch.get('notation', ''))
             if not_match: return int(not_match.group(1))
+            
+            # 3. Tertiary: Fallback to the numeric ID (ensures chronological order for hiatuses)
+            raw_id = ch.get('id')
+            if raw_id and str(raw_id).isdigit(): return int(raw_id)
+            
             return 0
 
         all_chapters.sort(key=extract_sort_key)
-        
-        # CRITICAL: Retroactive is_new pass.
-        # Chapters may have been parsed from the main page BEFORE the episodes 
-        # page (which contains the <li> UP tags) was scanned. This ensures 
-        # is_new is correctly set regardless of which page the data came from.
-        if up_ids:
-            for ch in all_chapters:
-                if str(ch['id']) in up_ids:
-                    ch['is_new'] = True
+        for ch in all_chapters:
+            if str(ch['id']) in up_ids: ch['is_new'] = True
         
         release_time = JUMPTOON_RELEASE_TIME_UTC if release_day else None
-        return title, total_chapters, all_chapters, image_url, series_id, release_day, release_time
+        return title, total_chapters, all_chapters, image_url, series_id, release_day, release_time, status_label, None
 
-    async def fetch_more_chapters(self, url: str, total_pages: int, seen_ids: set, skip_pages: list = None):
+    async def get_new_series_list(self) -> list[dict]:
+        """Fetches the list of new series from the 'new' series page."""
+        url = f"{self.BASE_URL}/series/original/new/"
+        logger.info(f"[Jumptoon] 🔍 Fetching new series list from: {url}")
+        
+        auth_session = await self._get_authenticated_session()
+        res = await auth_session.get(url, timeout=30, allow_redirects=True)
+        
+        if res.status_code != 200:
+            logger.error(f"[Jumptoon] Failed to fetch new series list: HTTP {res.status_code}")
+            return []
+            
+        html_content = res.text
+        series_list = []
+        
+        # Next.js App Router (RSC) stores data in __next_f script tags as escaped JSON strings.
+        # 1. Find all unique JT IDs
+        all_ids = sorted(list(set(re.findall(r'JT\d+', html_content))))
+        
+        for sid in all_ids:
+            # 2. Extract title: "href":"/series/JTXXXXX","children":"TITLE"
+            # Note: quotes are escaped as \\\" in the script tags
+            title_pattern = rf'\\"href\\":\\"/series/{sid}\\",\\"children\\":\\"([^\\"]+)\\"'
+            title_match = re.search(title_pattern, html_content)
+            if not title_match:
+                continue
+                
+            title = title_match.group(1)
+            
+            # 3. Extract poster: "src":"https://assets.jumptoon.com/series/JTXXXXX/..."
+            image_pattern = rf'\\"src\\":\\"(https://assets.jumptoon.com/series/{sid}/[^\\"]+\.(?:png|jpg|webp))\\"'
+            image_match = re.search(image_pattern, html_content)
+            poster_url = image_match.group(1) if image_match else ""
+            
+            if poster_url and "?" in poster_url:
+                poster_url = poster_url.split("?")[0]
+            if poster_url:
+                poster_url += "?auto=avif-webp&width=3840"
+            
+            series_list.append({
+                "series_id": sid,
+                "title": title,
+                "url": f"{self.BASE_URL}/series/{sid}",
+                "poster": poster_url
+            })
+            
+        logger.info(f"[Jumptoon] Successfully extracted {len(series_list)} new series via regex.")
+        return series_list
+
+    async def sync_latest_chapters(self, url):
+        """Background optimization: Directly visit the LAST page of the series to find the latest state."""
+        try:
+            # 1. First get total count from main page to find last page index
+            title, total_count, _, _, series_id, _, _, _, genre_label = await self.get_series_info(url, fast=True)
+            if total_count == 0: return []
+            
+            pg_size = 30
+            last_page = math.ceil(total_count / pg_size)
+            
+            auth_session = await self._get_authenticated_session()
+            last_url = f"{self.BASE_URL}/series/{series_id}/episodes/?page={last_page}"
+            logger.info(f"[Jumptoon] Syncing Latest Chapters (Background): Page {last_page}")
+            
+            res = await auth_session.get(last_url, timeout=30)
+            if res.status_code == 200:
+                up_ids = set()
+                coming_soon_ids = set()
+                self._extract_tag_ids(res.text, up_ids, coming_soon_ids)
+                latest_chaps = self._parse_page_data(res.text, sees_ids=set(), up_ids=up_ids, coming_soon_ids=coming_soon_ids)
+                
+                # Sort them
+                def extract_sort_key(ch):
+                    num = ch.get('number')
+                    if num and str(num).isdigit(): return int(num)
+                    not_match = re.search(r'(\d+)', ch.get('notation', ''))
+                    if not_match: return int(not_match.group(1))
+                    return 0
+                latest_chaps.sort(key=extract_sort_key)
+                
+                logger.debug(f"[Jumptoon] Sync Background: Found {len(latest_chaps)} chapters on last page.")
+                return latest_chaps
+        except Exception as e:
+            logger.error(f"[Jumptoon] Background sync failed: {e}")
+        return []
+
+    async def fetch_more_chapters(self, url: str, total_pages: int, seen_ids: set, skip_pages: list | None = None):
         """Standard method for background scans to fill in gaps if any."""
         skip_pages = skip_pages or []
         series_id_match = re.search(r'/series/([^/?#]+)', url)
         if not series_id_match: return []
         series_id = series_id_match.group(1)
         
-        auth_session = await self._get_authenticated_session()
+        session_task = self._get_authenticated_session()
+        auth_session = await session_task
+        
+        async def fetch_page(p):
+            if p in skip_pages: return []
+            try:
+                p_task = auth_session.get(f"{self.BASE_URL}/series/{series_id}/episodes/?page={p}", timeout=30, allow_redirects=True)
+                p_res = await p_task
+                if p_res.status_code == 200:
+                    return self._parse_page_data(p_res.text, sees_ids=seen_ids)
+            except Exception as e:
+                logger.error(f"[Jumptoon] Background fetch error for page {p}: {e}")
+            return []
+
+        # 🟢 S-GRADE: Parallel Fetching
+        tasks = [fetch_page(p) for p in range(1, total_pages + 1)]
+        results = await asyncio.gather(*tasks)
+        
         extra_chapters = []
-        for p in range(1, total_pages + 1):
-            if p in skip_pages: continue
-            p_res = await auth_session.get(f"{self.BASE_URL}/series/{series_id}/episodes/?page={p}", timeout=30)
-            if p_res.status_code == 200:
-                pg_chaps = self._parse_page_data(p_res.text, sees_ids=seen_ids)
-                if pg_chaps: extra_chapters.extend(pg_chaps)
+        for pg_chaps in results:
+            if pg_chaps: extra_chapters.extend(pg_chaps)
         return extra_chapters
 
     def _extract_tag_ids(self, html_str, up_ids, coming_soon_ids):
@@ -287,16 +362,25 @@ class JumptoonProvider(BaseProvider):
         clean_html = re.sub(r'\\+"', '"', clean_html).replace('\\/', '/')
         
         # 3. Extract blocks and detect tags
-        li_blocks = re.findall(r'<li[^>]*id=["\']?(\d+)["\']?[^>]*>(.*?)</li>', clean_html, re.S | re.I)
-        for ep_id, block in li_blocks:
+        # 🟢 FIX: Support alphanumeric/base64 IDs (not just \d+)
+        li_blocks = re.findall(r'<li[^>]*id=["\']?([^"\'>\s]+)["\']?[^>]*>(.*?)</li>', clean_html, re.S | re.I)
+        for raw_id, block in li_blocks:
+            # 🟢 S-GRADE: Decode Base64 IDs to match metadata
+            ep_id = str(raw_id).strip()
+            if not ep_id.isdigit():
+                try: 
+                    import base64
+                    decoded = base64.b64decode(ep_id).decode('utf-8')
+                    if ':' in decoded: ep_id = str(decoded.split(':')[-1])
+                except: pass
+            
             # Broad but safe detection for 'UP' tag
             if re.search(r'>UP<|UP\s*</|[>{\s]UP[\s<}]', block, re.I):
-                tag_id = str(ep_id).strip()
-                up_ids.add(tag_id)
+                up_ids.add(ep_id)
             
             block_upper = block.upper()
-            if 'COMING SOON' in block_upper or '次回更新' in block_upper or 'に更新予定' in block_upper:
-                coming_soon_ids.add(str(ep_id).strip())
+            if 'COMING SOON' in block_upper or '次回更新' in block_upper or 'に更新予定' in block_upper or 'occ4rb0' in block.lower():
+                coming_soon_ids.add(ep_id)
                 
         if up_ids:
             logger.info(f"[Jumptoon] Tag Scan: Detected {len(up_ids)} chapters with UP tag: {up_ids}")
@@ -309,7 +393,25 @@ class JumptoonProvider(BaseProvider):
         # Normalize the HTML locally for this page's data
         clean_html = re.sub(r'\\+"', '"', html_str).replace('\\/', '/')
         
-        # 2. Extract Hydrated Data
+        # 1. NEW: Extract precise names from H3 tags using BeautifulSoup
+        soup = BeautifulSoup(html_str, 'html.parser')
+        h3_mapping = {}
+        for li in soup.find_all('li', id=True):
+            ep_id = li.get('id', '').strip()
+            if not ep_id: continue
+            h3 = li.find('h3')
+            if h3:
+                # 🟢 S-GRADE: Match the [Main] - [Sub] system requested by the user
+                full_name = h3.get_text(separator=' - ', strip=True)
+                full_name = re.sub(r'(\s*-\s*)+', ' - ', full_name)
+                # Split back into notation and title for UI consistency
+                parts = full_name.split(' - ', 1)
+                h3_mapping[ep_id] = {
+                    'notation': parts[0] if len(parts) > 0 else "",
+                    'title': parts[1] if len(parts) > 1 else ""
+                }
+
+        # 2. Extract Hydrated Data for metadata (id, date, locked state, etc.)
         page_chapters = []
         potential_nodes = re.finditer(r'\{"id"\s*:\s*"([^"]+)"', clean_html)
         
@@ -331,11 +433,6 @@ class JumptoonProvider(BaseProvider):
                 node = json.loads(node_str)
                 if not isinstance(node, dict): continue
                 
-                notation = (node.get('notation') or '').strip()
-                title = (node.get('title') or '').strip()
-                number = node.get('number')
-                if not notation and number is None: continue
-                
                 raw_id = node.get('id')
                 if not raw_id: continue
                 
@@ -346,8 +443,29 @@ class JumptoonProvider(BaseProvider):
                     except: decoded = ""
                     if ':' in decoded: ep_id = str(decoded.split(':')[-1])
                 
-                # COMING SOON FILTER: Unreleased chapters have no offerType or are marked in HTML
-                if node.get('offerType') is None or ep_id in coming_soon_ids:
+                # Use BeautifulSoup naming if available to satisfy user request
+                h3_name = h3_mapping.get(ep_id)
+                if h3_name:
+                    notation = h3_name['notation']
+                    title = h3_name['title']
+                else:
+                    notation = (node.get('notation') or '').strip()
+                    title = (node.get('title') or '').strip()
+
+                number = node.get('number')
+                if not notation and number is None: continue
+                
+                # COMING SOON FILTER: Unreleased chapters or those scheduled for the future
+                # 🟢 Mar 25 Fix: Strict Timestamp Filter
+                curr_ts = time.time() * 1000
+                pub_ts = node.get('publishStartDatetime')
+                
+                is_future = False
+                if pub_ts is not None:
+                    try: is_future = int(pub_ts) > (curr_ts + 60000) # 1min buffer
+                    except: pass
+
+                if node.get('offerType') is None or ep_id in coming_soon_ids or is_future:
                     continue
                 
                 if ep_id in sees_ids: continue
@@ -355,11 +473,12 @@ class JumptoonProvider(BaseProvider):
                 
                 offer_type = node.get('offerType', 'PAID')
                 is_purchased = node.get('isPurchased', False)
+                # 🟢 S-GRADE: Detect "Wait for free" (待てば無料) status
+                is_wait_for_free = (offer_type == "WAIT_FREE") and not is_purchased
                 is_locked = not (offer_type in ["FREE", "FIRST_TIME_FREE"] or is_purchased)
 
                 is_new = ep_id in up_ids
                 # Diagnostic log for EVERY chapter to find the mismatch
-                logger.info(f"[Jumptoon] Node: ID={ep_id} title={title[:20]}... is_new={is_new} (Matches in {up_ids})")
                 
                 page_chapters.append({
                     'id': ep_id,
@@ -367,6 +486,7 @@ class JumptoonProvider(BaseProvider):
                     'notation': notation,
                     'number': str(number) if number is not None else None,
                     'is_locked': is_locked,
+                    'is_wait_for_free': is_wait_for_free,
                     'is_new': is_new
                 })
             except: continue
@@ -380,7 +500,7 @@ class JumptoonProvider(BaseProvider):
         
         target_url = task.url if task.url.endswith('/') else f"{task.url}/"
         s_id = str(task.series_id_key).strip('/')
-        ep_id = str(task.episode_number or task.episode_id).strip('/')
+        ep_id = str(task.episode_id).strip('/')
         
         res = await auth_session.get(target_url, timeout=30)
         if res.status_code != 200:
@@ -390,21 +510,30 @@ class JumptoonProvider(BaseProvider):
         
         # Manifest parsing logic
         t = res.text.replace('\\\\', '\\').replace('\\/', '/').replace('\\u0026', '&').replace('\\"', '"')
-        p = rf'https?://contents\.jumptoon\.com/[^\"\s<>\\\[\]\(\)\'\;]*{re.escape(s_id)}[^\"\s<>\\\[\]\(\)\'\;]*episode[^\"\s<>\\\[\]\(\)\'\;]*{re.escape(ep_id)}[^\"\s<>\\\[\]\(\)\'\;]*'
+        p = rf'https?://[a-z0-9.-]+\.jumptoon\.com/[^\"\s<>\\\[\]\(\)\'\;]*{re.escape(s_id)}[^\"\s<>\\\[\]\(\)\'\;]*'
         found_urls = list(dict.fromkeys(re.findall(p, t)))
         
         if not found_urls:
             raise ScraperError("Manifest not found. Account might lack access.")
+        
+        # 🎯 S-GRADE FILTERING: Restricted to Chapter Content only
+        # Domain: contents.jumptoon.com | Path: /episode/{id_or_number}/
+        # We try both ID and Number to be resilient against platform quirks.
+        keys = [k for k in [str(task.episode_id), str(task.episode_number)] if k and k != "None"]
+        filtered_urls = [u for u in found_urls if "contents.jumptoon.com" in u and any(f"/episode/{k}/" in u for k in keys)]
+        
+        if not filtered_urls:
+            # Fallback: if no matches (e.g. platform update), fallback to standard exclusions
+            filtered_urls = [u for u in found_urls if not any(x in u.lower() for x in ["preview", "thumb", "width="])]
 
         from app.services.image.optimizer import ImageOptimizer
         image_data = []
-        for url in found_urls:
-            if any(x in url.lower() for x in ["preview", "thumb", "width="]): continue
+        for url in filtered_urls:
             start_pos = t.find(url)
             window = t[start_pos : start_pos + 600]
             width_match = re.search(r'\"width\":\s*(\d+)', window)
             
-            seed = ImageOptimizer.calculate_jumptoon_seed(s_id, ep_id)
+            seed = ImageOptimizer.calculate_jumptoon_seed(s_id, task.episode_number)
             image_data.append({
                 'file': f"page_{len(image_data)+1:03d}.webp",
                 'url': url, 'seed': seed, 'width': int(width_match.group(1)) if width_match else None
@@ -412,17 +541,19 @@ class JumptoonProvider(BaseProvider):
 
         # Concurrent Download with S-Grade Semaphore
         total = len(image_data)
-        completed = 0
+        stats = {"completed": 0}
         from app.core.logger import ProgressBar
         progress = ProgressBar(task.req_id, "Downloading", "Jumptoon", total)
-        progress.update(completed)
+        progress.update(stats["completed"])
 
         async def download_one(item):
-            nonlocal completed
+            # 🟢 S-GRADE STAGGER: Small random delay to prevent connection resets on mass-start
+            await asyncio.sleep(random.uniform(0.1, 0.5))
+            logger.debug(f"🔗 [Jumptoon] Downloading {item['file']}: {item['url']}")
             async with self._download_semaphore:
                 await self._download_image_robust(auth_session, item['url'], item['file'], output_dir, item['seed'], item['width'])
-            completed += 1
-            progress.update(completed)
+            stats["completed"] += 1
+            progress.update(stats["completed"])
 
         await asyncio.gather(*(download_one(item) for item in image_data))
         progress.finish()
@@ -434,16 +565,16 @@ class JumptoonProvider(BaseProvider):
         final_path = os.path.join(out_dir, filename)
 
         # Retry loop for transient network/curl errors
-        max_retries = 3
+        max_retries = 5
         for attempt in range(max_retries):
             try:
-                # 🟢 Increased timeout to 60s for stability
-                res = await session.get(url, timeout=60)
+                # 🟢 S-GRADE: Increased timeout to 180s for massive high-res files
+                res = await session.get(url, timeout=180)
                 res.raise_for_status()
                 break
             except Exception as e:
                 if attempt < max_retries - 1:
-                    wait = 3 * (attempt + 1)
+                    wait = 10 * (attempt + 1)
                     logger.warning(f"⚠️ [{filename}] Download attempt {attempt+1} failed: {e}. Retrying in {wait}s...")
                     await asyncio.sleep(wait)
                 else:
@@ -464,7 +595,61 @@ class JumptoonProvider(BaseProvider):
             if os.path.exists(raw_path): os.rename(raw_path, final_path)
 
     async def fast_purchase(self, task) -> bool:
-        # Placeholder for future Coin-based API automation
+        """
+        API-based rapid unlocking for Jumptoon (Wait-for-free).
+        Usescaptured Next.js Server Action ID to trigger ticket consumption.
+        """
+        logger.info(f"[Jumptoon] 🎫 Attempting Wait-for-free API unlock for Ep {task.episode_id}")
+        auth_session = await self._get_authenticated_session()
+        
+        # Captured Action ID: UpdateUserSeriesEpisode
+        action_id = "7fec33a9d5a55ec238c028ee220a0f519ee94d5907"
+        
+        # 🟢 S-GRADE: Binary-Exact Headers
+        headers = {
+            'next-action': action_id,
+            'Content-Type': 'text/plain;charset=UTF-8',
+            'Origin': 'https://jumptoon.com',
+            'Referer': task.url,
+            'x-requested-with': 'XMLHttpRequest'
+        }
+        
+        # 🟢 S-GRADE: Binary-Exact Payload
+        payload = [{"input": {
+            "seriesEpisodeId": str(task.episode_id),
+            "lastViewedAt": True,
+            "startViewing": True,
+            "lastViewedPageNumber": "1",
+            "viewerType": "NORMAL"
+        }}]
+        compact_payload = json.dumps(payload, separators=(',', ':'))
+        
+        try:
+            # The POST target is the episode's viewer page itself
+            res = await auth_session.post(task.url, data=compact_payload, headers=headers, timeout=30)
+            
+            if res.status_code == 200:
+                # Next.js Server Actions return RSC (React Server Components) strings.
+                # We check for markers indicating a successful purchase/session state.
+                if '"isPurchased":true' in res.text or '"rentalFinishedAt"' in res.text:
+                    logger.info(f"✅ [Jumptoon] Successfully unlocked Ep {task.episode_id}")
+                    return True
+                
+                # If it didn't explicitly say purchased, maybe it failed due to no ticket
+                if '"NOT_ENOUGH_TICKETS"' in res.text or '"error"' in res.text.lower():
+                    logger.warning(f"❌ [Jumptoon] Unlock Ep {task.episode_id} failed: Insufficient tickets or error.")
+                    return False
+                    
+                # Fallback: Treat as success if it looks like a valid RSC response and no errors
+                if ':"$@1"' in res.text:
+                    logger.info(f"✅ [Jumptoon] Potential success for Ep {task.episode_id} (RSC Response)")
+                    return True
+            else:
+                logger.error(f"❌ [Jumptoon] API unlock failed with status {res.status_code}")
+                
+        except Exception as e:
+            logger.error(f"❌ [Jumptoon] API unlock critical error: {e}")
+            
         return False
 
     async def run_ritual(self, session):

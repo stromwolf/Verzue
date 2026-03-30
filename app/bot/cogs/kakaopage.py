@@ -37,12 +37,17 @@ class KakaoCog(commands.Cog):
             scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
             data = await scraper.get_series_info(url)
             
+            title, total_chapters, chapter_list, image_url, series_id, _, _, status_label, genre_label = data
+            
             ctx = {
                 'url': url,
-                'title': data[0],
-                'chapters': data[2],
-                'image_url': data[3],
-                'series_id': data[4],
+                'title': title,
+                'chapters': chapter_list,
+                'total_chapters': total_chapters,
+                'image_url': image_url,
+                'series_id': series_id,
+                'status_label': status_label,
+                'genre_label': genre_label,
                 'req_id': req_id,
                 'user': interaction.user
             }

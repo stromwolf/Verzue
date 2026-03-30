@@ -1,8 +1,10 @@
 import asyncio
 import logging
+import discord
 from config.settings import Settings
 from app.models.chapter import ChapterTask
 from app.services.group_manager import get_interested_groups
+from typing import List, Optional, Any, Dict
 
 logger = logging.getLogger("BatchController")
 
@@ -12,9 +14,13 @@ class BatchController:
         self.uploader = bot.task_queue.uploader
         self.unlocker = bot.task_queue.unlocker
 
-    async def prepare_batch(self, interaction, selected_indices, all_chapters, title, url, view_ref=None, series_id=None, original_title=None):
+    async def prepare_batch(self, interaction: discord.Interaction, selected_indices: List[int], all_chapters: List[Dict], title: str, url: str, view_ref: Any = None, series_id: str | None = None, original_title: str | None = None) -> List[ChapterTask]:
         guild_id = interaction.guild.id if interaction.guild else 0
-        scan_group = Settings.SERVER_MAP.get(guild_id, Settings.DEFAULT_CLIENT_NAME)
+        channel_id = interaction.channel_id if interaction.channel_id else 0
+        
+        # 🟢 S-GRADE MAPPING: Check channel-specific mapping first, then guild-level, then default
+        scan_group = Settings.SERVER_MAP.get(channel_id) or Settings.SERVER_MAP.get(guild_id, Settings.DEFAULT_CLIENT_NAME)
+        
         req_id = view_ref.req_id if view_ref else "UNKNOWN"
 
         if view_ref: 
@@ -29,7 +35,7 @@ class BatchController:
         service = "Unknown"
         if "mechacomic.jp" in url: service = "Mecha"
         elif "jumptoon.com" in url: service = "Jumptoon"
-        elif "piccoma.com" in url: service = "Piccoma"
+        elif "piccoma" in url: service = "Piccoma"
         elif "kakao.com" in url: service = "Kakao"
         elif "qq.com" in url: service = "Tencent"
         elif "kuaikanmanhua.com" in url: service = "Kuaikan"
@@ -72,11 +78,7 @@ class BatchController:
                 await asyncio.to_thread(self.uploader.rename_file, drive_series_id, target_series_name)
             else:
                 logger.info(f"[{req_id}] ✅ Using existing series folder: '{current_name}'")
-        
-        # 1d. MAIN Folder (For raw uploads)
-        main_id = await asyncio.to_thread(self.uploader.create_folder, "MAIN", drive_series_id)
-        
-        # 1e. Multi-Group Folder Setup (For shortcuts)
+        # 1d. MAIN & Multi-Group Folders in Parallel
         # Find all groups that have an override for this series
         interested_groups = get_interested_groups(url)
         
@@ -90,16 +92,26 @@ class BatchController:
         if not current_group_in_list:
             interested_groups.append((scan_group, title))
 
-        all_interested_folders = [] # [{'id': '...', 'name': '...', 'group': '...'}]
-        requester_folder = None
-        
+        # 🟢 Parallel Setup Log
+        logger.info(f"[{req_id}] 📡 Parallel Setup: Creating MAIN and {len(interested_groups)} group folders...")
+
+        main_folder_coro = asyncio.to_thread(self.uploader.create_folder, "MAIN", drive_series_id)
+        group_folder_coros = []
         for g_name, g_title in interested_groups:
-            # 🟢 Suffix " Team" if not already present
             display_group = g_name if " team" in g_name.lower() else f"{g_name} Team"
             client_folder_name = f"{display_group} - {g_title}"
+            group_folder_coros.append(asyncio.to_thread(self.uploader.create_folder, client_folder_name, drive_series_id))
             
-            c_id = await asyncio.to_thread(self.uploader.create_folder, client_folder_name, drive_series_id)
-            await asyncio.to_thread(self.uploader.make_public, c_id)
+        # Execute all creation calls in parallel
+        results = await asyncio.gather(main_folder_coro, *group_folder_coros)
+        main_id = results[0]
+        
+        all_interested_folders = []
+        requester_folder = None
+        for i, (g_name, g_title) in enumerate(interested_groups):
+            c_id = results[i+1] # Skip index 0 (MAIN)
+            display_group = g_name if " team" in g_name.lower() else f"{g_name} Team"
+            client_folder_name = f"{display_group} - {g_title}"
             
             folder_info = {
                 'id': c_id,
@@ -107,12 +119,15 @@ class BatchController:
                 'group': g_name
             }
             all_interested_folders.append(folder_info)
-            
             if g_name.lower() == scan_group.lower():
                 requester_folder = folder_info
 
-        # Ensure they are public (inherited by children)
-        await asyncio.to_thread(self.uploader.make_public, main_id)
+        # 1e. Parallel Permissions
+        # Ensure all created folders are public
+        logger.info(f"[{req_id}] 🌍 Parallel Permissions: Making folders public...")
+        permission_coros = [asyncio.to_thread(self.uploader.make_public, f['id']) for f in all_interested_folders]
+        permission_coros.append(asyncio.to_thread(self.uploader.make_public, main_id))
+        await asyncio.gather(*permission_coros)
 
         # Quick check of what already exists (MAIN) to avoid redundant task queueing
         main_manifest = await asyncio.to_thread(self.uploader.list_all_items, main_id)
@@ -130,6 +145,12 @@ class BatchController:
             # Update the local reference to the now-populated chapters
             all_chapters = view_ref.all_chapters
 
+        # 2. COLLECTING TASKS & EXISTING SHORTCUTS
+        shortcuts_to_create = [] # (main_existing_id, folder_name)
+        
+        if view_ref:
+            view_ref.existing_links = {} # {display_idx: link}
+
         for idx in selected_indices:
             ch_data = all_chapters[idx]
             task = self._make_task(idx, ch_data, title, url, scan_group, interaction, series_id, req_id)
@@ -137,19 +158,25 @@ class BatchController:
             
             # Pass top-level IDs so the worker knows where to put things
             task.main_folder_id = main_id
-            task.client_folder_id = requester_folder['id'] if requester_folder else None # Backward compatibility
+            task.client_folder_id = requester_folder.get('id') if requester_folder else None # Backward compatibility
             task.client_folders = task_client_folders # New multi-folder list
             task.series_title_id = drive_series_id
             task.final_folder_name = folder_name
             
             is_locked = ch_data.get('is_locked', "jumptoon.com" in url)
             
-            # Check if this chapter is already finished
+            # Check if this chapter is already finished in MAIN
             main_existing_id = main_manifest.get(folder_name)
             if main_existing_id:
                 # 🟢 Filter: Only create shortcut for the requester now
                 if requester_folder:
-                    await asyncio.to_thread(self.uploader.create_shortcut, main_existing_id, requester_folder['id'], folder_name)
+                    shortcuts_to_create.append((main_existing_id, folder_name))
+                
+                # 🟢 S-GRADE: Record the link and full title for UI display even if skipped
+                if view_ref:
+                    link = await asyncio.to_thread(self.uploader.get_share_link, main_existing_id)
+                    view_ref.existing_links[task.chapter_str] = {"link": link, "title": task.title}
+
                 # Skip queueing if it already exists in MAIN
                 continue
             
@@ -157,13 +184,22 @@ class BatchController:
             temp_name = f"[Uploading] {folder_name}"
             if temp_name in main_manifest:
                 # Task is already active or failed halfway, we can re-queue it
-                task.pre_created_folder_id = main_manifest[temp_name]
+                task.pre_created_folder_id = main_manifest.get(temp_name)
                 task.final_folder_name = folder_name
             
             tasks_to_queue.append(task)
             # Only send to unlocker if it's explicitly locked AND supported
-            if is_locked and ("mechacomic.jp" in url or "piccoma.com" in url):
+            if is_locked and ("mechacomic.jp" in url or "piccoma.com" in url or "jumptoon.com" in url):
                 chapters_to_unlock.append(task)
+
+        # 🚀 PARALLEL SHORTCUTS: Create all shortcuts for existing chapters at once
+        if shortcuts_to_create:
+            logger.info(f"[{req_id}] 🔗 Parallel Shortcuts: Creating {len(shortcuts_to_create)} shortcuts...")
+            req_folder_id = requester_folder.get('id')
+            await asyncio.gather(*[
+                asyncio.to_thread(self.uploader.create_shortcut, sid, req_folder_id, name)
+                for sid, name in shortcuts_to_create
+            ])
 
         # 2. PHASE 3 UNLOCK
         if chapters_to_unlock:
@@ -215,20 +251,36 @@ class BatchController:
             else:
                 ch_url = url
 
-        # 🟢 Use notation (e.g. 第1話) for Jumptoon if available
-        chapter_str = ch.get('notation') or ch.get('number_text') or str(idx + 1)
-
         # 🟢 Detect service for progress reporting
         service = "unknown"
         if "mechacomic.jp" in url: service = "Mecha"
         elif "jumptoon.com" in url: service = "Jumptoon"
-        elif "piccoma.com" in url: service = "Piccoma"
+        elif "piccoma" in url: service = "Piccoma"
         elif "kakao.com" in url: service = "Kakao"
         elif "qq.com" in url: service = "Tencent"
         elif "kuaikanmanhua.com" in url: service = "Kuaikan"
 
+        # 🟢 Jumptoon Special Handling: Use semantic sub-index for hiatus folders (e.g. 45.1 - 休載)
+        if service == "Jumptoon":
+            nt = ch.get('notation', '').strip()
+            chapter_str = nt if nt else (ch.get('_display_idx') or str(idx + 1))
+            # 🟢 S-GRADE: Combine notation and title for the Drive folder name
+            tt = ch.get('title', '').strip()
+            title_val = f"{nt} - {tt}" if nt and tt else (nt or tt or "Chapter")
+        elif service == "Mecha":
+            # 🟢 S-GRADE: Use explicit notation (e.g. 001話) instead of index (1, 2, 3)
+            chapter_str = ch.get('notation') or str(idx + 1)
+            title_val = ch.get('title', '')
+        elif service == "Piccoma":
+            # 🟢 S-GRADE: Use explicit notation (e.g. 第1話) instead of index (1, 2, 3)
+            chapter_str = ch.get('notation') or str(idx + 1)
+            title_val = ch.get('title', '')
+        else:
+            chapter_str = ch.get('notation') or ch.get('number_text') or str(idx + 1)
+            title_val = ch.get('title', '')
+
         return ChapterTask(
-            id=idx+1, title=ch.get('title', ''), chapter_str=chapter_str,
+            id=idx+1, title=title_val, chapter_str=chapter_str,
             url=ch_url, series_title=title, requester_id=interaction.user.id, channel_id=interaction.channel_id,
             guild_id=interaction.guild.id if interaction.guild else 0, guild_name=interaction.guild.name if interaction.guild else "DM",
             scan_group=group, series_id_key=str(sid), episode_id=str(ch.get('id', '')), episode_number=str(ch.get('number', '')), is_smartoon=True, req_id=req_id,

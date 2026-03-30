@@ -35,7 +35,7 @@ class SubscriptionsCog(commands.Cog):
             if custom_id.startswith("poll_dl_"):
                 series_id = custom_id.replace("poll_dl_", "")
                 
-                # Defer the interaction since scraping might take a few seconds
+                # 🟢 S-GRADE: Defer to transform the original message directly
                 await interaction.response.defer()
                 
                 # 1. Find the subscription globally by series_id
@@ -55,61 +55,66 @@ class SubscriptionsCog(commands.Cog):
                     # 2. Re-fetch metadata
                     scraper = self.bot.task_queue.provider_manager.get_provider_for_url(target_sub["series_url"])
                     data = await scraper.get_series_info(target_sub["series_url"])
-                    title, _, chapter_list, _, fetched_series_id = data
+                    title, _, chapter_list, image_url, fetched_series_id, _, _, status_label, genre_label = data
                     
                     if not chapter_list:
                         return await interaction.followup.send("❌ No chapters found for this series.", ephemeral=True)
                         
                     latest_chapter = chapter_list[-1]
                     
-                    # 3. Create the download task
-                    task = ChapterTask(
-                        id=len(chapter_list),
-                        title=latest_chapter["title"],
-                        chapter_str=latest_chapter["notation"],
-                        url=target_sub["series_url"],
-                        series_title=title,
-                        req_id=f"MANUAL_POLL_{series_id}",
-                        series_id_key=series_id,
-                        episode_id=str(latest_chapter["id"]),
-                        requester_id=interaction.user.id,
-                        channel_id=target_sub["channel_id"],
-                        guild_id=0,
-                        guild_name=target_group,
-                        scan_group=target_group,
-                        is_smartoon=("mecha" in target_sub["platform"].lower())
-                    )
+                    # 3. Queue for Download via BatchController
+                    from app.services.batch_controller import BatchController
+                    from app.bot.common.view import UniversalDashboard
+                    controller = BatchController(self.bot)
                     
-                    await self.bot.task_queue.add_task(task)
-                    
-                    # 4. Edit the original V2 message to show Queued status
-                    #    The notification uses V2 Components (flag 32768), not embeds.
-                    queued_payload = {
-                        "flags": 32768,
-                        "components": [{
-                            "type": 17,  # Container
-                            "accent_color": 0x2ecc71,  # Green = success
-                            "components": [
-                                {"type": 10, "content": f"### <a:done_subscription:1482425914456281108> Download Queued"},
-                                {"type": 14, "divider": True, "spacing": 1},
-                                {"type": 10, "content": f"**{title}** — {latest_chapter['notation']}"},
-                                {"type": 14, "divider": True, "spacing": 1},
-                                {"type": 10, "content": f"-# Queued by <@{interaction.user.id}> | S-ID: {series_id}"},
-                            ]
-                        }]
+                    req_id = f"SUB-{series_id[:4]}"
+                    ctx_data = {
+                        'url': target_sub["series_url"], 'title': title, 'chapters': chapter_list,
+                        'image_url': image_url, 'req_id': req_id,
+                        'series_id': series_id, 'user': interaction.user.id,
+                        'status_label': status_label, 'genre_label': genre_label
                     }
-                    
-                    route = discord.http.Route(
-                        'PATCH',
-                        '/channels/{channel_id}/messages/{message_id}',
-                        channel_id=interaction.channel_id,
-                        message_id=interaction.message.id,
+                    view = UniversalDashboard(self.bot, ctx_data, target_sub["platform"])
+                    view.interaction = interaction
+                    view.processing_mode = True
+                    view.phases = {"analyze": "loading", "purchase": "waiting", "download": "waiting"}
+                    await view.update_view(interaction)
+
+                    # 🟢 Folder Resolution & Task Preparation
+                    # We want to download the LATEST chapter found
+                    latest_idx = len(chapter_list) - 1
+                    tasks = await controller.prepare_batch(
+                        interaction=interaction,
+                        selected_indices=[latest_idx],
+                        all_chapters=chapter_list,
+                        title=title,
+                        url=target_sub["series_url"],
+                        view_ref=view,
+                        series_id=series_id
                     )
-                    await self.bot.http.request(route, json=queued_payload)
+                    
+                    if not tasks: return
+
+                    for t in tasks:
+                         await self.bot.task_queue.add_task(t)
+                    
+                    asyncio.create_task(view.monitor_tasks())
                     
                 except Exception as e:
                     logger.error(f"Failed to process manual poll download for {series_id}: {e}")
-                    await interaction.followup.send(f"❌ Failed to queue download: {e}", ephemeral=True)
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message(f"❌ Failed to queue download: {e}", ephemeral=True)
+                    else:
+                        await interaction.followup.send(f"❌ Failed to queue download: {e}", ephemeral=True)
+                    
+    @commands.command(name="check_chapters", aliases=["check_subs", "force_poll"])
+    async def force_subscription_poll(self, ctx):
+        """Forces a manual check for new chapters across all subscriptions."""
+        poller = getattr(self.bot, "auto_poller", None)
+        if not poller:
+            return await ctx.send("❌ `AutoPoller` not initialized.")
+        
+        await poller.trigger_manual_poll(ctx)
 
 async def setup(bot):
     await bot.add_cog(SubscriptionsCog(bot))

@@ -9,6 +9,7 @@ from curl_cffi.requests import AsyncSession
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError
+from config.settings import Settings
 
 logger = logging.getLogger("AcqqProvider")
 
@@ -30,7 +31,7 @@ class AcqqProvider(BaseProvider):
     async def _get_authenticated_session(self):
         # Tencent specific: We keep the Chrome OS impersonation
         session_obj = await self.session_service.get_active_session("acqq")
-        async_session = AsyncSession(impersonate="chrome120")
+        async_session = AsyncSession(impersonate="chrome120", proxy=Settings.get_proxy())
         async_session.headers.update(self.default_headers)
         
         if session_obj:
@@ -47,7 +48,11 @@ class AcqqProvider(BaseProvider):
             return res.status_code == 200
         except: return False
 
-    async def get_series_info(self, url: str):
+    async def get_series_info(self, url: str, fast: bool = False):
+        if fast:
+            # Tencent mobile page is small enough that we can just fetch it, 
+            # but we'll respect the flag for consistency.
+            pass
         match = re.search(r'id/(\d+)', url)
         if not match: raise ScraperError("Invalid Tencent URL.")
         series_id = match.group(1)
@@ -86,7 +91,7 @@ class AcqqProvider(BaseProvider):
             })
 
         all_chapters.sort(key=lambda x: int(x['id']))
-        return title, len(all_chapters), all_chapters, image_url, series_id, None, None
+        return title, len(all_chapters), all_chapters, image_url, series_id, None, None, None, None
 
     async def scrape_chapter(self, task, output_dir: str):
         auth_session = await self._get_authenticated_session()

@@ -35,13 +35,16 @@ class AcQqCog(commands.Cog):
             data = await scraper.get_series_info(url)
             
             # PROPERLY UNPACK THE TUPLE
-            title, total_chapters, chapter_list, image_url, series_id = data
+            title, total_chapters, chapter_list, image_url, series_id, _, _, status_label, genre_label = data
             ctx_data = {
                 'url': url,
                 'title': title,
                 'chapters': chapter_list,
+                'total_chapters': total_chapters,
                 'image_url': image_url,
                 'series_id': series_id,
+                'status_label': status_label,
+                'genre_label': genre_label,
                 'req_id': req_id,
                 'user': interaction.user
             }

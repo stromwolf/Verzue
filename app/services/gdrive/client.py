@@ -60,11 +60,11 @@ class GDriveClient:
             self.authenticate()
             
         if not hasattr(self._local, 'service'):
-            # Use httplib2-based transport as googleapiclient expects it
+            # Use httplib2-based transport with an explicit timeout (120s)
             # We create a NEW Http() and service for EVERY thread via threading.local
-            http = google_auth_httplib2.AuthorizedHttp(self.creds, http=httplib2.Http())
+            http = google_auth_httplib2.AuthorizedHttp(self.creds, http=httplib2.Http(timeout=120))
             self._local.service = build('drive', 'v3', http=http, cache_discovery=False)
-            logger.debug("Created thread-local GDrive Service instance.")
+            logger.debug("Created thread-local GDrive Service instance (Timeout: 120s).")
             
         return self._local.service
 

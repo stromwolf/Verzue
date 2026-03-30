@@ -1,3 +1,4 @@
+from __future__ import annotations
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -8,9 +9,15 @@ import asyncio
 import math
 import time
 import datetime
+import json
+from typing import TYPE_CHECKING, List, Dict, Any, Optional
 from config.settings import Settings
 from app.models.chapter import TaskStatus
 from app.services.group_manager import load_group, get_group_emoji
+from app.services.redis_manager import RedisManager
+
+if TYPE_CHECKING:
+    from app.bot.common.view import UniversalDashboard
 
 logger = logging.getLogger("Dashboard")
 
@@ -41,16 +48,21 @@ class DashboardCog(commands.Cog):
         channel_id = interaction.channel.id if interaction.channel else 0
         scan_name = Settings.SERVER_MAP.get(channel_id) or Settings.SERVER_MAP.get(guild_id) or Settings.DEFAULT_CLIENT_NAME
 
-        # Fetch Today's Weeklies
-        from app.services.group_manager import get_all_subscriptions
-        all_subs = get_all_subscriptions()
-        today_name = datetime.datetime.now(datetime.timezone.utc).strftime("%A")
+        # 🟢 S-GRADE: Fetch Today's Weeklies from Redis (O(1))
+        from app.services.redis_manager import RedisManager
+        redis_brain = RedisManager()
         
-        # Filter for today's subs for THIS group
-        group_subs = [
-            sub for g_name, sub in all_subs 
-            if g_name == scan_name and (sub.get("release_day") or "").lower() == today_name.lower()
-        ]
+        jst_now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=9)
+        today_name = jst_now.strftime("%A")
+        
+        # Get hydrated sub data for today
+        group_subs = await redis_brain.get_schedule_for_group(scan_name, today_name)
+        total_scheduled = len(group_subs)
+        
+        # Limit to TOP 3 as per user request
+        display_subs = group_subs[:3]
+        
+        logger.info(f"Dashboard Load for {scan_name}: Today={today_name}, Found {total_scheduled} weeklies (showing 3).")
         
         # Custom Logo
         custom_emoji = get_group_emoji(scan_name)
@@ -63,18 +75,30 @@ class DashboardCog(commands.Cog):
         }
 
         # 2. WEEKLIES SECTION
-        weeklies_text = "## Today's Weeklies\n"
-        if group_subs:
-            for i, sub in enumerate(group_subs[:5], 1):
-                weeklies_text += f"> {i}. <#{sub['channel_id']}>\n"
-            if len(group_subs) > 5:
-                weeklies_text += f"> *...and {len(group_subs)-5} more*"
+        weeklies_text = "# Today Weeklies\n"
+        if display_subs:
+            for i, sub in enumerate(display_subs, 1):
+                weeklies_text += f"{i}. <#{sub.get('channel_id')}>\n"
         else:
             weeklies_text += "> *No scheduled series subscriptions for today.*"
         
         weeklies_section = {
             "type": 10, # TEXT_DISPLAY
             "content": weeklies_text
+        }
+
+        # 4. ACTION ROW (View All)
+        action_row = {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2,
+                    "style": 2,
+                    "label": "View All Subscriptions",
+                    "custom_id": f"v2_btn_view_all_subs_{scan_name}",
+                    "emoji": {"name": "📋"}
+                }
+            ]
         }
 
         # 3. PLATFORM LIST & SELECT
@@ -135,6 +159,7 @@ class DashboardCog(commands.Cog):
                     header_section,
                     {"type": 14, "divider": True, "spacing": 1},
                     weeklies_section,
+                    action_row, # Moved immediately after weeklies
                     {"type": 14, "divider": True, "spacing": 1},
                     platform_list_section,
                     platform_select_row,
@@ -154,6 +179,147 @@ class DashboardCog(commands.Cog):
         }
         return payload
 
+    async def get_group_subs_list_payload(self, group_name: str, page: int = 0, platform_filter: str | None = None):
+        """Generates a paginated, non-ephemeral list of all subscriptions grouped by day."""
+        import datetime
+        group_data = load_group(group_name)
+        subs = list(group_data.get("subscriptions", []))
+        overrides: dict = group_data.get("title_overrides", {})
+
+        # Filter
+        if platform_filter and platform_filter != "all":
+            subs = [s for s in subs if s.get("platform", "").lower() == platform_filter.lower()]
+
+        # Sunday-start day order
+        day_order = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+        
+        # Get Current Day (UTC+9 for JST context usually applied in this bot)
+        jst_now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=9)
+        today_name = jst_now.strftime("%A")
+
+        # Sort by Day -> Time -> Title
+        def get_sort_key(s):
+            day = s.get("release_day")
+            d_idx = day_order.index(day) if day in day_order else 7
+            time = s.get("release_time", "99:99")
+            url = (s.get("series_url") or "").rstrip('/')
+            title = (overrides.get(url) or s.get("series_title") or "").lower()
+            return (d_idx, time, title)
+        
+        subs.sort(key=get_sort_key)
+
+        total: int = len(subs)
+        start: int = page * 10
+        end: int = start + 10
+        visible_subs: list = subs[start:end]
+
+        filter_label = platform_filter.capitalize() if platform_filter and platform_filter != 'all' else "All"
+        header_text = f"## 📋 {group_name} Team Subscriptions ({filter_label})\n"
+        
+        content = ""
+        last_day = None
+        
+        # Emojis
+        emoji_today = "<:Calendar_T:1485261654777270312>"
+        emoji_other = "<:Calendar_U:1485261652713803906>"
+
+        for i, sub in enumerate(visible_subs, 1):
+            current_day = sub.get("release_day") or "Other"
+            
+            # Show day header if it changed OR if it's the first sub on this page
+            if current_day != last_day:
+                emoji = emoji_today if current_day == today_name else emoji_other
+                content += f"\n### {emoji} {current_day}\n"
+                last_day = current_day
+
+            url = (sub.get("series_url") or "").rstrip('/')
+            overridden = overrides.get(url)
+            original = sub.get("series_title")
+            
+            title_display = f"**{overridden}** ({original})" if overridden else f"**{original}**"
+            content += f"{i + start}. {title_display}\n> <#{sub.get('channel_id')}>\n"
+
+        if not content:
+            content = "*No subscriptions found.*"
+
+        # Platform Dropdown
+        dropdown = {
+            "type": 3,
+            "custom_id": f"v2Dash_Filter|G:{group_name}",
+            "placeholder": "Filter by Platform",
+            "options": [
+                {"label": "All Platforms", "value": "all", "default": not platform_filter or platform_filter == 'all'},
+                {"label": "Piccoma", "value": "piccoma", "default": platform_filter == "piccoma", "emoji": {"id": "1478368704164134912"}},
+                {"label": "Mechacomic", "value": "mecha", "default": platform_filter == "mecha", "emoji": {"id": "1478369141957333083"}},
+                {"label": "Jumptoon", "value": "jumptoon", "default": platform_filter == "jumptoon", "emoji": {"id": "1478367963928068168"}}
+            ]
+        }
+
+        # Detail Selection Dropdown
+        options: list = []
+        for j, sub in enumerate(visible_subs, 1):
+            url = (sub.get("series_url") or "").rstrip('/')
+            overridden = overrides.get(url)
+            original = sub.get("series_title")
+            label = f"{j + start}. {overridden or original}"
+            options.append({
+                "label": label[:100],
+                "value": sub['series_id']
+            })
+
+        detail_select = {
+            "type": 3,
+            "custom_id": f"v2Dash_Detail_Select|G:{group_name}",
+            "placeholder": "View Details",
+            "options": options
+        }
+        
+        detail_rows: list = [{"type": 1, "components": [detail_select]}] if visible_subs else []
+
+        # Pagination Row
+        pagination_row: dict[str, Any] = {"type": 1, "components": []}
+        if page > 0:
+            pagination_row["components"].append({
+                "type": 2, "style": 2, "label": "⬅️ Previous",
+                "custom_id": f"v2Dash_Pg|P:{page-1}|F:{platform_filter or 'all'}|G:{group_name}"
+            })
+        
+        next_btn = {
+            "type": 2, "style": 2, "label": "Next ➡️",
+        }
+        if end < total:
+            next_btn["custom_id"] = f"v2Dash_Pg|P:{page+1}|F:{platform_filter or 'all'}|G:{group_name}"
+        else:
+            next_btn["custom_id"] = "v2Dash_Disabled_Next"
+            next_btn["disabled"] = True
+        pagination_row["components"].append(next_btn)
+
+        # Back to Dashboard Home
+        pagination_row["components"].append({
+            "type": 2, "style": 4, "label": "Back to Dashboard",
+            "custom_id": f"v2Dash_Home"
+        })
+
+        # ASSEMBLE V2 PAYLOAD
+        container_components = [
+            {"type": 10, "content": header_text},
+            {"type": 14, "divider": True, "spacing": 1},
+            {"type": 1, "components": [dropdown]},
+            {"type": 14, "divider": True, "spacing": 1},
+            {"type": 10, "content": content}
+        ]
+
+        components = [{"type": 17, "components": container_components}]
+        components.extend(detail_rows)
+        components.append(pagination_row)
+
+        return {
+            "type": 7, # UPDATE_MESSAGE
+            "data": {
+                "components": components
+            }
+        }
+
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
         """🟢 EVENT LISTENER: Catch raw V2 interactions."""
@@ -161,7 +327,8 @@ class DashboardCog(commands.Cog):
             custom_id = interaction.data.get("custom_id", "")
             
             # --- Close Button ---
-            if custom_id == "btn_close_main_dash":
+            # --- Close / Cancel Buttons ---
+            if custom_id == "btn_close_main_dash" or custom_id.startswith("v2_btn_sub_cancel_"):
                 try: 
                     await interaction.response.defer()
                     await interaction.message.delete()
@@ -246,11 +413,106 @@ class DashboardCog(commands.Cog):
                 url = parts[1] if len(parts) > 1 else ""
                 await self.launch_channel_select(interaction, platform, url)
 
+            # --- View All Subscriptions (Paginated List) ---
+            elif custom_id.startswith("v2_btn_view_all_subs_"):
+                group_name = custom_id.replace("v2_btn_view_all_subs_", "")
+                payload = await self.get_group_subs_list_payload(group_name)
+                await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=payload)
+
+            # --- Filter Subscriptions (Dropdown) ---
+            elif custom_id.startswith("v2Dash_Filter|"):
+                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
+                group_name = parts.get("G")
+                platform = interaction.data.get("values", ["all"])[0]
+                payload = await self.get_group_subs_list_payload(group_name, platform_filter=platform)
+                await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=payload)
+
+            # --- Paginate Subscriptions ---
+            elif custom_id.startswith("v2Dash_Pg|"):
+                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
+                group_name = parts.get("G")
+                page = int(parts.get("P", 0))
+                platform = parts.get("F", "all")
+                payload = await self.get_group_subs_list_payload(group_name, page=page, platform_filter=platform)
+                await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=payload)
+
+            # --- View Series Detail ---
+            elif custom_id.startswith("v2Dash_Detail|") or custom_id.startswith("v2Dash_Detail_Select|"):
+                # "View Detail" launches the UniversalDashboard for that series
+                if custom_id.startswith("v2Dash_Detail_Select|"):
+                    series_id = interaction.data.get("values", [None])[0]
+                    parts = dict(p.split(":") for p in custom_id.split("|")[1:])
+                    group_name = parts.get("G")
+                else:
+                    parts = dict(p.split(":") for p in custom_id.split("|")[1:])
+                    series_id = parts.get("S")
+                    group_name = parts.get("G")
+                
+                if not series_id: return
+                
+                # We need to find the series URL and platform
+                redis_brain = RedisManager()
+                sub_data_raw = await redis_brain.client.hget("verzue:index:subs", series_id)
+                if not sub_data_raw:
+                    return await interaction.response.send_message("❌ Series metadata not found in Redis. Please try syncing.", ephemeral=True)
+                
+                sub_data = json.loads(sub_data_raw)
+                url = sub_data.get("url")
+                
+                # Defer to show loading while we fetch current chapters
+                await interaction.response.defer(ephemeral=True)
+                
+                # Launch Extractor logic
+                p_url_low = url.lower()
+                platform_type = "jumptoon" if "jumptoon" in p_url_low else "piccoma" if "piccoma" in p_url_low else "mecha"
+                scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
+                
+                try:
+                    # S-Grade: Use get_series_info instead of non-existent fetch_metadata
+                    title, total_chapters, all_chapters, image_url, series_id, release_day, release_time, status_label, genre_label = await scraper.get_series_info(url)
+                    
+                    ctx_data = {
+                        "url": url,
+                        "title": title or sub_data.get("title", "Unknown"),
+                        "original_title": title or sub_data.get("title", "Unknown"),
+                        "chapters": all_chapters or [],
+                        "total_chapters": total_chapters or 0,
+                        "image_url": image_url or "",
+                        "status_label": status_label,
+                        "req_id": uuid.uuid4().hex[:8],
+                        "series_id": series_id,
+                        "user": interaction.user.name
+                    }
+                    from app.bot.common.view import UniversalDashboard
+                    view = UniversalDashboard(self.bot, ctx_data, platform_type)
+                    view.interaction = interaction # 🟢 CRITICAL: Link the interaction!
+                    await view.update_view(interaction)
+                except Exception as e:
+                    logger.error(f"Failed to launch detail view: {e}")
+                    await interaction.followup.send(f"❌ Failed to fetch series details: {e}", ephemeral=True)
+
+            # --- Back to Home ---
+            elif custom_id == "v2Dash_Home":
+                payload = await self.get_dashboard_payload(interaction, is_update=True)
+                await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=payload)
+
+            # --- Interaction Redirection (Original Logic) ---
+            elif custom_id.startswith("v2_btn_sub_move_yes_"):
+                # "Yes" to "Move this series to new channel?" -> Show channel select inline
+                parts = custom_id.replace("v2_btn_sub_move_yes_", "").split("|", 1)
+                platform = parts[0]
+                url = parts[1] if len(parts) > 1 else ""
+                await self.launch_channel_select(interaction, platform, url, force_message=True)
+            elif custom_id.startswith("v2_btn_sub_move_no_"):
+                # "No" -> Cancel / Delete
+                try: await interaction.message.delete()
+                except: pass
+
             # --- Universal Dashboard Navigation & Actions ---
-            elif any(custom_id.startswith(p) for p in ["btn_open_menu_", "mode_select_", "page_select_", "btn_start_", "btn_cancel_", "btn_home_", "btn_clear_", "btn_error_retry_", "btn_visit_drive_"]):
+            elif any(custom_id.startswith(p) for p in ["btn_open_menu_", "mode_select_", "page_select_", "btn_start_", "btn_cancel_", "btn_home_", "btn_clear_", "btn_error_retry_", "btn_visit_drive_", "btn_report_error_", "btn_pending_link_"]):
                 req_id = custom_id.split("_")[-1]
                 from app.bot.common.view import UniversalDashboard
-                view = UniversalDashboard.active_views.get(req_id)
+                view: UniversalDashboard = UniversalDashboard.active_views.get(req_id)
                 if not view: 
                     error_msg = (
                         "❌ **Session Expired or Process Conflict.**\n\n"
@@ -272,6 +534,9 @@ class DashboardCog(commands.Cog):
                         "Thank you for reporting this. We'll improve this feature to allow detailed error reporting soon."
                     )
                     return await interaction.response.send_message(acknowledgement, ephemeral=True)
+
+                if custom_id.startswith("btn_pending_link_"):
+                    return await interaction.response.send_message("This link is still being generated. Please wait a moment.", ephemeral=True)
 
                 # NEW: Error Retry Logic
                 if custom_id.startswith("btn_error_retry_"):
@@ -475,7 +740,7 @@ class DashboardCog(commands.Cog):
             if custom_id.startswith("modal_select_"):
                 req_id = custom_id.split("_")[-1]
                 from app.bot.common.view import UniversalDashboard
-                view = UniversalDashboard.active_views.get(req_id)
+                view: UniversalDashboard | None = UniversalDashboard.active_views.get(req_id)
                 if not view: return
                 view.last_interaction_time = time.time() # 🔄 Reset session timer on modal submit
                 
@@ -513,15 +778,51 @@ class DashboardCog(commands.Cog):
                         except: return
                 elif mode_val == "custom" and range_val:
                     try:
+                        # 🟢 S-GRADE: Support semantic ranges (matching _display_idx from view.py)
                         parts = range_val.replace(" ", "").split(",")
                         for p in parts:
                             if "-" in p:
-                                s, e = map(int, p.split("-"))
-                                view.selected_indices.update(k-1 for k in range(s, e+1) if 1 <= k <= len(view.all_chapters))
-                            elif p.isdigit():
-                                k = int(p)
-                                if 1 <= k <= len(view.all_chapters): view.selected_indices.add(k-1)
-                    except: pass
+                                try:
+                                    s_str, e_str = p.split("-")
+                                    # Support decimal bounds (e.g. 58.1-59)
+                                    s_val = float(s_str)
+                                    e_val = float(e_str)
+                                    
+                                    for idx, ch in enumerate(view.all_chapters):
+                                        # Compare against the semantic display index (as a number)
+                                        disp_idx_str = ch.get('_display_idx')
+                                        if disp_idx_str:
+                                            try:
+                                                curr_val = float(disp_idx_str)
+                                                if s_val <= curr_val <= e_val:
+                                                    view.selected_indices.add(idx)
+                                            except: pass
+                                        else:
+                                            # Fallback for non-computed views
+                                            if s_val <= (idx + 1) <= e_val:
+                                                view.selected_indices.add(idx)
+                                except ValueError:
+                                    pass # Skip malformed range segments
+                            else:
+                                # 🟢 S-GRADE: Match both integers (63) and decimals (63.1)
+                                import re
+                                if re.match(r'^\d+(\.\d+)?$', p):
+                                    for idx, ch in enumerate(view.all_chapters):
+                                        display_idx = str(ch.get('_display_idx', ''))
+                                        main_idx = ch.get('_main_idx')
+                                        
+                                        if display_idx == p:
+                                            # Exact match for decimal or integer display
+                                            view.selected_indices.add(idx)
+                                        elif "." not in p:
+                                            # If user entered an integer like "63", 
+                                            # also select all its hiatuses (63.1, 63.2 etc)
+                                            if main_idx is not None and str(main_idx) == p:
+                                                view.selected_indices.add(idx)
+                                            elif main_idx is None and str(idx + 1) == p:
+                                                view.selected_indices.add(idx)
+                    except Exception as e:
+                        logger.error(f"Range parse failed: {e}")
                     
                 await view.update_view(interaction)
 
@@ -560,43 +861,172 @@ class DashboardCog(commands.Cog):
                 "flags": 32832, # Ephemeral + V2
                 "components": [{
                     "type": 17,
-                    "components": [{
-                        "type": 10,
-                        "content": f"⛔ **Protocol Violation**\nExpected `{expected_domain}` link."
-                    }]
+                    "components": [
+                        {
+                            "type": 10,
+                            "content": f"⛔ **Protocol Violation**\nExpected `{expected_domain}` link."
+                        },
+                        {
+                            "type": 1,
+                            "components": [
+                                {
+                                    "type": 2, "style": 2, "label": "Back to Dashboard",
+                                    "custom_id": "v2Dash_Home", "emoji": {"name": "🏠"}
+                                }
+                            ]
+                        }
+                    ]
                 }]
             }
             await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'), json=embed_payload)
             return 
 
         if action == "subscribe":
-            # For subscriptions, we first ask if they want to use the current channel
-            trigger_payload = {
-                "flags": 32768,
-                "components": [{
-                    "type": 17,
-                    "components": [
-                        {
-                            "type": 10,
-                            "content": f"✅ **Series Found!**\nWould you like to use this channel for this series subscription?"
-                        },
+            # 🟢 INSTANT CHECK: Extract series_id from URL and check local records
+            # Jumptoon: /contents/JT00085 or /series/JT00085
+            series_id = None
+            if "jumptoon" in url.lower():
+                import re
+                match = re.search(r'/(?:contents|series)/([^/?#]+)', url)
+                if match: series_id = match.group(1)
+            
+            from app.services.group_manager import get_series_by_channel
+            occupied_by = get_series_by_channel(interaction.channel_id)
+            is_already_here = False
+            occupation_series = None
+            
+            if series_id and occupied_by:
+                occ_group, occ_sub = occupied_by
+                if occ_sub.get("series_id") == series_id:
+                    is_already_here = True
+                else:
+                    occupation_series = occ_sub
+            
+            # 🟢 SCENARIO A: Already Subscribed (Instant Response)
+            if is_already_here or occupation_series:
+                logger.info(f"INSTANT MATCH: series={series_id}, same={is_already_here}")
+                trigger_components = []
+                
+                if is_already_here:
+                    content = f"✅ **Series Found but um...**\nLooks like this series is already subscribed to this channel. Would you want to move this series to new channel?"
+                    yes_id = f"v2_btn_sub_move_yes_{platform}|{url}"
+                    no_id = f"v2_btn_sub_move_no_{platform}|{url}"
+                    trigger_components = [
+                        {"type": 10, "content": content},
                         {
                             "type": 1,
                             "components": [
-                                {"type": 2, "style": 3, "label": "Yes", "custom_id": f"v2_btn_sub_confirm_yes_{platform}|{url}"},
-                                {"type": 2, "style": 4, "label": "No", "custom_id": f"v2_btn_sub_confirm_no_{platform}|{url}"}
+                                {"type": 2, "style": 3, "label": "Yes", "custom_id": yes_id},
+                                {"type": 2, "style": 2, "label": "Cancel", "custom_id": f"v2_btn_sub_cancel_{platform}"}
                             ]
                         }
                     ]
-                }]
-            }
+                else:
+                    # 🚫 Uh-Oh: Occupied by another series
+                    from app.services.group_manager import get_title_override
+                    occ_title = get_title_override(occ_group, occupation_series.get('series_url', '')) or occupation_series.get('series_title', 'Unknown')
+                    content = f"🚫 **Uh-Oh**\nThis channel is already occupied by **{occ_title}**.\nPlease choose a dedicated channel for this series."
+                    trigger_components = [
+                        {"type": 10, "content": content},
+                        {
+                            "type": 1,
+                            "components": [
+                                {
+                                    "type": 8, # CHANNEL_SELECT
+                                    "custom_id": f"v2_select_sub_channel_{platform}|{url}",
+                                    "channel_types": [0],
+                                    "placeholder": "Select Channel"
+                                }
+                            ]
+                        }
+                    ]
+
+                trigger_payload = {
+                    "flags": 32768,
+                    "components": [{
+                        "type": 17,
+                        "components": trigger_components
+                    }]
+                }
+                await self.bot.http.request(
+                    discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'),
+                    json=trigger_payload
+                )
+                return
+
+            # 🟢 SCENARIO B: New Series (Fast Metadata Fetch)
             try:
+                scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
+                # Call with fast=True to skip chapter crawling
+                data = await scraper.get_series_info(url, fast=True)
+                title, total_chapters, chapter_list, image_url, series_id, release_day, release_time, status_label, genre_label = data
+                series_id = series_id or series_id
+                
+                # 🟢 S-GRADE: Subscription Block Rule (Mar 25 Request)
+                if status_label in ["Oneshot", "Completed", "Novel"]:
+                    error_payload = {
+                        "flags": 32768,
+                        "components": [{
+                            "type": 17,
+                            "components": [{
+                                "type": 10,
+                                "content": f"🚫 **Uh-Oh, we can't proceed with the subscription.**\nThis series is marked as **{status_label}**."
+                            }]
+                        }]
+                    }
+                    await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'), json=error_payload)
+                    return
+
+                logger.info(f"FAST FETCH: {title} ({series_id})")
+                
+                # Standard prompt
+                content = f"✅ **Series Found!**\nWould you like to use this channel for this series subscription?"
+                yes_id = f"v2_btn_sub_confirm_yes_{platform}|{url}"
+                no_id = f"v2_btn_sub_confirm_no_{platform}|{url}"
+                trigger_components = [
+                    {"type": 10, "content": content},
+                    {
+                        "type": 1,
+                        "components": [
+                            {"type": 2, "style": 3, "label": "Yes", "custom_id": yes_id},
+                            {"type": 2, "style": 4, "label": "No (Use other)", "custom_id": no_id},
+                            {"type": 2, "style": 2, "label": "Cancel", "custom_id": f"v2_btn_sub_cancel_{platform}"}
+                        ]
+                    }
+                ]
+
+                trigger_payload = {
+                    "flags": 32768,
+                    "components": [{
+                        "type": 17,
+                        "components": trigger_components
+                    }]
+                }
                 await self.bot.http.request(
                     discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'),
                     json=trigger_payload
                 )
             except Exception as e:
-                logger.error(f"Failed to send subscribe confirmation: {e}")
+                logger.error(f"Failed to analyze for subscription: {e}")
+                error_p = {
+                    "flags": 32768, 
+                    "components": [{
+                        "type": 17, 
+                        "components": [
+                            {"type": 10, "content": f"❌ **Analysis Failed:**\n`{str(e)}`"},
+                            {
+                                "type": 1,
+                                "components": [
+                                    {
+                                        "type": 2, "style": 2, "label": "Back to Dashboard",
+                                        "custom_id": "v2Dash_Home", "emoji": {"name": "🏠"}
+                                    }
+                                ]
+                            }
+                        ]
+                    }]
+                }
+                await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'), json=error_p)
             return
 
         # 🟢 Send the Analyzing message via PATCH
@@ -624,13 +1054,41 @@ class DashboardCog(commands.Cog):
             req_id = str(uuid.uuid4())[:8].upper()
             token = req_id_context.set(req_id)
             
+            # 📥 LOG NEW REQUEST (User Request - Mar 27)
+            log_msg = (
+                "==================================================\n"
+                f"📥 NEW REQUEST: {platform}\n"
+                f"👤 USER: {interaction.user.name} ({interaction.user.id})\n"
+                f"🔗 URL: {url}\n"
+                "==================================================\n"
+            )
+            log_path = Settings.REQUEST_LOG_DIR / f"{req_id}.log"
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(log_msg)
+            
             scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
             logger.info(f"[{req_id}] 🚀 Handoff: Extraction starting for {platform}...")
             # 🟢 Every Provider is now S-Grade Async
             data = await scraper.get_series_info(url)
                 
             logger.info(f"[{req_id}] ✅ Handoff: Metadata retrieved successfully.")
-            title, total_chapters, chapter_list, image_url, series_id, release_day, release_time = data
+            title, total_chapters, chapter_list, image_url, series_id, release_day, release_time, status_label, genre_label = data
+            
+            # 🟢 NOVEL REJECTION (User Request - Mar 27)
+            if status_label == "Novel":
+                error_payload = {
+                    "flags": 32768,
+                    "components": [{
+                        "type": 17,
+                        "components": [{
+                            "type": 10,
+                            "content": f"🚫 **Uh-Oh, we can't proceed with this series.**\nThis series is a **Novel**, which is currently not supported for extraction."
+                        }]
+                    }]
+                }
+                await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'), json=error_payload)
+                return
+
             
             # 🟢 TITLE OVERRIDE: Check if the group has a custom English title for this series
             guild_id = interaction.guild.id if interaction.guild else 0
@@ -674,15 +1132,25 @@ class DashboardCog(commands.Cog):
             err = str(e).splitlines()[0] if str(e) else "Unknown Error"
             
             # Match V2 format for errors so Discord doesn't crash on the PATCH
-            # 🟢 Match V2 format for errors so Discord doesn't crash on the PATCH
             error_payload = {
                 "flags": 32768,
                 "components": [{
                     "type": 17,
-                    "components": [{
-                        "type": 10, # <--- CHANGED FROM 9 TO 10
-                        "content": f"<a:error:1482426908699267174> **Extraction Failed:**\n`{err}`"
-                    }]
+                    "components": [
+                        {
+                            "type": 10,
+                            "content": f"<a:error:1482426908699267174> **Extraction Failed:**\n`{err}`"
+                        },
+                        {
+                            "type": 1,
+                            "components": [
+                                {
+                                    "type": 2, "style": 2, "label": "Back to Dashboard",
+                                    "custom_id": "v2Dash_Home", "emoji": {"name": "🏠"}
+                                }
+                            ]
+                        }
+                    ]
                 }]
             }
             try:
@@ -694,7 +1162,7 @@ class DashboardCog(commands.Cog):
             try: req_id_context.reset(token)
             except: pass
 
-    async def launch_channel_select(self, interaction, platform, url):
+    async def launch_channel_select(self, interaction, platform, url, force_message: bool = False):
         """Sends a V2 message with a Channel Select component."""
         channel_select_payload = {
             "flags": 32768,
@@ -722,6 +1190,16 @@ class DashboardCog(commands.Cog):
             ]
         }
         try:
+            if force_message:
+                # 🟢 UPDATE_MESSAGE (7) is the correct way to handle button-click message updates
+                callback_payload = {
+                    "type": 7,
+                    "data": channel_select_payload
+                }
+                route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
+                await self.bot.http.request(route, json=callback_payload)
+                return
+
             # Note: This is usually called from a button interaction, so we can PATCH original or POST new.
             # User said "popup" but Select Menus in messages feel like a "step".
             # If they meant a Modal with Channel Select, we need to check if Label supports Type 8.
@@ -753,7 +1231,7 @@ class DashboardCog(commands.Cog):
                 json=modal_payload
             )
         except Exception as e:
-            logger.error(f"Failed to launch channel select modal: {e}")
+            logger.error(f"Failed to launch channel select: {e}")
 
     async def handle_subscribe_modal(self, interaction, custom_id):
         """Processes the secondary subscription modal (DEPRECATED for manual, now used for Channel Select)."""
@@ -796,15 +1274,15 @@ class DashboardCog(commands.Cog):
 
         try:
             import datetime
-            from app.services.group_manager import add_subscription, is_series_subscribed_globally, get_title_override
+            from app.services.group_manager import add_subscription, is_series_subscribed_globally, get_title_override, get_series_by_channel
             
-            # 1. Fetch Metadata
+            # 1. Fetch Metadata (Fast Mode)
             scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
-            data = await scraper.get_series_info(url)
-            title, total_chapters, chapter_list, image_url, series_id, release_day, release_time = data
+            data = await scraper.get_series_info(url, fast=True)
+            title, total_chapters, chapter_list, image_url, series_id, release_day, release_time, status_label, genre_label = data
 
             # 2. Check Global Singularity rule
-            is_subbed, existing_group = is_series_subscribed_globally(series_id)
+            is_subbed, existing_group = await is_series_subscribed_globally(series_id)
             if is_subbed:
                 error_payload = {
                     "flags": 32768,
@@ -816,7 +1294,45 @@ class DashboardCog(commands.Cog):
                         }]
                     }]
                 }
-                return await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_payload)
+                await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'), json=error_payload)
+                return self._queue_auto_delete(interaction, 1800)
+
+            # 3. Check Channel Occupancy (Exclusive: One Series Per Channel)
+            # 🟢 EXCEPTION: Server 1419393318147719170 allows unlimited series per channel
+            occupied_by = get_series_by_channel(target_channel_id)
+            is_universal_server = (interaction.guild_id == 1419393318147719170)
+            
+            if occupied_by and not is_universal_server:
+                existing_group, existing_sub = occupied_by
+                if existing_sub.get("series_id") != series_id:
+                    # 🟢 S-GRADE: Check for Title Override for the OCCUPYING series
+                    occ_title = get_title_override(existing_group, existing_sub.get("series_url")) or existing_sub.get("series_title", "Unknown Series")
+                    
+                    error_payload = {
+                        "flags": 32768,
+                        "components": [{
+                            "type": 17,
+                            "components": [
+                                {
+                                    "type": 10,
+                                    "content": f"🚫 **Uh-Oh**\nThis channel is already occupied by **{occ_title}**.\n\n**Select Channel**"
+                                },
+                                {
+                                    "type": 1,
+                                    "components": [
+                                        {
+                                            "type": 8,
+                                            "custom_id": f"v2_select_sub_channel_{platform}|{url}",
+                                            "channel_types": [0],
+                                            "placeholder": "Search or select a text channel..."
+                                        }
+                                    ]
+                                }
+                            ]
+                        }]
+                    }
+                    await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_payload)
+                    return self._queue_auto_delete(interaction, 1800)
 
             # 3. Determine Group
             guild_id = interaction.guild.id if interaction.guild else 0
@@ -831,13 +1347,21 @@ class DashboardCog(commands.Cog):
                         "components": [{"type": 10, "content": "❌ **No Group Profile Linked**\nPlease link this server to a group via `/register-server` first."}]
                     }]
                 }
-                return await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_payload)
+                await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_payload)
+                return self._queue_auto_delete(interaction, 1800)
 
             # Check for Title Override
             display_title = get_title_override(group_name, url) or title
 
             # 4. Save Subscription
-            last_known = str(chapter_list[-1]["id"]) if chapter_list else "0"
+            # 🏆 S-GRADE: Catch-up Notification
+            # If the latest chapter is flagged 'New', we set last_known to the PREVIOUS ID
+            # so the poller triggers an immediate notification for the user.
+            latest_ch = chapter_list[-1] if chapter_list else None
+            if latest_ch and latest_ch.get('is_new'):
+                last_known = str(chapter_list[-2]["id"]) if len(chapter_list) > 1 else "0"
+            else:
+                last_known = str(latest_ch["id"]) if latest_ch else "0"
             sub = {
                 "series_id": series_id,
                 "series_title": title,
@@ -872,23 +1396,35 @@ class DashboardCog(commands.Cog):
             route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
             await self.bot.http.request(route, json=success_payload)
             
-            # Start 30min auto-deletion timer
-            async def auto_delete():
-                await asyncio.sleep(1800) # 30 mins
-                try:
-                    del_route = discord.http.Route('DELETE', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
-                    await self.bot.http.request(del_route)
-                    logger.info(f"Subscription success message auto-deleted after 30 mins (S-ID: {series_id})")
-                except: pass
-            
-            asyncio.create_task(auto_delete())
+            logger.info(f"✅ Subscription complete: {title} in <#{target_channel_id}>")
+
+            # 🟢 Trigger Background Sync for full chapter list and latest metadata
+            if hasattr(scraper, "sync_latest_chapters"):
+                asyncio.create_task(scraper.sync_latest_chapters(url))
+                
+            return self._queue_auto_delete(interaction, 60)
 
         except Exception as e:
             logger.error(f"Subscription setup failed: {e}", exc_info=True)
             err = str(e).splitlines()[0] if str(e) else "Unknown Error"
             error_p = {"flags": 32768, "components": [{"type": 17, "components": [{"type": 10, "content": f"❌ **Subscription Failed:**\n`{err}`"}]}]}
-            try: await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_p)
+            try: 
+                await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_p)
+                # 🟢 S-GRADE: Auto-delete error message after 30 minutes
+                self._queue_auto_delete(interaction, 1800)
             except: pass
+
+    def _queue_auto_delete(self, interaction, delay: int):
+        """Starts a fire-and-forget task to delete a webhook message after a delay."""
+        async def _internal_delete():
+            await asyncio.sleep(delay)
+            try:
+                del_route = discord.http.Route('DELETE', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+                await self.bot.http.request(del_route)
+            except: 
+                pass # Already deleted or expired
+        
+        asyncio.create_task(_internal_delete())
 
 async def setup(bot):
     await bot.add_cog(DashboardCog(bot))

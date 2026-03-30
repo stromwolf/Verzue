@@ -40,19 +40,22 @@ class PiccomaCog(commands.Cog):
             # 4. Metadata Fetch
             scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
             
-            # 5. Fetch Series Info (Returns 5 values: title, total, chapters, image_url, series_id)
+            # 5. Fetch Series Info (Returns 8 values)
             logger.info(f"🔍 Processing metadata request for: {url}")
             data = await scraper.get_series_info(url)
             
-            title, total_chapters, chapter_list, image_url, series_id, release_day, release_time = data
+            title, total_chapters, chapter_list, image_url, series_id, release_day, release_time, status_label, genre_label = data
 
             # 6. Pack Context for the Universal Dashboard
             ctx_data = {
                 'url': url,
                 'title': title,
                 'chapters': chapter_list,
+                'total_chapters': total_chapters,
                 'image_url': image_url,
                 'series_id': series_id,
+                'status_label': status_label,
+                'genre_label': genre_label,
                 'req_id': req_id,
                 'user': interaction.user
             }

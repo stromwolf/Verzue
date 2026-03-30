@@ -106,31 +106,50 @@ class ProgressBar:
             self.completed = current
         
         percent = int((self.completed / self.total) * 100) if self.total > 0 else 100
-        
-        # Throttle: Only log at every 10% increment, at start (0%), and at completion (100%)
-        if percent != 100 and percent == self._last_percent:
-            return
-        if percent != 100 and percent != 0 and (percent - (self._last_percent if self._last_percent >= 0 else 0)) < 10:
-            return
-
-        self._last_percent = percent
         filled_length = int(self.bar_length * self.completed // self.total) if self.total > 0 else self.bar_length
         bar = '▰' * filled_length + '▱' * (self.bar_length - filled_length)
-        
-        # Log via the standard logger so it's clean in bot.log and terminal
         msg = f"{self.label}: [{self.service}] {bar} {self.completed}/{self.total} ({percent}%)"
+
+        # 1. Console Real-time Update (Visual only, no new line)
+        if sys.stdout.isatty():
+            # Apply same formatting for consistency
+            from app.core.logger import CustomFormatter
+            fmt_msg = f"[INFO ] [{self.req_id}] - {msg}"
+            sys.stdout.write(f"\r{fmt_msg}")
+            sys.stdout.flush()
+
+        # 2. Logger Throttle: Log to permanent files at certain milestones (25, 50, 75, 100%)
+        # This keeps logs visible during background uploads without flooding them.
+        milestones = [25, 50, 75, 100]
+        current_milestone = next((m for m in milestones if percent >= m and not hasattr(self, f"_logged_{m}")), None)
         
-        # We manually inject the req_id context for the logger if it's not already set
-        from app.core.logger import req_id_context
-        token = req_id_context.set(self.req_id)
+        if current_milestone:
+            setattr(self, f"_logged_{current_milestone}", True)
+            token = req_id_context.set(self.req_id)
+            try:
+                if percent == 100 and sys.stdout.isatty(): sys.stdout.write("\n")
+                logging.getLogger("ProgressBar").info(msg)
+            finally:
+                req_id_context.reset(token)
+
+        # 3. Dashboard Sync
         try:
-            logging.getLogger("ProgressBar").info(msg)
-        finally:
-            req_id_context.reset(token)
+            from app.bot.common.view import UniversalDashboard
+            view = UniversalDashboard.active_views.get(self.req_id)
+            if view:
+                for t in view.active_tasks:
+                    if t.status not in ["Chapter Completed", "Failed"]:
+                        from app.models.chapter import TaskStatus
+                        new_status = TaskStatus.DOWNLOADING if self.label == "Downloading" else TaskStatus.UPLOADING
+                        if t.status != new_status:
+                            t.status = new_status
+                        break
+        except: pass
 
     def finish(self):
-        # Already handled by the last 100% log in update()
-        pass
+        # Ensure 100% is logged at least once if it wasn't already
+        if not getattr(self, "_logged_final", False):
+            self.update(self.total)
 
 
 logger = setup_logging()

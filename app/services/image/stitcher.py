@@ -27,7 +27,7 @@ class ImageStitcher:
         
         for i, f in enumerate(files):
             if i % 10 == 0 or i == len(files) - 1:
-                logger.info(f"   [Stitcher] Loading image {i+1}/{len(files)}...")
+                logger.debug(f"[Stitcher] Loading image {i+1}/{len(files)}...")
             
             path = os.path.join(input_dir, f)
             try:
@@ -60,10 +60,11 @@ class ImageStitcher:
                 continue
 
         if not prepared_images: return
+        logger.info(f"[Stitcher] Loaded {len(prepared_images)} images into memory buffer.")
 
         # ─── STEP 2: COMBINE INTO LARGE CANVAS ───
         total_h = image_boundaries[-1] if image_boundaries else 0
-        logger.info(f"   [Stitcher] Creating large canvas: {target_width}x{total_h}px")
+        logger.info(f"[Stitcher] Creating large canvas: {target_width}x{total_h}px")
         combined_img = Image.new('RGB', (target_width, total_h), (255, 255, 255))
         
         for img, y in prepared_images:
@@ -111,7 +112,7 @@ class ImageStitcher:
                 
                 progress.update(cut_y)
 
-            logger.info(f"   [Stitcher] Slice {slice_idx:02d}.jpg: {target_width}x{cut_y-curr_y} ({cut_type})")
+            logger.debug(f"[Stitcher] Saved slice {slice_idx:02d}.jpg: {target_width}x{cut_y-curr_y} ({cut_type})")
             slice_img.close()
             
             curr_y = cut_y

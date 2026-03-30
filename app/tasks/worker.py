@@ -8,16 +8,22 @@ from app.models.chapter import ChapterTask, TaskStatus
 from app.services.image.stitcher import ImageStitcher
 from app.core.events import EventBus
 from app.providers.manager import ProviderManager
+from app.services.redis_manager import RedisManager
 
 logger = logging.getLogger("TaskWorker")
+redis_brain = RedisManager()
 
 # Create a global Process Pool for CPU-bound stitching. 
 # 🟢 Increased to 4 to allow multiple chapters to stitch in parallel.
 PROCESS_POOL = ProcessPoolExecutor(max_workers=4)
 
-# 🟢 THE SEAMPHORE: Limits concurrent STITCHING operations to prevent RAM/CPU thrashing.
+# 🟢 THE SEMAPHORES: Limits concurrent operations to prevent RAM/CPU/API thrashing.
 # Even if we have 15 workers downloading, only 3 will stitch at one time.
 STITCH_SEMAPHORE = asyncio.Semaphore(3)
+
+# 🟢 GLOBAL UPLOAD SEMAPHORE: Limits TOTAL concurrent Google Drive writes across all workers.
+# This prevents 403 Rate Limit errors during large parallel batches.
+GLOBAL_UPLOAD_SEMAPHORE = asyncio.Semaphore(5)
 
 class TaskWorker:
     def __init__(self, provider_manager, uploader):
@@ -27,6 +33,7 @@ class TaskWorker:
     async def process_task(self, task: ChapterTask):
         start_time = time.time()
         logger.info(f"🚀 STARTING TASK: [{task.series_title}] - {task.title}")
+        self._sync_view_status(task)
         
         # 🟢 THE FORK: Start the Google Drive Folder creation IMMEDIATELY in the background
         # We wrap it in asyncio.create_task so it runs concurrently with scraping!
@@ -44,6 +51,7 @@ class TaskWorker:
 
         try:
             task.status = TaskStatus.DOWNLOADING
+            self._sync_view_status(task)
             provider = self.provider_manager.get_provider(task.service)
             if not provider:
                  raise Exception(f"No provider found for service: {task.service}")
@@ -60,6 +68,7 @@ class TaskWorker:
 
             # --- STAGE 2: STITCHING (Semaphore-Controlled CPU Offloading) ---
             task.status = TaskStatus.STITCHING
+            self._sync_view_status(task)
             
             # Fetch early share link as soon as folder is ready (before stitching completes)
             if drive_folder_task and not task.share_link:
@@ -67,6 +76,7 @@ class TaskWorker:
                     task.pre_created_folder_id = await drive_folder_task
                     task.share_link = await asyncio.to_thread(self.uploader.get_share_link, task.pre_created_folder_id)
                     logger.info(f"🔗 Early Link Generated: {task.share_link}")
+                    self._sync_view_status(task) # 🟢 Update UI immediately with the link
                 except Exception as e:
                     logger.warning(f"Failed to fetch early link: {e}")
 
@@ -99,14 +109,16 @@ class TaskWorker:
             
             # --- STAGE 3: UPLOADING (Decoupled & Backgrounded) ---
             task.status = TaskStatus.UPLOADING
+            self._sync_view_status(task)
             if self.uploader:
                 if drive_folder_task and not task.pre_created_folder_id:
                     logger.info("⏳ Finalizing Drive folder creation...")
                     task.pre_created_folder_id = await drive_folder_task
                 
-                # 🚀 FIRE AND FORGET: Move upload and cleanup to a background task
+        # 🚀 FIRE AND FORGET: Move upload and cleanup to a background task
                 # This frees up the worker IMMEDIATELY to start the next chapter.
-                asyncio.create_task(self._background_upload_and_cleanup(task, final_dir, raw_dir))
+                from app.core.logger import req_id_context
+                asyncio.create_task(self._background_upload_and_cleanup(task, final_dir, raw_dir, req_id_context.get()))
             
             elapsed = time.time() - start_time
             logger.info(f"🏁 TASK DISPATCHED TO BACKGROUND in {elapsed:.2f}s")
@@ -119,19 +131,58 @@ class TaskWorker:
             await self._clean_dirs(raw_dir, final_dir)
             raise e
 
-    async def _background_upload_and_cleanup(self, task: ChapterTask, final_dir, raw_dir):
+    async def _background_upload_and_cleanup(self, task: ChapterTask, final_dir, raw_dir, req_id):
         """Dispatches uploads and handles definitive cleanup without blocking the worker pool."""
+        from app.core.logger import req_id_context
+        token = req_id_context.set(req_id)
         try:
             await self._fast_upload(task, final_dir)
             task.status = TaskStatus.COMPLETED
+            self._sync_view_status(task)
             logger.info(f"✅ BACKGROUND UPLOAD COMPLETE: [{task.series_title}] - {task.title}")
             await EventBus.emit("task_completed", task)
         except Exception as e:
             task.status = TaskStatus.FAILED
+            self._sync_view_status(task)
             logger.error(f"❌ BACKGROUND UPLOAD FAILED: {e}")
             await EventBus.emit("task_failed", task, str(e))
         finally:
+            req_id_context.reset(token)
             await self._clean_dirs(raw_dir, final_dir)
+            # 🟢 S-GRADE: Ensure active task is cleared if it wasn't already
+            key = f"{task.series_id_key}:{task.episode_id}"
+            await redis_brain.remove_active_task(key)
+
+    def _sync_view_status(self, task: ChapterTask):
+        """
+        Updates the UI state for the task across the bot session.
+        This provides real-time progress for Dashboards in the same process.
+        Also publishes to Redis for distributed workers.
+        """
+        # 1. Same-Process Sync (UniversalDashboard)
+        from app.bot.common.view import UniversalDashboard
+        view = UniversalDashboard.active_views.get(task.req_id)
+        if view:
+            for t in view.active_tasks:
+                if t.id == task.id and t.episode_id == task.episode_id:
+                    t.status = task.status
+                    t.share_link = task.share_link
+                    t.pre_created_folder_id = task.pre_created_folder_id
+                    t.final_folder_name = task.final_folder_name
+                    break
+        
+        # 2. Distributed Sync (Redis PubSub)
+        try:
+            from app.services.redis_manager import RedisManager
+            redis = RedisManager()
+            # Publish to a dedicated task event channel
+            asyncio.create_task(redis.publish_event(
+                "verzue:events:tasks", 
+                "task_updated", 
+                task.to_dict()
+            ))
+        except Exception as e:
+            logger.error(f"Failed to publish task update to Redis: {e}")
 
     async def _ensure_drive_folder(self, task: ChapterTask):
         """Runs concurrently in a thread to create Drive folders without blocking."""
@@ -141,7 +192,7 @@ class TaskWorker:
             temp_name = f"[Uploading] {folder_name}"
             
             # Use main_folder_id provided by controller (e.g., the 'MAIN' folder ID)
-            parent_id = task.main_folder_id or getattr(Settings, "GDRIVE_ROOT_FOLDER_ID", "root")
+            parent_id = task.main_folder_id or getattr(Settings, "GDRIVE_ROOT_ID", "root")
             
             # Check if it exists
             chapter_id = self.uploader.find_folder(temp_name, parent_id)
@@ -176,23 +227,19 @@ class TaskWorker:
         
         remaining_files = files[:-1]
         if remaining_files:
-            # 🟢 SEMAPHORE: Limit GDrive API writes to 5 at a time to stay under quota
-            upload_semaphore = asyncio.Semaphore(5)
-            
             # 🟢 Standardized Progress Bar Tracking
-            completed = 1 # We already uploaded one file (last_file)
+            completed = [1] # Use list for mutable scoping in nested async
             total = len(files)
             from app.core.logger import ProgressBar
             progress = ProgressBar(task.req_id, "Uploading", task.service.capitalize(), total)
-            progress.update(completed)
+            progress.update(completed[0])
 
             async def safe_upload(filename):
-                nonlocal completed
-                async with upload_semaphore:
+                async with GLOBAL_UPLOAD_SEMAPHORE:
                     full_path = os.path.join(local_path, filename)
                     await asyncio.to_thread(self.uploader.upload_file, full_path, filename, task.pre_created_folder_id)
-                    completed += 1
-                    progress.update(completed)
+                    completed[0] += 1
+                    progress.update(completed[0])
 
             # Fire off all uploads simultaneously (the semaphore controls the flow)
             await asyncio.gather(*(safe_upload(f) for f in remaining_files))

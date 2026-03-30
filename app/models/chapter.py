@@ -55,15 +55,35 @@ class ChapterTask:
     def folder_name(self) -> str:
         seq_idx = f"{int(self.id):02d}"
         
-        clean_title = "".join([c for c in self.title if c.isalnum() or c in " -_().話"]).strip()
+        clean_title = "".join([c for c in self.title if c.isalnum() or c in " -_().話＃#「」『』"]).strip()
 
-        # 🟢 Jumptoon Special Handling: Use "第1話 - Title" format
-        if "jumptoon.com" in self.url:
-            title_sep = f" - {clean_title}" if clean_title else ""
-            return f"{self.chapter_str}{title_sep}"
+        # 🟢 Jumptoon, Mecha, Piccoma Special Handling: Use only the semantic name for Drive (no numeric index)
+        # 🟢 S-GRADE: Priority over is_smartoon to satisfy user request for "第1話" instead of "01 - 第1話"
+        if self.service in ["Jumptoon", "Mecha", "Piccoma"] or (self.url and "piccoma" in self.url.lower()):
+            return clean_title
 
         if self.is_smartoon:
             return f"{seq_idx} - {clean_title}"
         else:
             safe_num = "".join([c for c in self.chapter_str if c.isalnum() or c in " -_().話"]).strip()
             return f"{seq_idx} - {safe_num}_{clean_title}"
+
+    def to_dict(self) -> dict:
+        """Serializes the task for Redis."""
+        d = {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
+        if isinstance(d.get('status'), TaskStatus):
+            d['status'] = d['status'].value
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        """Deserializes the task from Redis."""
+        import inspect
+        sig = inspect.signature(cls)
+        valid_keys = sig.parameters.keys()
+        init_data = {k: v for k, v in data.items() if k in valid_keys}
+        
+        task = cls(**init_data)
+        if 'status' in data:
+            task.status = TaskStatus(data['status'])
+        return task

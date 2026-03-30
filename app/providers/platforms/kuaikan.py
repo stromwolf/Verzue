@@ -7,6 +7,7 @@ from curl_cffi.requests import AsyncSession
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError
+from config.settings import Settings
 
 logger = logging.getLogger("KuaikanProvider")
 
@@ -25,7 +26,7 @@ class KuaikanProvider(BaseProvider):
 
     async def _get_authenticated_session(self):
         session_obj = await self.session_service.get_active_session("kuaikan")
-        async_session = AsyncSession(impersonate="chrome120")
+        async_session = AsyncSession(impersonate="chrome120", proxy=Settings.get_proxy())
         async_session.headers.update(self.default_headers)
         
         if session_obj:
@@ -42,7 +43,7 @@ class KuaikanProvider(BaseProvider):
             return res.status_code == 200
         except: return False
 
-    async def get_series_info(self, url: str):
+    async def get_series_info(self, url: str, fast: bool = False):
         match = re.search(r'(?:topic|mobile)/(\d+)', url)
         if not match: raise ScraperError("Invalid Kuaikan URL.")
         series_id = match.group(1)
@@ -70,7 +71,7 @@ class KuaikanProvider(BaseProvider):
                 'is_locked': ch.get('is_free', True) is False
             })
             
-        return title, len(all_chapters), all_chapters, image_url, series_id, None, None
+        return title, len(all_chapters), all_chapters, image_url, series_id, None, None, None, None
 
     async def scrape_chapter(self, task, output_dir: str):
         auth_session = await self._get_authenticated_session()

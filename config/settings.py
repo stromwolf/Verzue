@@ -34,8 +34,16 @@ class Settings:
     DISCORD_TOKEN = Secrets.DISCORD_TOKEN
     HELPER_TOKEN = Secrets.HELPER_TOKEN
     REDIS_URL = Secrets.REDIS_URL
+    SCRAPING_PROXY = Secrets.SCRAPING_PROXY
 
     ALLOWED_IDS = [] 
+    
+    @classmethod
+    def get_proxy(cls):
+        """Returns the proxy URL if configured, otherwise None."""
+        if not cls.SCRAPING_PROXY:
+            return None
+        return cls.SCRAPING_PROXY
 
     # --- 4. GOOGLE DRIVE ---
     GDRIVE_ROOT_ID = "1KytugO_3B1TZWN9JbscA_PmQq5-TxPc6"
@@ -48,22 +56,18 @@ class Settings:
     LOGIN_URL = "https://mechacomic.jp/login"
 
     # --- CLIENT MAPPING ---
-    SERVER_MAP_FILE = DATA_DIR / "server_map.json"
-    
-    # Fallback name if an unknown server uses the bot
-    DEFAULT_CLIENT_NAME = "Verzue"
+    # --- GROUP REGISTRY ---
+    # Consolidated mapping: { "Timeless": [id1, id2], "Verzue": [id3] }
+    GROUPS_REGISTRY_FILE = DATA_DIR / "groups_registry.json"
 
-    # Default memory map
-    SERVER_MAP = {}
+    # Memory state
+    GROUP_PROFILES = set()  # Registered names: {"Timeless", "Verzue"}
+    SERVER_MAP = {}         # ID -> Name mapping: { 123: "Timeless" }
+    DEFAULT_CLIENT_NAME = "Verzue"
 
     # --- CDN ACCESS LIST ---
     CDN_USERS_FILE = DATA_DIR / "cdn_users.json"
     CDN_ALLOWED_USERS = set()
-
-    # --- GROUP PROFILES ---
-    # Registered group names (pre-created via $group-add, e.g. "Thunder Scan")
-    GROUP_PROFILES_FILE = DATA_DIR / "group_profiles.json"
-    GROUP_PROFILES = set()  # e.g. {"Timeless Toons", "Thunder Scan"}
 
     # --- GROUP SUBSCRIPTION PROFILES ---
     # Per-group JSON files live here: data/groups/<GroupName>.json
@@ -92,48 +96,50 @@ class Settings:
             logging.error(f"Failed to save CDN Users Map: {e}")
 
     @classmethod
-    def load_group_profiles(cls):
-        """Loads registered group profile names from disk."""
+    def load_group_registry(cls):
+        """Loads consolidated group profiles and mappings from disk."""
         import json
-        if cls.GROUP_PROFILES_FILE.exists():
+        if cls.GROUPS_REGISTRY_FILE.exists():
             try:
-                with open(cls.GROUP_PROFILES_FILE, 'r') as f:
-                    cls.GROUP_PROFILES = set(json.load(f))
+                with open(cls.GROUPS_REGISTRY_FILE, 'r') as f:
+                    data = json.load(f)
+                    groups = data.get("groups", {})
+                    
+                    cls.GROUP_PROFILES = set(groups.keys())
+                    cls.SERVER_MAP = {}
+                    for name, ids in groups.items():
+                        for sid in ids:
+                            cls.SERVER_MAP[int(sid)] = name
             except Exception as e:
-                logging.error(f"Failed to load Group Profiles: {e}")
+                logging.error(f"Failed to load Group Registry: {e}")
+
+    @classmethod
+    def save_group_registry(cls):
+        """Saves consolidated group profiles and mappings to disk."""
+        import json
+        try:
+            # Reconstruct the Group -> [IDs] structure
+            output = {"groups": {}}
+            for name in cls.GROUP_PROFILES:
+                output["groups"][name] = [
+                    str(sid) for sid, gname in cls.SERVER_MAP.items() 
+                    if gname == name
+                ]
+            
+            with open(cls.GROUPS_REGISTRY_FILE, 'w') as f:
+                json.dump(output, f, indent=4)
+        except Exception as e:
+            logging.error(f"Failed to save Group Registry: {e}")
 
     @classmethod
     def save_group_profiles(cls):
-        """Saves registered group profile names to disk."""
-        import json
-        try:
-            with open(cls.GROUP_PROFILES_FILE, 'w') as f:
-                json.dump(list(cls.GROUP_PROFILES), f)
-        except Exception as e:
-            logging.error(f"Failed to save Group Profiles: {e}")
-
-    @classmethod
-    def load_server_map(cls):
-        """Loads the dynamically set scan names from disk."""
-        import json
-        if cls.SERVER_MAP_FILE.exists():
-            try:
-                with open(cls.SERVER_MAP_FILE, 'r') as f:
-                    # JSON stores keys as strings, so we convert back to int
-                    loaded = json.load(f)
-                    cls.SERVER_MAP = {int(k): v for k, v in loaded.items()}
-            except Exception as e:
-                logging.error(f"Failed to load Server Map: {e}")
+        """Alias for save_group_registry (Backward Compatibility)."""
+        cls.save_group_registry()
 
     @classmethod
     def save_server_map(cls):
-        """Saves the current scan names to disk."""
-        import json
-        try:
-            with open(cls.SERVER_MAP_FILE, 'w') as f:
-                json.dump(cls.SERVER_MAP, f)
-        except Exception as e:
-            logging.error(f"Failed to save Server Map: {e}")
+        """Alias for save_group_registry (Backward Compatibility)."""
+        cls.save_group_registry()
 
     @classmethod
     def ensure_dirs(cls):
@@ -145,10 +151,42 @@ class Settings:
         cls.LOG_DIR.mkdir(parents=True, exist_ok=True)
         cls.REQUEST_LOG_DIR.mkdir(parents=True, exist_ok=True)
         cls.GROUPS_DIR.mkdir(parents=True, exist_ok=True)  # Per-group subscription profiles
-        cls.load_server_map()
+        cls.load_group_registry()
         cls.load_cdn_users()
-        cls.load_group_profiles()
-        # Seed default profiles on first run so existing groups still work
+        
+        # --- MIGRATION LOGIC ---
+        old_profiles_path = cls.DATA_DIR / "group_profiles.json"
+        old_map_path = cls.DATA_DIR / "server_map.json"
+
+        if not cls.GROUPS_REGISTRY_FILE.exists() and (old_profiles_path.exists() or old_map_path.exists()):
+            try:
+                import json
+                logging.info("Migrating group data to consolidated registry...")
+                
+                # Load old profiles
+                if old_profiles_path.exists():
+                    with open(old_profiles_path, 'r') as f:
+                        cls.GROUP_PROFILES = set(json.load(f))
+                
+                # Load old map
+                if old_map_path.exists():
+                    with open(old_map_path, 'r') as f:
+                        loaded_map = json.load(f)
+                        cls.SERVER_MAP = {int(k): v for k, v in loaded_map.items()}
+                        # Ensure all names in map are in profiles
+                        for v in cls.SERVER_MAP.values():
+                            cls.GROUP_PROFILES.add(v)
+                
+                cls.save_group_registry()
+                logging.info(f"Migration complete. Registry saved to {cls.GROUPS_REGISTRY_FILE}")
+                
+                # Optional: Delete legacy files
+                # old_profiles_path.unlink(missing_ok=True)
+                # old_map_path.unlink(missing_ok=True)
+            except Exception as e:
+                logging.error(f"Migration failed: {e}")
+
+        # Seed default profiles on first run
         if not cls.GROUP_PROFILES and cls.SERVER_MAP:
             cls.GROUP_PROFILES = set(cls.SERVER_MAP.values())
-            cls.save_group_profiles()
+            cls.save_group_registry()

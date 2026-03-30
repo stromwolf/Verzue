@@ -70,9 +70,9 @@ class SessionHealer:
         logger.info(f"💉 Healing session: {platform}:{account_id}")
         
         try:
-            if platform in ["jumptoon", "mecha"]:
+            if platform in ["mecha"]:
                 await self._refresh_via_token(platform, account_id)
-            elif platform == "piccoma":
+            elif platform in ["piccoma", "jumptoon", "kakao"]:
                 await self._refresh_via_handshake(platform, account_id)
             else:
                 logger.warning(f"🤷 No healing strategy for platform: {platform}")
@@ -107,22 +107,25 @@ class SessionHealer:
 
     async def _refresh_via_token(self, platform: str, account_id: str):
         """
-        Placeholder for Strategy A: Token-Level Self-Healing.
-        In a real scenario, this would exchange the refreshToken for a new session.
-        For now, we mark it as HEALTHY to allow the bot to retry.
+        Placeholder for Strategy A: Token-Level Self-Healing (e.g. Firebase).
         """
         logger.info(f"🔄 Attempting Token-Level refresh for {platform}:{account_id}...")
         
         session_obj = await self.redis.get_session(platform, account_id)
         if not session_obj: return
 
-        # TODO: Implement actual token exchange logic for Jumptoon/Mecha Firebase tokens
-        await asyncio.sleep(1) 
-        
-        # S-Grade Fallback: Reset status to HEALTHY so the bot can try again with existing cookies
-        # This prevents sessions from being permanently 'dead' until manual intervention.
-        await self.session_service.update_session_cookies(platform, account_id, session_obj.get("cookies", []))
-        logger.info(f"✅ Session health reset for {platform}:{account_id} (Retry Mode)")
+        # Throttle check: Don't auto-reset more than once every 10 minutes
+        now = time.time()
+        last_attempt = session_obj.get("last_refresh_attempt", 0)
+        if now - last_attempt < 600:
+            logger.warning(f"⏳ Refresh throttled for {platform}:{account_id} (Wait {int(600 - (now - last_attempt))}s)")
+            return
+
+        # S-GRADE: Placeholder update - only reset to HEALTHY if we actually did something.
+        # For now, this is a NO-OP.
+        logger.warning(f"⚠️ Token-level refresh not implemented for {platform}. Leaving as EXPIRED.")
+        session_obj["last_refresh_attempt"] = now
+        await self.redis.set_session(platform, account_id, session_obj)
 
     async def _refresh_via_handshake(self, platform: str, account_id: str):
         """
@@ -135,14 +138,23 @@ class SessionHealer:
 
         # Target specific login/home URLs
         urls = {
-            "piccoma": "https://piccoma.com/web/"
+            "piccoma": "https://piccoma.com/web/",
+            "jumptoon": "https://jumptoon.com/me/",
+            "kakao": "https://page.kakao.com/"
         }
         
         target_url = urls.get(platform)
         if not target_url: return
 
-        # Piccoma selectors for verifying login state
-        selectors = [".PCM-gnb_user"] # Check if user icon exists
+        # Selectors for verifying login state or triggering handshake
+        if platform == "piccoma":
+            selectors = [".PCM-gnb_user"] 
+        elif platform == "jumptoon":
+            selectors = ['.bwozyz5'] 
+        elif platform == "kakao":
+            selectors = ['.link_profile']
+        else:
+            selectors = []
 
         new_cookies, _ = await self.browser.run_isolated_handshake(
             target_url, session.get("cookies", []), selectors
