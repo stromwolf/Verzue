@@ -38,7 +38,7 @@ class CookieStatusCog(commands.Cog):
         """Reactive trigger when a session is failed or updated."""
         logger.info(f"🔄 [StatusUI] Reactive update triggered by session change on: {platform}")
         # Small delay to ensure Redis is fully updated and to debounce rapid changes
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
         await self.update_dashboard()
 
     @tasks.loop(hours=1)
@@ -210,7 +210,14 @@ class CookieStatusCog(commands.Cog):
                         expiries.append(val)
                 except:
                     continue
-        return min(expiries) if expiries else None
+        
+        if not expiries:
+            logger.debug(f"[StatusUI] No expiration dates found in {len(cookies)} cookies.")
+            return None
+            
+        earliest = min(expiries)
+        logger.debug(f"[StatusUI] Earliest expiry found: {datetime.fromtimestamp(earliest)} ({earliest})")
+        return earliest
 
 async def setup(bot):
     await bot.add_cog(CookieStatusCog(bot))
