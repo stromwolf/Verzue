@@ -53,7 +53,7 @@ class UniversalDashboard:
         self.genre_label = ctx_data.get('genre_label')
         self.service_type, self.color = service_type, COLORS.get(service_type, 0x2b2d31)
         
-        if self.service_type == "mecha":
+        if self.service_type == "mecha" and getattr(self.bot.task_queue, "browser_service", None):
             self.bot.task_queue.browser_service.inc_session()
 
         self.page, self.per_page = 1, 10
@@ -98,7 +98,7 @@ class UniversalDashboard:
                 break 
 
             if time.time() - self.last_interaction_time > timeout_seconds:
-                if self.service_type == "mecha":
+                if self.service_type == "mecha" and getattr(self.bot.task_queue, "browser_service", None):
                     try: self.bot.task_queue.browser_service.dec_session()
                     except: pass
                 UniversalDashboard.active_views.pop(self.req_id, None)
@@ -196,8 +196,12 @@ class UniversalDashboard:
             inner_components.append({"type": 10, "content": f"# {self.title}\n-# **{self.original_title}**"})
             inner_components.append(divider)
             
-            # Render all sorted chapters
-            for item in all_sorted_items:
+            # Render all sorted chapters (Capped to 10 to avoid Discord 40-component limit)
+            MAX_RESULTS = 10
+            visible_items = all_sorted_items[:MAX_RESULTS]
+            remaining_count = len(all_sorted_items) - MAX_RESULTS
+
+            for item in visible_items:
                 link: Optional[str] = None
                 if item["type"] == "active":
                     task: ChapterTask = item["task"] # type: ignore
@@ -217,6 +221,24 @@ class UniversalDashboard:
                             "label": "Drive",
                             "emoji": {"id": "1482676886680113172", "name": "drive"},
                             "url": link
+                        }
+                    })
+
+            if remaining_count > 0:
+                inner_components.append({
+                    "type": 10, 
+                    "content": f"-_...and {remaining_count} other chapters are ready on Google Drive._"
+                })
+                # Add a big button for the main folder if we have lots of links
+                if self.final_link:
+                    inner_components.append({
+                        "type": 9,
+                        "components": [{"type": 10, "content": "**Full Series Folder**"}],
+                        "accessory": {
+                            "type": 2, "style": 5,
+                            "label": "Open Main Folder",
+                            "emoji": {"id": "1482676886680113172", "name": "drive"},
+                            "url": self.final_link
                         }
                     })
 

@@ -26,6 +26,10 @@ STITCH_SEMAPHORE = asyncio.Semaphore(3)
 GLOBAL_UPLOAD_SEMAPHORE = asyncio.Semaphore(5)
 
 class TaskWorker:
+    # 🔒 PER-PLATFORM LOCKS: Ensures a safety gap specifically per service (Piccoma, Kakao, etc.)
+    # Platform A will never block Platform B.
+    _SERVICE_LOCKS = {}
+
     def __init__(self, provider_manager, uploader):
         self.provider_manager = provider_manager
         self.uploader = uploader
@@ -58,9 +62,20 @@ class TaskWorker:
             
             logger.info(f"🔍 STAGE 1/3: Provider: {provider.__class__.__name__}")
             
-            # --- LOCAL DOWNLOAD TRACK ---
-            # All providers are now async
-            await provider.scrape_chapter(task, str(raw_dir))
+            # --- 🛡️ PER-PLATFORM RATE LIMITING ---
+            # Get or create the lock for this specific service (Piccoma, Kakao, etc.)
+            if task.service not in self._SERVICE_LOCKS:
+                self._SERVICE_LOCKS[task.service] = asyncio.Lock()
+            
+            async with self._SERVICE_LOCKS[task.service]:
+                # --- LOCAL DOWNLOAD TRACK ---
+                # All providers are now async
+                await provider.scrape_chapter(task, str(raw_dir))
+                
+                # Apply the requested safety gap for this platform before releasing the lock
+                if getattr(Settings, "DOWNLOAD_DELAY", 0) > 0:
+                    logger.info(f"⏳ [Safety] Waiting {Settings.DOWNLOAD_DELAY}s between {task.service.capitalize()} chapters...")
+                    await asyncio.sleep(Settings.DOWNLOAD_DELAY)
             
             valid_imgs = [f for f in os.listdir(raw_dir) if f.lower().endswith(('.png', '.webp', '.jpg', '.jpeg'))]
             if not valid_imgs: raise Exception("No images found after scrape.")

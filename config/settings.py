@@ -23,7 +23,8 @@ class Settings:
     TOKEN_PICKLE = SECRETS_DIR / "token.pickle"
 
     # --- 2. BROWSER ---
-    HEADLESS = False 
+    USE_BROWSER = False # Set to False for browserless VPS operation
+    HEADLESS = True 
     WINDOW_SIZE = "390,844"
     SCROLL_PAUSE = 0.5 
     BINARY_LOCATION = None 
@@ -54,6 +55,9 @@ class Settings:
 
     # --- 6. SCRAPERS ---
     LOGIN_URL = "https://mechacomic.jp/login"
+
+    # --- 7. RATE LIMITING ---
+    DOWNLOAD_DELAY = 3  # Seconds to wait between chapters of the same platform
 
     # --- CLIENT MAPPING ---
     # --- GROUP REGISTRY ---
