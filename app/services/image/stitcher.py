@@ -15,7 +15,7 @@ class ImageStitcher:
         them in one pass using vectorized detection.
         """
         if max_slice_height is None:
-            max_slice_height = getattr(Settings, "STITCH_HEIGHT", 13000)
+            max_slice_height = getattr(Settings, "STITCH_HEIGHT", 15000)
         
         ImageOptimizer.deduplicate(input_dir)
         if not os.path.exists(output_dir): os.makedirs(output_dir)
@@ -79,7 +79,7 @@ class ImageStitcher:
         # ─── STEP 3: DETECT & SLICE (One Pass) ───
         slice_idx = 0
         curr_y = 0
-        buffer_zone = 4000 # Search window beyond target_height
+        buffer_zone = 3000 # Search window before target_height
         
         while curr_y < total_h:
             slice_idx += 1
@@ -89,18 +89,19 @@ class ImageStitcher:
                 cut_y = total_h
                 cut_type = "Final"
             else:
-                # Find best cut in the curr_y + target -> curr_y + target + buffer zone
-                search_start = curr_y + max_slice_height
-                search_end = min(search_start + buffer_zone, total_h)
+                # 🟢 Search for best cut between (Target - Buffer) and (Target)
+                # This ensures the slice NEVER exceeds max_slice_height.
+                search_start = max(curr_y + 100, curr_y + max_slice_height - buffer_zone)
+                search_end = min(curr_y + max_slice_height, total_h)
                 
                 cut_y = find_best_cut(combined_img, search_start, search_end, 
                                      image_boundaries=image_boundaries)
                 
                 if cut_y is None or cut_y <= curr_y:
-                    cut_y = search_start
-                    cut_type = "Hard"
+                    cut_y = search_end
+                    cut_type = "Hard (Limit)"
                 else:
-                    cut_type = f"Smart (+{cut_y - search_start}px)"
+                    cut_type = f"Smart (-{search_end - cut_y}px)"
 
             # Crop and save
             slice_path = os.path.join(output_dir, f"{slice_idx:02d}.jpg")
