@@ -429,7 +429,7 @@ class DashboardCog(commands.Cog):
                 },
                 {
                     "type": 2, "style": 4, "custom_id": f"v2Dash_Sub_Delete_Start|G:{group_name}|S:{series_id}",
-                    "emoji": {"id": "1488506591149031495"}
+                    "emoji": {"id": "1488511488842006750"}
                 }
             ]
         }
