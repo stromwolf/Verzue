@@ -1570,6 +1570,90 @@ class DashboardCog(commands.Cog):
             route = discord.http.Route('POST', f'/channels/{ctx.channel.id}/messages')
             await self.bot.http.request(route, json=payload)
         except Exception as e:
+            logger.error(f"Failed to send $ui_sub: {e}")
+            await ctx.send(f"❌ Failed to load subscription UI: {e}")
+
+    @commands.command(name="ui_sub_test")
+    async def ui_sub_test(self, ctx: commands.Context):
+        """Debug command to show a mock UI with 30 dummy subscriptions."""
+        logger.info(f"Debug Command $ui_sub_test triggered by {ctx.author}")
+        
+        # 1. Generate 30 dummy subscriptions
+        dummy_subs = []
+        platforms = [
+            ("Piccoma", "<:Piccoma:1478368704164134912>", "https://piccoma.com/test"),
+            ("Mecha Comic", "<:Mechacomic:1478369141957333083>", "https://mechacomic.jp/test"),
+            ("Jumptoon", "<:Jumptoon:1478367963928068168>", "https://jumptoon.com/test")
+        ]
+        
+        for i in range(1, 31):
+            plat_name, plat_emoji, plat_url = platforms[i % 3]
+            dummy_subs.append({
+                "title": f"Test Series #{i:02d} ({plat_name})",
+                "url": plat_url,
+                "channel_id": ctx.channel.id,
+                "emoji": plat_emoji
+            })
+
+        # 2. Build Weeklies Text (Top 3 for 'Today')
+        weeklies_text = "# 📅 Today's Mock Weeklies\n"
+        for i, sub in enumerate(dummy_subs[:3], 1):
+            weeklies_text += f"{i}. {sub['emoji']} **{sub['title']}** (<#{sub['channel_id']}>)\n"
+        
+        # 3. Build "All Subscriptions" list for the UI
+        list_text = "## 📋 All Subscriptions (Mock)\n"
+        for i, sub in enumerate(dummy_subs[:10], 1):
+             list_text += f"{i}. {sub['emoji']} **{sub['title']}**\n"
+        list_text += f"\n> *... and {len(dummy_subs) - 10} more series.*"
+
+        # 🟢 ASSEMBLE V2 PAYLOAD
+        payload = {
+            "content": "### 🛠️ DEBUG MODE: UI Mockup",
+            "flags": 32768,
+            "components": [
+                {
+                    "type": 17,
+                    "components": [
+                        {"type": 10, "content": "# 🏮 Verzue Bot Debug Dashboard"},
+                        {"type": 14, "divider": True, "spacing": 1},
+                        {"type": 10, "content": weeklies_text},
+                        {
+                            "type": 1,
+                            "components": [
+                                {
+                                    "type": 2, "style": 2, "label": "View All 30 Subscriptions",
+                                    "custom_id": "v2_btn_mock_view_all",
+                                    "emoji": {"name": "📋"}
+                                }
+                            ]
+                        },
+                        {"type": 14, "divider": True, "spacing": 1},
+                        {"type": 10, "content": list_text},
+                        {
+                            "type": 1, 
+                            "components": [
+                                {
+                                    "type": 2, "style": 3, "label": "Refresh Data",
+                                    "custom_id": "v2_btn_mock_refresh",
+                                    "emoji": {"name": "🔄"}
+                                },
+                                {
+                                    "type": 2, "style": 4, "label": "Close",
+                                    "custom_id": "btn_close_main_dash",
+                                    "emoji": {"name": "✖️"}
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+
+        # 🟢 Dispatch via Raw HTTP
+        try:
+            route = discord.http.Route('POST', f'/channels/{ctx.channel.id}/messages')
+            await self.bot.http.request(route, json=payload)
+        except Exception as e:
             logger.error(f"Failed to send $ui_sub_test: {e}")
             await ctx.send(f"❌ Failed to load debug UI: {e}")
 
