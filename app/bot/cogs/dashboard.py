@@ -382,15 +382,19 @@ class DashboardCog(commands.Cog):
             ch = self.bot.get_channel(int(channel_id))
             if ch: channel_name = f"#{ch.name}"
             
-        user_name = "Unknown"
+        user_name = "Not Found"
         if sub.get("added_by"):
-            u = self.bot.get_user(int(sub["added_by"]))
-            user_name = f"@{u.display_name}" if u else f"ID: {sub['added_by']}"
+            try:
+                # 🟢 S-GRADE: Use fetch_user (API) instead of get_user (Cache)
+                u = await self.bot.fetch_user(int(sub["added_by"]))
+                user_name = f"@{u.display_name}" if u else f"ID: {sub['added_by']}"
+            except:
+                user_name = f"ID: {sub['added_by']}"
 
         # Aligned Labels Logic (Dynamic padding for 3-space gap)
         label_map = {
             "Original Title": original_title,
-            f"{group_name}'s Title": custom_title or "No Override",
+            f"{group_name}'s Title": custom_title or "Not Found",
             "Platform": sub.get("platform", "Unknown").capitalize(),
             "Channel": channel_name
         }
