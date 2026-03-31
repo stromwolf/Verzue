@@ -191,29 +191,13 @@ class MechaProvider(BaseProvider):
                     release_time = "15:00" # Midnight JST = 15:00 UTC
                     break
 
-        # 5. Status & Full Color Detection (Mar 31 Request)
+        # 5. Status Detection (Simplified)
         status_label = None
-        
-        # 🟢 FULL COLOR / WEBTOON DETECTION (Tag-Specific)
-        # We look for the "フルカラー" (Full Color) tag in the official tag list
-        tags_container = soup.select_one("div.p-sepList")
-        is_full_color = False
-        if tags_container:
-            tag_texts = [a.get_text(strip=True) for a in tags_container.find_all("a")]
-            if "フルカラー" in tag_texts:
-                is_full_color = True
-
-        if is_full_color:
-            # User Request: Whenever フルカラー appears, ALWAYS use Mangatoon tag
-            status_label = "Mangatoon"
-        elif "完結" in res.text:
+        if "完結" in res.text:
             if soup.find("span", class_="c-tag-completed") or soup.select_one("div.p-bookInfo_status"):
                  status_label = "Completed"
 
-        # 🟢 GENRE DETECTION (Mar 27 Request)
         genre_label = None
-        if "少女漫画" in res.text:
-            genre_label = "Shojo"
 
         series_id = base_series_url.split('/')[-1]
         return title, total_reported, all_chapters, image_url, str(series_id), release_day, release_time, status_label, genre_label

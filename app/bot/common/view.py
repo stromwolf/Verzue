@@ -386,23 +386,6 @@ class UniversalDashboard:
             # Combine Titles and Metadata into a single block
             titles_text = f"# {self.title}\n-# {self.original_title}"
             
-            # 🟢 S-GRADE: Series Type / Status Display (Simplified)
-            type_mapping = {
-                "mecha": "Manga",
-                "jumptoon": "Webtoon",
-                "piccoma": "Webtoon",
-                "kakao": "Webtoon",
-                "kuaikan": "Manhua",
-                "acqq": "Manhua"
-            }
-            # If status_label is present (e.g. "Novel", "Completed"), use it. Otherwise use default mapping.
-            display_type = self.status_label or type_mapping.get(self.service_type, "Manga")
-            
-            metadata_line = f"[{display_type}]"
-            if self.genre_label:
-                metadata_line += f" | [{self.genre_label}]"
-                
-            titles_text += f"\n-# {metadata_line}"
             inner_components.append({"type": 10, "content": titles_text})
             inner_components.append(divider)
             
@@ -478,11 +461,6 @@ class UniversalDashboard:
             if self.original_title and self.original_title != self.title:
                 header_text += f"\n-# {self.original_title}"
             
-            # 🟢 S-GRADE: Series Type / Status Display (Simplified)
-            type_mapping = {"mecha": "Manga", "jumptoon": "Webtoon", "piccoma": "Webtoon", "kakao": "Webtoon", "kuaikan": "Manhua", "acqq": "Manhua"}
-            display_type = self.status_label or type_mapping.get(self.service_type, "Manga")
-            header_text += f"\n-# [{display_type}]"
-
             inner_components = []
             if self.image_url:
                 inner_components.append({
