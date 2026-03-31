@@ -58,9 +58,19 @@ class DashboardCog(commands.Cog):
         
         weeklies_text = "## Today Weeklies\n"
         if display_subs:
+            # 🟢 S-GRADE: Load title overrides for the specific group
+            from app.services.group_manager import load_group
+            group_data = load_group(scan_name)
+            overrides = group_data.get("title_overrides", {})
+            
             for i, sub in enumerate(display_subs, 1):
                 url = sub.get("url", "").lower()
-                title = sub.get("title", "Unknown Series")
+                original_title = sub.get("title", "Unknown Series")
+                
+                # Apply Override if available
+                from app.services.group_manager import _clean_url
+                clean_url = _clean_url(url)
+                title = overrides.get(clean_url) or original_title
                 
                 # Platform Emoji
                 emoji = "📖"
@@ -68,7 +78,8 @@ class DashboardCog(commands.Cog):
                 elif "mecha" in url: emoji = "<:Mechacomic:1478369141957333083>"
                 elif "jumptoon" in url: emoji = "<:Jumptoon:1478367963928068168>"
                 
-                weeklies_text += f"{i}. {emoji} **{title}** (<#{sub.get('channel_id') or '0'}>)\n"
+                # 🟢 NEW FORMAT: > i. <Emoji> Title: <#channel_id>
+                weeklies_text += f"> {i}. {emoji} {title}: <#{sub.get('channel_id') or '0'}>\n"
         else:
             weeklies_text += "> *No scheduled series subscriptions for today.*"
 
@@ -1597,9 +1608,10 @@ class DashboardCog(commands.Cog):
             })
 
         # 2. Build Weeklies Text (Top 3 for 'Today')
-        weeklies_text = "## 📅 Today's Mock Weeklies\n"
+        weeklies_text = "## Today Weeklies (Mock)\n"
         for i, sub in enumerate(dummy_subs[:3], 1):
-            weeklies_text += f"{i}. {sub['emoji']} **{sub['title']}** (<#{sub['channel_id']}>)\n"
+            # 🟢 NEW FORMAT: > i. <Emoji> Title: <#channel_id>
+            weeklies_text += f"> {i}. {sub['emoji']} {sub['title']}: <#{sub['channel_id']}>\n"
         
         # 3. Build "All Subscriptions" list for the UI
         list_text = "## 📋 All Subscriptions (Mock)\n"
