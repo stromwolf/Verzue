@@ -384,7 +384,7 @@ class UniversalDashboard:
             if poster_component: inner_components.append(poster_component)
             
             # Combine Titles and Metadata into a single block
-            titles_text = f"# {self.title}\n-# {self.original_title}\n-# {self.max_page} | {self.total_chapters}"
+            titles_text = f"# {self.title}\n-# {self.original_title}"
             
             # 🟢 S-GRADE: Series Type / Status Display (Simplified)
             type_mapping = {
@@ -477,7 +477,6 @@ class UniversalDashboard:
             header_text = f"## {self.title}"
             if self.original_title and self.original_title != self.title:
                 header_text += f"\n-# {self.original_title}"
-            header_text += f"\n-# Total Pages: {self.max_page} | Total Chapters: {self.total_chapters}"
             
             # 🟢 S-GRADE: Series Type / Status Display (Simplified)
             type_mapping = {"mecha": "Manga", "jumptoon": "Webtoon", "piccoma": "Webtoon", "kakao": "Webtoon", "kuaikan": "Manhua", "acqq": "Manhua"}
