@@ -269,8 +269,9 @@ class DashboardCog(commands.Cog):
             elif "mecha" in p_url: p_emoji = "<:Mechacomic:1478369141957333083>"
             elif "jumptoon" in p_url: p_emoji = "<:Jumptoon:1478367963928068168>"
             
-            # 🟢 NEW FORMAT: [Platform Emoji] [i]. [Title] \n > <#[ChannelID]>
-            content += f"{p_emoji} {i + start}. {title}\n> <#{sub.get('channel_id') or '0'}>\n"
+            # 🟢 NEW FORMAT: [Platform Emoji] [index]. [Series Title](Link) \n > <#[ChannelID]>
+            s_url = sub.get("series_url") or "#"
+            content += f"{p_emoji} {i + start}. [{title}]({s_url})\n> <#{sub.get('channel_id') or '0'}>\n"
 
         if not content:
             content = "> *No scheduled series subscriptions found.*"
