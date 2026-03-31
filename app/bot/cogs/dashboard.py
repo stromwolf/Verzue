@@ -710,133 +710,84 @@ class DashboardCog(commands.Cog):
                 await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=confirm_payload)
 
             elif custom_id.startswith("v2Dash_Sub_Delete_Confirm|"):
+                # Step 2 & 3: IMMEDIATELY SHOW POPUP (Like Select Chapters)
                 parts = dict(p.split(":") for p in custom_id.split("|")[1:])
                 group_name = parts.get("G")
                 series_id = parts.get("S")
                 
-                # Step 2: Show Warning & Reason SELECT Button
-                reason_view_payload = {
-                    "type": 7, # UPDATE_MESSAGE
+                modal_payload = {
+                    "type": 9, # MODAL
                     "data": {
-                        "flags": 32768,
+                        "custom_id": f"v2Dash_Sub_Delete_Modal|G:{group_name}|S:{series_id}",
+                        "title": "Reason Selection",
                         "components": [
                             {
-                                "type": 17,
-                                "components": [
-                                    {"type": 10, "content": "⚠️ **Subscription tracking for this series will be permanently removed.**\nPlease select why would you like to delete this series subscription:"}
-                                ]
-                            },
-                            {
-                                "type": 1,
+                                "type": 1, 
                                 "components": [
                                     {
-                                        "type": 2, "style": 2, "label": "Select Reasons", 
-                                        "custom_id": f"v2Dash_Sub_Delete_Reason_Menu|G:{group_name}|S:{series_id}",
-                                        "emoji": {"name": "📋"}
-                                    },
-                                    {
-                                        "type": 2, "style": 2, "label": "Cancel", 
-                                        "custom_id": f"v2Dash_Detail|G:{group_name}|S:{series_id}"
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                }
-                await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=reason_view_payload)
-
-            elif custom_id.startswith("v2Dash_Sub_Delete_Reason_Menu|"):
-                # Step 3: Show the Reason DROPDOWN
-                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
-                group_name = parts.get("G")
-                series_id = parts.get("S")
-                
-                dropdown_payload = {
-                    "type": 7,
-                    "data": {
-                        "flags": 32768,
-                        "components": [
-                            {
-                                "type": 17,
-                                "components": [
-                                    {"type": 10, "content": "⚠️ **Final Step: Choose Deletion Reason**"}
-                                ]
-                            },
-                            {
-                                "type": 1,
-                                "components": [
-                                    {
-                                        "type": 3, # STRING_SELECT
-                                        "custom_id": f"v2Dash_Sub_Delete_Reason_Pick|G:{group_name}|S:{series_id}",
+                                        "type": 18, # STRING_SELECT (Inside Modal)
+                                        "custom_id": "sel_sub_delete_reason",
+                                        "label": "Choose Deletion Reason",
                                         "placeholder": "Select Reason...",
                                         "options": [
                                             {"label": "Not Interested", "value": "Not Interested", "emoji": {"name": "😒"}},
                                             {"label": "Hiatus", "value": "Hiatus", "emoji": {"name": "⏸️"}},
                                             {"label": "We're dropping this series", "value": "We're dropping this series", "emoji": {"name": "📉"}},
                                             {"label": "Others", "value": "others_modal", "emoji": {"name": "✏️"}}
-                                        ]
+                                        ],
+                                        "required": True
+                                    }
+                                ]
+                            },
+                            {
+                                "type": 1,
+                                "components": [
+                                    {
+                                        "type": 4, # TEXT_INPUT
+                                        "custom_id": "txt_sub_delete_reason",
+                                        "label": "Write Reason (Optional for others)",
+                                        "style": 2, # Paragraph
+                                        "placeholder": "Type your detailed reason here...",
+                                        "required": False,
+                                        "min_length": 5
                                     }
                                 ]
                             }
                         ]
                     }
                 }
-                await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=dropdown_payload)
-
-            elif custom_id.startswith("v2Dash_Sub_Delete_Reason_Pick|"):
-                # Step 4: Handle the result of the dropdown
-                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
-                group_name = parts.get("G")
-                series_id = parts.get("S")
-                
-                selected_val = interaction.data.get("values", [""])[0]
-                
-                if selected_val == "others_modal":
-                    modal_payload = {
-                        "type": 9, # MODAL
-                        "data": {
-                            "custom_id": f"v2Dash_Sub_Delete_Modal|G:{group_name}|S:{series_id}",
-                            "title": "Write Reason",
-                            "components": [
-                                {
-                                    "type": 1, # Action Row
-                                    "components": [
-                                        {
-                                            "type": 4, # TEXT_INPUT
-                                            "custom_id": "txt_sub_delete_reason",
-                                            "label": "Please explain why you are dropping this",
-                                            "style": 2, # Paragraph
-                                            "placeholder": "Type your reason here...",
-                                            "required": True,
-                                            "min_length": 5
-                                        }
-                                    ]
-                                }
-                            ]
-                        }
-                    }
-                    await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=modal_payload)
-                else:
-                    # Finalize Deletion with standard reason
-                    await self.finalize_sub_removal(interaction, group_name, series_id, selected_val)
+                # Directly response with MODAL instead of UPDATE_MESSAGE
+                await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=modal_payload)
 
             elif custom_id.startswith("v2Dash_Sub_Delete_Modal|"):
-                # Step 5: Modal Submission
+                # Step 4: Final Modal Submission
                 parts = dict(p.split(":") for p in custom_id.split("|")[1:])
                 group_name = parts.get("G")
                 series_id = parts.get("S")
                 
                 # Extract reason from modal data
-                reason = "Unknown Custom Reason"
+                final_reason = "Unknown Reason"
                 try:
                     rows = interaction.data.get("components", [])
-                    if rows:
-                        txt_input = rows[0].get("components", [{}])[0]
-                        reason = txt_input.get("value", "Other")
-                except:
-                    pass
+                    dropdown_val = ""
+                    text_val = ""
+                    
+                    if len(rows) > 0:
+                        inner = rows[0].get("components", [{}])[0]
+                        dropdown_val = inner.get("value", "")
+                    if len(rows) > 1:
+                        inner = rows[1].get("components", [{}])[0]
+                        text_val = inner.get("value", "")
+
+                    if dropdown_val == "others_modal":
+                        final_reason = f"Other: {text_val}" if text_val else "Other"
+                    else:
+                        final_reason = dropdown_val
+                        if text_val: final_reason += f" ({text_val})"
+                except Exception as e:
+                    logger.error(f"Failed to parse Delete Modal data: {e}")
                 
-                await self.finalize_sub_removal(interaction, group_name, series_id, f"Other: {reason}")
+                await self.finalize_sub_removal(interaction, group_name, series_id, final_reason)
 
             elif custom_id.startswith("v2_btn_sub_move_yes_"):
                 # "Yes" to "Move this series to new channel?" -> Show channel select inline
