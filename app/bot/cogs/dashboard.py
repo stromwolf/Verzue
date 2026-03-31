@@ -233,7 +233,14 @@ class DashboardCog(commands.Cog):
         end: int = start + 10
         visible_subs: list = subs[start:end]
 
-        header_text = f"# 🗓️ {group_name} Team Subscriptions (All)"
+        # 🟢 DYNAMIC HEADER
+        filter_label = "All"
+        if platform_filter and platform_filter != "all":
+            # Map internal keys to display names
+            mapping = {"piccoma": "Piccoma", "mecha": "Mechacomic", "jumptoon": "Jumptoon"}
+            filter_label = mapping.get(platform_filter.lower(), platform_filter.capitalize())
+            
+        header_text = f"# 🗓️ {group_name} Team Subscriptions ({filter_label})"
         
         content = ""
         last_day = None
@@ -304,25 +311,21 @@ class DashboardCog(commands.Cog):
         # 3. Navigation Buttons Row
         pagination_row: dict[str, Any] = {"type": 1, "components": []}
         
-        # Previous Button (keep for UX)
-        prev_btn = {"type": 2, "style": 2, "label": "⬅️ Previous"}
+        # 🟢 Conditional Previous Button
         if page > 0:
-            prev_btn["custom_id"] = f"v2Dash_Pg|P:{page-1}|F:{platform_filter or 'all'}|G:{group_name}"
-        else:
-            prev_btn["disabled"] = True
-            prev_btn["custom_id"] = "v2Dash_Disabled_Prev"
-        pagination_row["components"].append(prev_btn)
+            pagination_row["components"].append({
+                "type": 2, "style": 2, "label": "⬅️ Previous",
+                "custom_id": f"v2Dash_Pg|P:{page-1}|F:{platform_filter or 'all'}|G:{group_name}"
+            })
         
-        # Next Button
-        next_btn = {"type": 2, "style": 2, "label": "Next ➡️"}
+        # 🟢 Conditional Next Button
         if end < total:
-            next_btn["custom_id"] = f"v2Dash_Pg|P:{page+1}|F:{platform_filter or 'all'}|G:{group_name}"
-        else:
-            next_btn["disabled"] = True
-            next_btn["custom_id"] = "v2Dash_Disabled_Next"
-        pagination_row["components"].append(next_btn)
+            pagination_row["components"].append({
+                "type": 2, "style": 2, "label": "Next ➡️",
+                "custom_id": f"v2Dash_Pg|P:{page+1}|F:{platform_filter or 'all'}|G:{group_name}"
+            })
 
-        # Back to Dashboard Home
+        # Back to Dashboard Home (Always visible)
         pagination_row["components"].append({
             "type": 2, "style": 4, "label": "Back to Dashboard",
             "custom_id": f"v2Dash_Home", "emoji": {"name": "🏠"}
