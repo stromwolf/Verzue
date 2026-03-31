@@ -372,7 +372,7 @@ class PiccomaProvider(BaseProvider):
                         raise ScraperError("pycasso (scrambler) not installed. Cannot process Piccoma images.")
                     img_io = BytesIO(res.content)
                     canvas = Canvas(img_io, (50, 50), dd(seed))
-                    return canvas.export(mode="scramble", format="png").getvalue()
+                    return canvas.export(mode="unscramble", format="png").getvalue()
                 content = await asyncio.to_thread(unscramble)
                 with open(out_path, "wb") as f: f.write(content)
             except Exception:
@@ -392,11 +392,11 @@ class PiccomaProvider(BaseProvider):
         expires = qs.get('expires', [''])[0]
         # expires is used for a seed shift loop, but for timestamps (long strings), 
         # it might cause offset issues if not clamped or handled as per Piccoma viewer spec.
-        if expires.isdigit():
-            n = int(expires)
-            # Piccoma viewer shift logic (if applicable)
-            if n > 0 and len(chk) > 0:
-                shift = n % len(chk)
+        if expires:
+            # Sum of digits logic (Piccoma V30 update)
+            sum_digits = sum(int(digit) for digit in str(expires) if digit.isdigit())
+            if len(chk) > 0:
+                shift = sum_digits % len(chk)
                 if shift != 0:
                     c_base = str(chk)
                     chk = c_base[-shift:] + c_base[:len(c_base)-shift]
