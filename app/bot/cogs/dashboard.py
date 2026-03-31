@@ -375,14 +375,6 @@ class DashboardCog(commands.Cog):
         status_text = f"🟢 Ongoing (Release at {day})"
         # (Future: check a dedicated 'status' field if we ever add it to the scraper/sub)
         
-        # Aligned Labels Logic
-        # We'll use a code block (```) to ensure perfect monospaced alignment.
-        # labels will NO LONGER be bold as they are inside a code block.
-        def align(label, value):
-            target_width = 25 
-            padding = " " * (target_width - len(label))
-            return f"{label}{padding} | {value}"
-
         # Resolve Names for monospaced display (Mentions don't work in code blocks)
         channel_id = sub.get('channel_id')
         channel_name = f"#{channel_id}"
@@ -395,22 +387,33 @@ class DashboardCog(commands.Cog):
             u = self.bot.get_user(int(sub["added_by"]))
             user_name = f"@{u.display_name}" if u else f"ID: {sub['added_by']}"
 
-        details = [
-            align(f"Original Title", original_title),
-            align(f"{group_name}'s Title", custom_title or "No Override"),
-            align(f"Platform", sub.get("platform", "Unknown").capitalize()),
-            align(f"Channel", channel_name),
-        ]
+        # Aligned Labels Logic (Dynamic padding for 3-space gap)
+        label_map = {
+            "Original Title": original_title,
+            f"{group_name}'s Title": custom_title or "No Override",
+            "Platform": sub.get("platform", "Unknown").capitalize(),
+            "Channel": channel_name
+        }
         
         if sub.get("added_at"):
             try:
                 iso_str = sub["added_at"].replace("Z", "+00:00")
                 date_obj = datetime.datetime.fromisoformat(iso_str)
-                details.append(align(f"Subscribed at", date_obj.strftime("%Y-%m-%d")))
+                label_map["Subscribed at"] = date_obj.strftime("%Y-%m-%d")
             except: pass
         
         if sub.get("added_by"):
-            details.append(align(f"Subscribed by", user_name))
+            label_map["Subscribed by"] = user_name
+
+        # Calculate perfect width
+        max_label_len = max(len(k) for k in label_map.keys())
+        target_width = max_label_len + 3 
+
+        def align(label, value):
+            padding = " " * (target_width - len(label))
+            return f"{label}{padding}| {value}"
+
+        details = [align(k, v) for k, v in label_map.items()]
 
         # 🟢 WRAP IN CODE BLOCK
         content = "```\n" + "\n".join(details) + "\n```"
