@@ -52,6 +52,7 @@ class Settings:
 
     # --- 6. SCRAPERS ---
     LOGIN_URL = "https://mechacomic.jp/login"
+    STITCH_HEIGHT = 13000
 
     # --- 7. RATE LIMITING ---
     DOWNLOAD_DELAY = 3  # Seconds to wait between chapters of the same platform

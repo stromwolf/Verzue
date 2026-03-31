@@ -119,7 +119,7 @@ class TaskWorker:
                     ImageStitcher.stitch_folder, 
                     str(raw_dir), 
                     str(final_dir), 
-                    12000, 
+                    Settings.STITCH_HEIGHT, 
                     episode_id=seed_string,
                     req_id=task.req_id,
                     service_name=task.service

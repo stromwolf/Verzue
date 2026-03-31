@@ -1,18 +1,22 @@
 import os, json, logging
 from PIL import Image
-from .optimizer import ImageOptimizer
+from app.services.image.optimizer import ImageOptimizer
 from .smart_detector import find_best_cut
 from app.core.logger import logger 
+from config.settings import Settings
 
 class ImageStitcher:
     @staticmethod
-    def stitch_folder(input_dir: str, output_dir: str, max_slice_height: int = 12000, target_width: int = 720, episode_id=None, req_id=None, service_name="Jumptoon"):
+    def stitch_folder(input_dir: str, output_dir: str, max_slice_height: int = None, target_width: int = 720, episode_id=None, req_id=None, service_name="Jumptoon"):
         """
         Standard SmartStitch (All-in-Memory) implementation for maximum speed.
         
         Loads all images, combines them into one large canvas, and then slices
         them in one pass using vectorized detection.
         """
+        if max_slice_height is None:
+            max_slice_height = getattr(Settings, "STITCH_HEIGHT", 13000)
+        
         ImageOptimizer.deduplicate(input_dir)
         if not os.path.exists(output_dir): os.makedirs(output_dir)
 
