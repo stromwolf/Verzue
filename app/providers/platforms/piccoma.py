@@ -6,6 +6,7 @@ import asyncio
 import urllib.parse
 import os
 import random
+import threading
 from io import BytesIO
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
@@ -25,6 +26,9 @@ class PiccomaProvider(BaseProvider):
     IDENTIFIER = "piccoma"
     BASE_URL = "https://piccoma.com"
     SERIES_PATH = "/web/product/"
+    
+    # S-GRADE: Thread-safe lock to prevent pycasso's global state race condition
+    _unscramble_lock = threading.Lock()
 
     def __init__(self):
         self.session_service = SessionService()
@@ -358,14 +362,17 @@ class PiccomaProvider(BaseProvider):
                 def unscramble():
                     if not Canvas:
                         raise ScraperError("pycasso (scrambler) not installed. Cannot process Piccoma images.")
-                    img_io = BytesIO(res.content)
-                    # Use the rotated checksum (Seed) directly for tile unshuffling.
-                    # The source code confirms no WASM intervention is needed for the image seed.
-                    canvas = Canvas(img_io, (50, 50), seed)
-                    return canvas.export(mode="unscramble", format="png").getvalue()
+                    
+                    # 🧩 S-GRADE: Lock the unscramble process to protect pycasso's global state
+                    with self._unscramble_lock:
+                        img_io = BytesIO(res.content)
+                        canvas = Canvas(img_io, (50, 50), seed)
+                        return canvas.export(mode="unscramble", format="png").getvalue()
+                
                 content = await asyncio.to_thread(unscramble)
                 with open(out_path, "wb") as f: f.write(content)
-            except Exception:
+            except Exception as e:
+                logger.error(f"[Piccoma] Unscramble error (Seed: {seed}): {e}")
                 with open(out_path, "wb") as f: f.write(res.content)
         else:
             with open(out_path, "wb") as f: f.write(res.content)
@@ -374,26 +381,22 @@ class PiccomaProvider(BaseProvider):
         parsed = urllib.parse.urlparse(url)
         qs = urllib.parse.parse_qs(parsed.query)
         
-        # S+ Enhancement: The checksum is in the parent directory of the image file
-        # Browser: url.split('/').slice(-2)[0]
+        # 🟢 S-GRADE: Robust checksum extraction from parent path segment
+        # We strip query params and trailing slashes first, matching the browser's get_checksum() precisely.
         segments = url.split('?')[0].rstrip('/').split('/')
         chk = qs.get('q', [''])[0] if region == "fr" else segments[-2]
         
-        # S+ Enhancement: Strip Piccoma bracket suffixes or other artifacts
-        if isinstance(chk, str): 
-            chk = chk.rstrip('[')
-
         expires = qs.get('expires', [''])[0]
-        # expires is used for a seed shift loop, but for timestamps (long strings), 
-        # it might cause offset issues if not clamped or handled as per Piccoma viewer spec.
         if expires:
-            # Sum of digits logic (Piccoma V30 update)
+            #  Sum of digits logic (Piccoma V30 update)
             sum_digits = sum(int(digit) for digit in str(expires) if digit.isdigit())
             if len(chk) > 0:
                 shift = sum_digits % len(chk)
                 if shift != 0:
                     c_base = str(chk)
                     chk = c_base[-shift:] + c_base[:len(c_base)-shift]
+                    
+                logger.debug(f"[Piccoma] Seed calculated: {chk} (Chk: {segments[-2]}, Expires: {expires})")
         return chk
 
     async def fast_purchase(self, task) -> bool:
