@@ -250,7 +250,7 @@ class DashboardCog(commands.Cog):
         emoji_other = "<:Calendar_U:1485261652713803906>"
 
         for i, sub in enumerate(visible_subs, 1):
-            current_day = sub.get("release_day") or "Other"
+            current_day = sub.get("release_day") or "Unscheduled"
             
             # Show day header if it changed OR if it's the first sub on this page
             if current_day != last_day:
@@ -325,10 +325,10 @@ class DashboardCog(commands.Cog):
                 "custom_id": f"v2Dash_Pg|P:{page+1}|F:{platform_filter or 'all'}|G:{group_name}"
             })
 
-        # Back to Dashboard Home (Always visible)
+        # Back to Dashboard Home
         pagination_row["components"].append({
             "type": 2, "style": 4, "label": "Back to Dashboard",
-            "custom_id": f"v2Dash_Home", "emoji": {"name": "🏠"}
+            "custom_id": f"v2Dash_Home", "emoji": {"id": "1482405757394751619"}
         })
 
         # ASSEMBLE V2 PAYLOAD
@@ -1267,7 +1267,7 @@ class DashboardCog(commands.Cog):
                             "components": [
                                 {
                                     "type": 2, "style": 2, "label": "Back to Dashboard",
-                                    "custom_id": "v2Dash_Home", "emoji": {"name": "🏠"}
+                                    "custom_id": "v2Dash_Home", "emoji": {"id": "1482405757394751619"}
                                 }
                             ]
                         }
@@ -1616,7 +1616,8 @@ class DashboardCog(commands.Cog):
                 "title": f"Test Series #{i:02d} ({plat_name})",
                 "url": plat_url,
                 "channel_id": ctx.channel.id,
-                "emoji": plat_emoji
+                "emoji": plat_emoji,
+                "release_day": random.choice(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
             })
 
         # 2. Build Weeklies Text (Top 3 for 'Today')
