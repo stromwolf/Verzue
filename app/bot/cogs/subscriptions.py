@@ -102,6 +102,7 @@ class SubscriptionsCog(commands.Cog):
                     
                 except Exception as e:
                     logger.error(f"Failed to process manual poll download for {series_id}: {e}")
+                    await self.bot.dispatch_error(e, interaction=interaction)
                     if not interaction.response.is_done():
                         await interaction.response.send_message(f"❌ Failed to queue download: {e}", ephemeral=True)
                     else:

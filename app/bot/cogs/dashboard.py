@@ -1571,6 +1571,7 @@ class DashboardCog(commands.Cog):
             await self.bot.http.request(route, json=payload)
         except Exception as e:
             logger.error(f"Failed to send $ui_sub: {e}")
+            await self.bot.dispatch_error(e, ctx=ctx)
             await ctx.send(f"❌ Failed to load subscription UI: {e}")
 
     @commands.command(name="ui_sub_test")
@@ -1655,6 +1656,7 @@ class DashboardCog(commands.Cog):
             await self.bot.http.request(route, json=payload)
         except Exception as e:
             logger.error(f"Failed to send $ui_sub_test: {e}")
+            await self.bot.dispatch_error(e, ctx=ctx)
             await ctx.send(f"❌ Failed to load debug UI: {e}")
 
 async def setup(bot):

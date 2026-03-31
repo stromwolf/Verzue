@@ -123,6 +123,11 @@ class MechaBot(commands.Bot):
 
             # 2. Notify Admin Audit Channel
             admin_channel = self.get_channel(Settings.ADMIN_LOG_CHANNEL_ID)
+            if not admin_channel:
+                try:
+                    admin_channel = await self.fetch_channel(Settings.ADMIN_LOG_CHANNEL_ID)
+                except: pass
+            
             if admin_channel and admin_channel.id != task.channel_id:
                 admin_embed = embed.copy()
                 admin_embed.title = "🚨 [ADMIN AUDIT] Task Failed"
@@ -134,46 +139,67 @@ class MechaBot(commands.Bot):
             self.logger.error(f"Failed to send extraction error alert: {e}")
 
     # --- S-GRADE: GLOBAL CRASH SENTINEL ---
+    async def dispatch_error(self, error: Exception, ctx: commands.Context = None, interaction: discord.Interaction = None, event: str = None):
+        """Standardized crash reporter that dispatches reports to the admin legacy channel."""
+        import traceback
+        self.logger.error(f"Sentinel Dispatch: {error}")
+
+        try:
+            # 1. Resolve Admin Channel (Persistent)
+            admin_channel = self.get_channel(Settings.ADMIN_LOG_CHANNEL_ID)
+            if not admin_channel:
+                try:
+                    admin_channel = await self.fetch_channel(Settings.ADMIN_LOG_CHANNEL_ID)
+                except:
+                    self.logger.error("Sentinel failed to fetch admin channel!")
+                    return
+
+            # 2. Build Report Embed
+            title = "💥 Command Crash Detected" if (ctx or interaction) else "💀 Critical System Event Error"
+            if event: title = f"💀 System Error: {event}"
+            
+            color = 0xc0392b if (ctx or interaction) else 0x000000
+            
+            embed = discord.Embed(
+                title=title,
+                description=f"**Error:** `{str(error)}`",
+                color=color,
+                timestamp=discord.utils.utcnow()
+            )
+            
+            if ctx:
+                embed.add_field(name="Command", value=f"`{ctx.command}`", inline=True)
+                embed.add_field(name="User", value=f"{ctx.author} (`{ctx.author.id}`)", inline=True)
+                embed.add_field(name="Channel", value=f"<#{ctx.channel.id}>", inline=True)
+            elif interaction:
+                cmd_name = interaction.data.get('name', 'Component/Interaction') if interaction.data else 'Interaction'
+                embed.add_field(name="Interaction", value=f"`{cmd_name}`", inline=True)
+                embed.add_field(name="User", value=f"{interaction.user} (`{interaction.user.id}`)", inline=True)
+                embed.add_field(name="Channel", value=f"<#{interaction.channel_id}>", inline=True)
+            elif event:
+                embed.add_field(name="Event", value=f"`{event}`", inline=True)
+            
+            # Add Traceback Summary
+            tb = traceback.format_exc()
+            if tb and tb != "NoneType: None\n":
+                summary = tb.splitlines()[-1] if tb.splitlines() else "No Traceback"
+                embed.add_field(name="Trace Summary", value=f"```py\n{summary[:1000]}```", inline=False)
+
+            embed.set_footer(text="Iron Sentinel System Active")
+            
+            await admin_channel.send(embed=embed)
+        except Exception as dispatch_e:
+            self.logger.error(f"Sentinel failed to dispatch report: {dispatch_e}")
 
     async def on_command_error(self, ctx, error):
         """Global handler for all command-related failures."""
         if isinstance(error, commands.CommandNotFound):
             return
-
-        self.logger.error(f"Command Error in {ctx.command}: {error}")
-        
-        try:
-            admin_channel = self.get_channel(Settings.ADMIN_LOG_CHANNEL_ID)
-            if admin_channel:
-                embed = discord.Embed(
-                    title="💥 Command Crash Detected",
-                    description=f"**Command:** `{ctx.command}`\n**User:** {ctx.author} (`{ctx.author.id}`)\n**Error:** `{str(error)}`",
-                    color=0xc0392b,
-                    timestamp=discord.utils.utcnow()
-                )
-                embed.set_footer(text="Iron Mask Sentinel Active")
-                await admin_channel.send(embed=embed)
-        except Exception as e:
-            self.logger.error(f"Sentinel failed to dispatch command error: {e}")
+        await self.dispatch_error(error, ctx=ctx)
 
     async def on_error(self, event_method, *args, **kwargs):
         """Global handler for all non-command event crashes."""
-        import traceback
-        self.logger.error(f"Event Error in {event_method}: {traceback.format_exc()}")
-
-        try:
-            admin_channel = self.get_channel(Settings.ADMIN_LOG_CHANNEL_ID)
-            if admin_channel:
-                embed = discord.Embed(
-                    title="💀 Critical System Event Error",
-                    description=f"**Event:** `{event_method}`\n**Summary:** `{traceback.format_exc().splitlines()[-1]}`",
-                    color=0x000000, # Black (Fatal)
-                    timestamp=discord.utils.utcnow()
-                )
-                embed.set_footer(text="Check logs/Bot-Fatal.log for full trace")
-                await admin_channel.send(embed=embed)
-        except Exception as e:
-            self.logger.error(f"Sentinel failed to dispatch system error: {e}")
+        await self.dispatch_error(Exception("Event Loop Crash"), event=event_method)
 
     # --- S-GRADE: ADMIN CONNECTIVITY DISPATCHERS ---
 
