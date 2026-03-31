@@ -1609,13 +1609,12 @@ class DashboardCog(commands.Cog):
 
         # 🟢 ASSEMBLE V2 PAYLOAD
         payload = {
-            "content": "### 🛠️ DEBUG MODE: UI Mockup",
             "flags": 32768,
             "components": [
                 {
-                    "type": 17,
+                    "type": 17, # CONTAINER
                     "components": [
-                        {"type": 10, "content": "# 🏮 Verzue Bot Debug Dashboard"},
+                        {"type": 10, "content": "### 🛠️ DEBUG MODE: UI Mockup\n# 🏮 Verzue Bot Debug Dashboard"},
                         {"type": 14, "divider": True, "spacing": 1},
                         {"type": 10, "content": weeklies_text},
                         {
