@@ -6,9 +6,6 @@ import asyncio
 import urllib.parse
 import os
 import random
-import struct
-import base64
-import wasmtime
 from io import BytesIO
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
@@ -23,115 +20,6 @@ except ImportError:
     Canvas = None
 
 logger = logging.getLogger("PiccomaProvider")
-
-class PiccomaWASM:
-    """S-Grade: WebAssembly Runner for Piccoma's V30 DRM."""
-    
-    def __init__(self):
-        self.wasm_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "Piccoma", "diamond_bg.wasm")
-        if not os.path.exists(self.wasm_path):
-            # Fallback for different directory structures or production environments
-            self.wasm_path = os.path.join(os.getcwd(), "Piccoma", "diamond_bg.wasm")
-            
-        self.engine = wasmtime.Engine()
-        self.linker = wasmtime.Linker(self.engine)
-        self.store = wasmtime.Store(self.engine)
-        
-        self._init_mocks()
-        
-        try:
-            self.module = wasmtime.Module.from_file(self.engine, self.wasm_path)
-            self.instance = self.linker.instantiate(self.store, self.module)
-            
-            exports = self.instance.exports(self.store)
-            self.memory = exports["memory"]
-            self.malloc = exports["__wbindgen_malloc"]
-            self.free = exports["__wbindgen_free"]
-            self._dd = exports["dd"]
-            self.stack_ptr_func = exports["__wbindgen_add_to_stack_pointer"]
-            logger.info("[PiccomaWASM] Successfully initialized V30 DRM engine.")
-        except Exception as e:
-            logger.error(f"[PiccomaWASM] Failed to initialize WASM engine: {e}")
-            raise ScraperError(f"Critical DRM Initialization Failure: {e}")
-
-    def _init_mocks(self):
-        """Implement required wbg host imports for the Rust-based WASM module."""
-        def define_wbg(name, params, results, callback):
-            p_types = [getattr(wasmtime.ValType, p)() for p in params]
-            r_types = [getattr(wasmtime.ValType, r)() for r in results]
-            ft = wasmtime.FuncType(p_types, r_types)
-            self.linker.define_func("wbg", name, ft, callback)
-
-        # Better Mocks
-        def mock_btoa(caller, ptr, len, ret_ptr):
-            return 0
-        def mock_string_get(caller, ptr, len):
-            return 0
-
-        # Environment & Registry Mocks
-        define_wbg("__wbindgen_object_drop_ref", ["i32"], [], lambda *args: None)
-        define_wbg("__wbg_instanceof_Window_cde2416cf5126a72", ["i32"], ["i32"], lambda *args: 1)
-        define_wbg("__wbg_location_61ca61017633c753", ["i32"], ["i32"], lambda *args: 0)
-        define_wbg("__wbg_btoa_396932eb505ec155", ["i32", "i32", "i32"], ["i32"], mock_btoa)
-        define_wbg("__wbg_newnoargs_ccdcae30fd002262", ["i32", "i32"], ["i32"], lambda *args: 0)
-        define_wbg("__wbg_call_669127b9d730c650", ["i32", "i32"], ["i32"], lambda *args: 0)
-        define_wbg("__wbindgen_string_get", ["i32", "i32"], ["i32"], mock_string_get)
-        define_wbg("__wbindgen_object_clone_ref", ["i32"], ["i32"], lambda _, x: x)
-        define_wbg("__wbg_self_3fad056edded10bd", [], ["i32"], lambda _: 0)
-        define_wbg("__wbg_window_a4f46c98a61d4089", [], ["i32"], lambda _: 0)
-        define_wbg("__wbg_globalThis_17eff828815f7d84", [], ["i32"], lambda _: 0)
-        define_wbg("__wbg_global_46f939f6541643c5", [], ["i32"], lambda _: 0)
-        define_wbg("__wbindgen_is_undefined", ["i32"], ["i32"], lambda *args: 0)
-        define_wbg("__wbg_toString_2c5d5b612e8bdd61", ["i32"], ["i32"], lambda *args: 0)
-        define_wbg("__wbindgen_debug_string", ["i32", "i32"], [], lambda *args: None)
-        define_wbg("__wbindgen_throw", ["i32", "i32"], [], self._mock_throw)
-
-    def _mock_throw(self, caller, ptr, len):
-        msg = self.memory.read(self.store, ptr, ptr + len).decode()
-        logger.error(f"[PiccomaWASM] WASM Exception: {msg}")
-        raise ScraperError(f"WASM Execution Error: {msg}")
-
-    def dd(self, seed: str) -> str:
-        """Executes the diamond_bg 'dd' transformation on the provided rotated checksum."""
-        seed_bytes = seed.encode('utf-8')
-        seed_len = len(seed_bytes)
-        
-        # 1. Allocate input buffer in WASM memory
-        seed_ptr = self.malloc(self.store, seed_len)
-        self.memory.write(self.store, seed_bytes, seed_ptr)
-        
-        # 2. Reserve stack space for result metadata [ptr, len]
-        self.stack_ptr_func(self.store, -16)
-        ret_ptr = self.stack_ptr_func(self.store, 0)
-        
-        try:
-            # 3. Call exported dd(ret_ptr, input_ptr, input_len)
-            self._dd(self.store, ret_ptr, seed_ptr, seed_len)
-            
-            # 4. Extract result pointer and length from stack
-            res_mem = self.memory.read(self.store, ret_ptr, ret_ptr + 8)
-            res_ptr, res_len = struct.unpack("<II", res_mem)
-            
-            if res_len == 0:
-                return seed # Fallback if transformation fails
-                
-            # 5. Read transformed string from WASM memory
-            res_bytes = self.memory.read(self.store, res_ptr, res_ptr + res_len)
-            return res_bytes.decode('utf-8')
-        except Exception as e:
-            logger.warning(f"[PiccomaWASM] Transformation failed, using raw seed. Error: {e}")
-            return seed
-        finally:
-            # Cleanup: Restore stack and free allocated input
-            self.stack_ptr_func(self.store, 16)
-            self.free(self.store, seed_ptr, seed_len)
-
-# Singleton instance to avoid repeated initialization costs
-wasm_engine = None
-try:
-    wasm_engine = PiccomaWASM()
-except Exception as e:
-    logger.warning(f"[Piccoma] Could not initialize WASM engine globally. Retrying per task. Error: {e}")
 
 class PiccomaProvider(BaseProvider):
     IDENTIFIER = "piccoma"
@@ -471,13 +359,9 @@ class PiccomaProvider(BaseProvider):
                     if not Canvas:
                         raise ScraperError("pycasso (scrambler) not installed. Cannot process Piccoma images.")
                     img_io = BytesIO(res.content)
-                    # The intermediate seed must be passed through dd() (WASM transform)
-                    # before being fed into the PRNG for tile unshuffling.
-                    final_seed = seed
-                    if wasm_engine:
-                        final_seed = wasm_engine.dd(seed)
-                    
-                    canvas = Canvas(img_io, (50, 50), final_seed)
+                    # Use the rotated checksum (Seed) directly for tile unshuffling.
+                    # The source code confirms no WASM intervention is needed for the image seed.
+                    canvas = Canvas(img_io, (50, 50), seed)
                     return canvas.export(mode="unscramble", format="png").getvalue()
                 content = await asyncio.to_thread(unscramble)
                 with open(out_path, "wb") as f: f.write(content)
@@ -489,7 +373,11 @@ class PiccomaProvider(BaseProvider):
     def _calculate_seed(self, url, region):
         parsed = urllib.parse.urlparse(url)
         qs = urllib.parse.parse_qs(parsed.query)
-        chk = qs.get('q', [''])[0] if region == "fr" else url.split('?')[0].rstrip('/').split('/')[-1]
+        
+        # S+ Enhancement: The checksum is in the parent directory of the image file
+        # Browser: url.split('/').slice(-2)[0]
+        segments = url.split('?')[0].rstrip('/').split('/')
+        chk = qs.get('q', [''])[0] if region == "fr" else segments[-2]
         
         # S+ Enhancement: Strip Piccoma bracket suffixes or other artifacts
         if isinstance(chk, str): 
