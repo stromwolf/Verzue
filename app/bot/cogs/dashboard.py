@@ -240,7 +240,7 @@ class DashboardCog(commands.Cog):
             mapping = {"piccoma": "Piccoma", "mecha": "Mechacomic", "jumptoon": "Jumptoon"}
             filter_label = mapping.get(platform_filter.lower(), platform_filter.capitalize())
             
-        header_text = f"# <:Subscriptions:1488496671091462215> {group_name} Team Subscriptions ({filter_label})"
+        header_text = f"# <:Subscriptions:1488498943271895161> {group_name} Team Subscriptions ({filter_label})"
         
         content = ""
         last_day = None
