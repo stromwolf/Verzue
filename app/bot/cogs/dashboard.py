@@ -199,8 +199,9 @@ class DashboardCog(commands.Cog):
         return payload
 
     async def get_group_subs_list_payload(self, group_name: str, page: int = 0, platform_filter: str | None = None):
-        """Generates a paginated, non-ephemeral list of all subscriptions grouped by day."""
+        """Generates a paginated, daily-grouped list of subscriptions with premium V2 layout."""
         import datetime
+        from app.services.group_manager import load_group, _clean_url
         group_data = load_group(group_name)
         subs = list(group_data.get("subscriptions", []))
         overrides: dict = group_data.get("title_overrides", {})
@@ -212,7 +213,7 @@ class DashboardCog(commands.Cog):
         # Sunday-start day order
         day_order = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
         
-        # Get Current Day (UTC+9 for JST context usually applied in this bot)
+        # Get Current Day (UTC+9 for JST context)
         jst_now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=9)
         today_name = jst_now.strftime("%A")
 
@@ -221,7 +222,7 @@ class DashboardCog(commands.Cog):
             day = s.get("release_day")
             d_idx = day_order.index(day) if day in day_order else 7
             time = s.get("release_time", "99:99")
-            url = (s.get("series_url") or "").rstrip('/')
+            url = _clean_url(s.get("series_url") or "")
             title = (overrides.get(url) or s.get("series_title") or "").lower()
             return (d_idx, time, title)
         
@@ -232,13 +233,12 @@ class DashboardCog(commands.Cog):
         end: int = start + 10
         visible_subs: list = subs[start:end]
 
-        filter_label = platform_filter.capitalize() if platform_filter and platform_filter != 'all' else "All"
-        header_text = f"## 📋 {group_name} Team Subscriptions ({filter_label})\n"
+        header_text = f"# 🗓️ {group_name} Team Subscriptions (All)"
         
         content = ""
         last_day = None
         
-        # Emojis
+        # Emojis for Daily Headers
         emoji_today = "<:Calendar_T:1485261654777270312>"
         emoji_other = "<:Calendar_U:1485261652713803906>"
 
@@ -248,24 +248,31 @@ class DashboardCog(commands.Cog):
             # Show day header if it changed OR if it's the first sub on this page
             if current_day != last_day:
                 emoji = emoji_today if current_day == today_name else emoji_other
-                content += f"\n### {emoji} {current_day}\n"
+                day_display = f"{current_day} (Today)" if current_day == today_name else current_day
+                content += f"\n### {emoji} {day_display}\n"
                 last_day = current_day
 
-            url = (sub.get("series_url") or "").rstrip('/')
-            overridden = overrides.get(url)
-            original = sub.get("series_title")
+            url = _clean_url(sub.get("series_url") or "")
+            title = overrides.get(url) or sub.get("series_title") or "Unknown Series"
             
-            title_display = f"**{overridden}** ({original})" if overridden else f"**{original}**"
-            content += f"{i + start}. {title_display}\n> <#{sub.get('channel_id')}>\n"
+            # Platform Emoji
+            p_emoji = "📖"
+            p_url = url.lower()
+            if "piccoma" in p_url: p_emoji = "<:Piccoma:1478368704164134912>"
+            elif "mecha" in p_url: p_emoji = "<:Mechacomic:1478369141957333083>"
+            elif "jumptoon" in p_url: p_emoji = "<:Jumptoon:1478367963928068168>"
+            
+            # 🟢 NEW FORMAT: [Platform Emoji] [i]. [Title] \n > <#[ChannelID]>
+            content += f"{p_emoji} {i + start}. {title}\n> <#{sub.get('channel_id') or '0'}>\n"
 
         if not content:
-            content = "*No subscriptions found.*"
+            content = "> *No scheduled series subscriptions found.*"
 
-        # Platform Dropdown
+        # 1. Platform Dropdown
         dropdown = {
             "type": 3,
             "custom_id": f"v2Dash_Filter|G:{group_name}",
-            "placeholder": "Filter by Platform",
+            "placeholder": "All Platforms",
             "options": [
                 {"label": "All Platforms", "value": "all", "default": not platform_filter or platform_filter == 'all'},
                 {"label": "Piccoma", "value": "piccoma", "default": platform_filter == "piccoma", "emoji": {"id": "1478368704164134912"}},
@@ -274,13 +281,12 @@ class DashboardCog(commands.Cog):
             ]
         }
 
-        # Detail Selection Dropdown
+        # 2. Detail Selection Dropdown
         options: list = []
         for j, sub in enumerate(visible_subs, 1):
-            url = (sub.get("series_url") or "").rstrip('/')
-            overridden = overrides.get(url)
-            original = sub.get("series_title")
-            label = f"{j + start}. {overridden or original}"
+            url = _clean_url(sub.get("series_url") or "")
+            title = overrides.get(url) or sub.get("series_title") or "Unknown Series"
+            label = f"{j + start}. {title}"
             options.append({
                 "label": label[:100],
                 "value": sub['series_id']
@@ -295,28 +301,31 @@ class DashboardCog(commands.Cog):
         
         detail_rows: list = [{"type": 1, "components": [detail_select]}] if visible_subs else []
 
-        # Pagination Row
+        # 3. Navigation Buttons Row
         pagination_row: dict[str, Any] = {"type": 1, "components": []}
-        if page > 0:
-            pagination_row["components"].append({
-                "type": 2, "style": 2, "label": "⬅️ Previous",
-                "custom_id": f"v2Dash_Pg|P:{page-1}|F:{platform_filter or 'all'}|G:{group_name}"
-            })
         
-        next_btn = {
-            "type": 2, "style": 2, "label": "Next ➡️",
-        }
+        # Previous Button (keep for UX)
+        prev_btn = {"type": 2, "style": 2, "label": "⬅️ Previous"}
+        if page > 0:
+            prev_btn["custom_id"] = f"v2Dash_Pg|P:{page-1}|F:{platform_filter or 'all'}|G:{group_name}"
+        else:
+            prev_btn["disabled"] = True
+            prev_btn["custom_id"] = "v2Dash_Disabled_Prev"
+        pagination_row["components"].append(prev_btn)
+        
+        # Next Button
+        next_btn = {"type": 2, "style": 2, "label": "Next ➡️"}
         if end < total:
             next_btn["custom_id"] = f"v2Dash_Pg|P:{page+1}|F:{platform_filter or 'all'}|G:{group_name}"
         else:
-            next_btn["custom_id"] = "v2Dash_Disabled_Next"
             next_btn["disabled"] = True
+            next_btn["custom_id"] = "v2Dash_Disabled_Next"
         pagination_row["components"].append(next_btn)
 
         # Back to Dashboard Home
         pagination_row["components"].append({
             "type": 2, "style": 4, "label": "Back to Dashboard",
-            "custom_id": f"v2Dash_Home"
+            "custom_id": f"v2Dash_Home", "emoji": {"name": "🏠"}
         })
 
         # ASSEMBLE V2 PAYLOAD
