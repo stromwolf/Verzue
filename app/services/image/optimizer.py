@@ -61,8 +61,9 @@ class ImageOptimizer:
                 o = conf["paddingWidth"]
                 l_block = a + n + 2 * o # 51 for V2
                 
-                logger.debug(f"🔍 [Jumptoon] Unscrambling: {os.path.basename(img_path)} | Raw: {raw_w}x{raw_h} | Seed: {seed_val} | Version: {version} | ReqWidth: {requested_width}")
+                logger.log(5, f"🔍 [Jumptoon] Unscrambling: {os.path.basename(img_path)} | Raw: {raw_w}x{raw_h} | Seed: {seed_val} | Version: {version} | ReqWidth: {requested_width}")
                 # Debug save: See what we are dealing with
+
                 if not os.path.exists("downloads/debug_raw.png"):
                     src.save("downloads/debug_raw.png")
 
@@ -74,7 +75,8 @@ class ImageOptimizer:
                 num_blocks = raw_w // l_block
                 c = int(requested_width) % a if requested_width else 0
                 
-                logger.debug(f"⚙️ [Jumptoon] Params: num_blocks={num_blocks}, c={c}, l_block={l_block}")
+                logger.log(5, f"⚙️ [Jumptoon] Params: num_blocks={num_blocks}, c={c}, l_block={l_block}")
+
 
                 # 1. Fisher-Yates Shuffle Logic (d)
                 # d contains the shuffled indices

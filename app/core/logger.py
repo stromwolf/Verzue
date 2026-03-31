@@ -6,6 +6,7 @@ from config.settings import Settings
 req_id_context = contextvars.ContextVar("req_id", default=None)
 group_name_context = contextvars.ContextVar("group_name", default=None)
 log_category_context = contextvars.ContextVar("log_category", default="Requests")
+chapter_id_context = contextvars.ContextVar("chapter_id", default=None)
 
 class ContextFilter(logging.Filter):
     """Injects the current request ID into the log record."""
@@ -13,6 +14,7 @@ class ContextFilter(logging.Filter):
         record.req_id = req_id_context.get()
         record.group_name = group_name_context.get()
         record.log_category = log_category_context.get()
+        record.chapter_id = chapter_id_context.get()
         return True
 
 class StructuredFileHandler(logging.Handler):
@@ -42,14 +44,17 @@ class StructuredFileHandler(logging.Handler):
 class CustomFormatter(logging.Formatter):
     grey, blue, yellow, red, bold_red, reset = "\x1b[38;20m", "\x1b[34;20m", "\x1b[33;20m", "\x1b[31;20m", "\x1b[31;1m", "\x1b[0m"
     
-    def get_fmt(self, req_id):
-        # Balanced Prefix: [INFO ] [R-ID] - Message
+    def get_fmt(self, record):
+        req_id = getattr(record, "req_id", None)
+        chapter_id = getattr(record, "chapter_id", None)
+        
+        # Balanced Prefix: [INFO ] [R-ID] [Ch] - Message
         prefix = f" [{req_id}]" if req_id and req_id != "None" else ""
-        return f"[%(levelname)-6s]{prefix} - %(message)s"
+        ch_prefix = f" [{chapter_id}]" if chapter_id else ""
+        return f"[%(levelname)-6s]{prefix}{ch_prefix} - %(message)s"
 
     def format(self, record):
-        req_id = getattr(record, "req_id", None)
-        fmt = self.get_fmt(req_id)
+        fmt = self.get_fmt(record)
         
         # Apply color based on level
         color = self.FORMATS.get(record.levelno, self.reset)
@@ -83,14 +88,15 @@ def setup_logging(name: str = "MechaBot"):
         # 2. Main File (Grep-friendly)
         fh = logging.FileHandler(Settings.LOG_DIR / "bot.log", encoding="utf-8")
         fh.setLevel(logging.DEBUG)
-        fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | [%(req_id)s] | %(name)s | %(message)s"))
+        fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | [%(req_id)s] [%(chapter_id)s] | %(name)s | %(message)s"))
         fh.addFilter(ctx_filter)
         logger.addHandler(fh)
 
         # 3. Structured Task/Notification Files (Isolation)
         sfh = StructuredFileHandler()
-        sfh.setLevel(logging.DEBUG)
+        sfh.setLevel(logging.INFO)
         sfh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"))
+
         sfh.addFilter(ctx_filter)
         logger.addHandler(sfh)
     

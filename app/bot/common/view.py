@@ -302,33 +302,7 @@ class UniversalDashboard:
         selection_text = f"**Selected:** {sel_count} ({sel_text})"
         
         desc = ""
-        if self.processing_mode:
-            if self.phases["analyze"] == "done": desc += "Analyzed.\n"
-            else:
-                icon = ICONS["load"] if self.phases["analyze"] == "loading" else ICONS["wait"]
-                desc += f"{icon} Analyzing...\n"
-            
-            if self.phases["analyze"] == "done":
-                if self.phases["purchase"] == "done": desc += "Purchased.\n"
-                else:
-                    icon = ICONS["load"] if self.phases["purchase"] == "loading" else ICONS["wait"]
-                    desc += f"{icon} Purchasing...\n"
-                    unlocker = self.bot.task_queue.unlocker
-                    active_info = [f"-> `Ch.{stats['task'].id:02d}`: {stats.get('progress', 0)}% | {stats['task'].status.value}" for stats in unlocker.worker_stats.values() if stats.get("view") == self and stats.get("task")]
-                    if active_info: desc += "\n".join(active_info) + "\n"
-            
-            if self.phases["purchase"] == "done":
-                if self.phases["download"] == "loading":
-                    desc += f"{ICONS['load']} Downloading chapters...\n"
-                    comp = sum(1 for t in self.active_tasks if t.status == TaskStatus.COMPLETED)
-                    if comp: desc += f"-> **{comp}** chapters completed.\n"
-                    for t in self.active_tasks:
-                        if t.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
-                            desc += f"-> **{t.chapter_str}**: {ICONS['load']} {t.status.value}...\n"
-                            break
-                elif self.phases["download"] == "done":
-                    desc += "Download Completed.\n"
-        else:
+        if not self.processing_mode:
             desc += "### Chapter List\n"
             start_idx = (self.page - 1) * self.per_page
             display_chapters = self.all_chapters[start_idx : start_idx + self.per_page]

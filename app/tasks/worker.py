@@ -9,6 +9,7 @@ from app.services.image.stitcher import ImageStitcher
 from app.core.events import EventBus
 from app.providers.manager import ProviderManager
 from app.services.redis_manager import RedisManager
+from app.core.logger import req_id_context, group_name_context, log_category_context, chapter_id_context
 
 logger = logging.getLogger("TaskWorker")
 redis_brain = RedisManager()
@@ -35,12 +36,12 @@ class TaskWorker:
         self.uploader = uploader
 
     async def process_task(self, task: ChapterTask):
-        from app.core.logger import req_id_context, group_name_context, log_category_context
         
         # 🟢 S-GRADE: Inject Structured Logging Context
         token_id = req_id_context.set(task.req_id)
         token_group = group_name_context.set(task.scan_group)
         token_cat = log_category_context.set("Requests")
+        token_ch = chapter_id_context.set(task.chapter_str)
         
         try:
             start_time = time.time()
@@ -140,8 +141,7 @@ class TaskWorker:
                     
                     # 🚀 FIRE AND FORGET: Move upload and cleanup to a background task
                     # This frees up the worker IMMEDIATELY to start the next chapter.
-                    from app.core.logger import req_id_context, group_name_context
-                    asyncio.create_task(self._background_upload_and_cleanup(task, final_dir, raw_dir, req_id_context.get(), group_name_context.get()))
+                    asyncio.create_task(self._background_upload_and_cleanup(task, final_dir, raw_dir, req_id_context.get(), group_name_context.get(), chapter_id_context.get()))
                 
                 elapsed = time.time() - start_time
                 logger.info(f"🏁 TASK DISPATCHED TO BACKGROUND in {elapsed:.2f}s")
@@ -157,13 +157,14 @@ class TaskWorker:
             req_id_context.reset(token_id)
             group_name_context.reset(token_group)
             log_category_context.reset(token_cat)
+            chapter_id_context.reset(token_ch)
 
-    async def _background_upload_and_cleanup(self, task: ChapterTask, final_dir, raw_dir, req_id, group_name):
+    async def _background_upload_and_cleanup(self, task: ChapterTask, final_dir, raw_dir, req_id, group_name, chapter_str):
         """Dispatches uploads and handles definitive cleanup without blocking the worker pool."""
-        from app.core.logger import req_id_context, group_name_context, log_category_context
         t1 = req_id_context.set(req_id)
         t2 = group_name_context.set(group_name)
         t3 = log_category_context.set("Requests")
+        t4 = chapter_id_context.set(chapter_str)
         try:
             await self._fast_upload(task, final_dir)
             task.status = TaskStatus.COMPLETED
@@ -179,6 +180,7 @@ class TaskWorker:
             req_id_context.reset(t1)
             group_name_context.reset(t2)
             log_category_context.reset(t3)
+            chapter_id_context.reset(t4)
             await self._clean_dirs(raw_dir, final_dir)
             # 🟢 S-GRADE: Ensure active task is cleared if it wasn't already
             key = f"{task.series_id_key}:{task.episode_id}"
