@@ -1038,7 +1038,9 @@ class DashboardCog(commands.Cog):
                         view.trigger_refresh()
                         return await interaction.followup.send(f"⚠️ **Maintenance Mode**\n{str(e)}", ephemeral=True)
                     except Exception as e:
-                        logger.error(f"Failed to start batch: {e}")
+                        logger.error(f"Failed to start batch: {e}", exc_info=True)
+                        # 🟢 S-GRADE: Dispatch to Admin Sentinel
+                        await self.bot.dispatch_error(e, interaction=interaction)
                         return await interaction.followup.send(f"❌ **Error starting batch:** {e}", ephemeral=True)
 
         # --- Modal Submissions (URL Entry & Range Picker) ---
@@ -1522,6 +1524,9 @@ class DashboardCog(commands.Cog):
                 
         except Exception as e:
             logger.error(f"Failed to fetch metadata: {e}", exc_info=True)
+            # 🟢 S-GRADE: Dispatch to Admin Sentinel
+            await self.bot.dispatch_error(e, interaction=interaction)
+            
             err = str(e).splitlines()[0] if str(e) else "Unknown Error"
             
             # Match V2 format for errors so Discord doesn't crash on the PATCH

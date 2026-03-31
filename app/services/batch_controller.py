@@ -137,6 +137,7 @@ class BatchController:
                 await view_ref._full_scan_task
                 all_chapters = view_ref.all_chapters
 
+            shortcuts_to_create = [] # 🟢 RESTORED: Prevents NameError
             # 🟢 S-GRADE: Fetch and store Series Share Link
             if view_ref and drive_series_id:
                 try:
