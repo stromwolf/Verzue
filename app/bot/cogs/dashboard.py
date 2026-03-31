@@ -460,6 +460,80 @@ class DashboardCog(commands.Cog):
             }
         }
 
+    async def finalize_sub_removal(self, interaction: discord.Interaction, group_name: str, series_id: str, reason: str):
+        """Standardizes the backend deletion and administrative reporting for auditing."""
+        from app.services.group_manager import load_group, remove_subscription, _clean_url
+        group_data = load_group(group_name)
+        subs = group_data.get("subscriptions", [])
+        sub = next((s for s in subs if str(s.get("series_id")) == str(series_id)), None)
+        
+        if not sub:
+            return await interaction.response.send_message("❌ Failed to delete: Subscription not found or already removed.", ephemeral=True)
+
+        url = sub.get("series_url")
+        title = sub.get("series_title", "Unknown")
+        
+        # 1. DELETE FROM DISK
+        remove_subscription(group_name, url)
+        
+        # 2. REPORT TO AUDIT CHANNEL (1488459998429446226)
+        audit_channel_id = 1488459998429446226
+        try:
+            audit_channel = self.bot.get_channel(audit_channel_id) or await self.bot.fetch_channel(audit_channel_id)
+            if audit_channel:
+                report_payload = {
+                    "embeds": [{
+                        "title": "🗑️ Subscription Deleted",
+                        "color": 0xe74c3c, # Danger Red
+                        "fields": [
+                            {"name": "Series", "value": f"[{title}]({url})", "inline": False},
+                            {"name": "Group", "value": f"`{group_name}`", "inline": True},
+                            {"name": "User", "value": f"<@{interaction.user.id}>", "inline": True},
+                            {"name": "Reason", "value": f"**{reason}**", "inline": False}
+                        ],
+                        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    }]
+                }
+                # Using Webhook/Bot request for robustness
+                route = discord.http.Route('POST', f'/channels/{audit_channel_id}/messages')
+                await self.bot.http.request(route, json=report_payload)
+        except Exception as e:
+            logger.error(f"Failed to send deletion audit report: {e}")
+
+        # 3. SHOW SUCCESS UI
+        success_payload = {
+            "type": 7, # UPDATE_MESSAGE
+            "data": {
+                "flags": 32768,
+                "components": [
+                    {
+                        "type": 17,
+                        "components": [
+                            {"type": 10, "content": f"🗑️ **Subscription Deleted Successfully.**\nThe series tracking has been removed from **{group_name}**."}
+                        ]
+                    },
+                    {
+                        "type": 1,
+                        "components": [
+                            {
+                                "type": 2, "style": 2, "label": "Back to Dashboard", 
+                                "custom_id": "v2Dash_Home", "emoji": {"id": "1482405757394751619"}
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+        
+        # If it was a Modal response, we must use followup if it was already acknowledged, 
+        # but since we are triggered by a Modal Submit (type 5), we can respond with UPDATE_MESSAGE (type 7) directly.
+        try:
+            await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=success_payload)
+        except:
+            # Fallback PATCH if interaction already acknowledged
+            route = discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original')
+            await self.bot.http.request(route, json=success_payload["data"])
+
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
         """🟢 EVENT LISTENER: Catch raw V2 interactions."""
@@ -605,6 +679,7 @@ class DashboardCog(commands.Cog):
                 group_name = parts.get("G")
                 series_id = parts.get("S")
                 
+                # Step 1: Confirmation
                 confirm_payload = {
                     "type": 7, # UPDATE_MESSAGE
                     "data": {
@@ -613,14 +688,14 @@ class DashboardCog(commands.Cog):
                             {
                                 "type": 17,
                                 "components": [
-                                    {"type": 10, "content": "⚠️ **Are you sure you want to delete this subscription?**\nAll chapter tracking for this series in this group will be permanently removed."}
+                                    {"type": 10, "content": "Would you like to delete this series subscription?"}
                                 ]
                             },
                             {
                                 "type": 1,
                                 "components": [
                                     {
-                                        "type": 2, "style": 4, "label": "Yes, Delete", 
+                                        "type": 2, "style": 4, "label": "Yes", 
                                         "custom_id": f"v2Dash_Sub_Delete_Confirm|G:{group_name}|S:{series_id}"
                                     },
                                     {
@@ -639,41 +714,129 @@ class DashboardCog(commands.Cog):
                 group_name = parts.get("G")
                 series_id = parts.get("S")
                 
-                from app.services.group_manager import load_group, remove_subscription, _clean_url
-                group_data = load_group(group_name)
-                subs = group_data.get("subscriptions", [])
-                sub = next((s for s in subs if s.get("series_id") == series_id), None)
+                # Step 2: Show Warning & Reason SELECT Button
+                reason_view_payload = {
+                    "type": 7, # UPDATE_MESSAGE
+                    "data": {
+                        "flags": 32768,
+                        "components": [
+                            {
+                                "type": 17,
+                                "components": [
+                                    {"type": 10, "content": "⚠️ **Subscription tracking for this series will be permanently removed.**\nPlease select why would you like to delete this series subscription:"}
+                                ]
+                            },
+                            {
+                                "type": 1,
+                                "components": [
+                                    {
+                                        "type": 2, "style": 2, "label": "Select Reasons", 
+                                        "custom_id": f"v2Dash_Sub_Delete_Reason_Menu|G:{group_name}|S:{series_id}",
+                                        "emoji": {"name": "📋"}
+                                    },
+                                    {
+                                        "type": 2, "style": 2, "label": "Cancel", 
+                                        "custom_id": f"v2Dash_Detail|G:{group_name}|S:{series_id}"
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+                await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=reason_view_payload)
+
+            elif custom_id.startswith("v2Dash_Sub_Delete_Reason_Menu|"):
+                # Step 3: Show the Reason DROPDOWN
+                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
+                group_name = parts.get("G")
+                series_id = parts.get("S")
                 
-                if sub:
-                    # Perform Removal
-                    remove_subscription(group_name, sub.get("series_url"))
-                    
-                    success_payload = {
-                        "type": 7, # UPDATE_MESSAGE
+                dropdown_payload = {
+                    "type": 7,
+                    "data": {
+                        "flags": 32768,
+                        "components": [
+                            {
+                                "type": 17,
+                                "components": [
+                                    {"type": 10, "content": "⚠️ **Final Step: Choose Deletion Reason**"}
+                                ]
+                            },
+                            {
+                                "type": 1,
+                                "components": [
+                                    {
+                                        "type": 3, # STRING_SELECT
+                                        "custom_id": f"v2Dash_Sub_Delete_Reason_Pick|G:{group_name}|S:{series_id}",
+                                        "placeholder": "Select Reason...",
+                                        "options": [
+                                            {"label": "Not Interested", "value": "Not Interested", "emoji": {"name": "😒"}},
+                                            {"label": "Hiatus", "value": "Hiatus", "emoji": {"name": "⏸️"}},
+                                            {"label": "We're dropping this series", "value": "We're dropping this series", "emoji": {"name": "📉"}},
+                                            {"label": "Others", "value": "others_modal", "emoji": {"name": "✏️"}}
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+                await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=dropdown_payload)
+
+            elif custom_id.startswith("v2Dash_Sub_Delete_Reason_Pick|"):
+                # Step 4: Handle the result of the dropdown
+                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
+                group_name = parts.get("G")
+                series_id = parts.get("S")
+                
+                selected_val = interaction.data.get("values", [""])[0]
+                
+                if selected_val == "others_modal":
+                    modal_payload = {
+                        "type": 9, # MODAL
                         "data": {
-                            "flags": 32768,
+                            "custom_id": f"v2Dash_Sub_Delete_Modal|G:{group_name}|S:{series_id}",
+                            "title": "Write Reason",
                             "components": [
                                 {
-                                    "type": 17,
-                                    "components": [
-                                        {"type": 10, "content": f"🗑️ **Subscription Deleted Successfully.**\nThe series tracking has been removed from **{group_name}**."}
-                                    ]
-                                },
-                                {
-                                    "type": 1,
+                                    "type": 1, # Action Row
                                     "components": [
                                         {
-                                            "type": 2, "style": 2, "label": "Back to Dashboard", 
-                                            "custom_id": "v2Dash_Home", "emoji": {"id": "1482405757394751619"}
+                                            "type": 4, # TEXT_INPUT
+                                            "custom_id": "txt_sub_delete_reason",
+                                            "label": "Please explain why you are dropping this",
+                                            "style": 2, # Paragraph
+                                            "placeholder": "Type your reason here...",
+                                            "required": True,
+                                            "min_length": 5
                                         }
                                     ]
                                 }
                             ]
                         }
                     }
-                    await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=success_payload)
+                    await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=modal_payload)
                 else:
-                    await interaction.response.send_message("❌ Failed to delete: Subscription not found.", ephemeral=True)
+                    # Finalize Deletion with standard reason
+                    await self.finalize_sub_removal(interaction, group_name, series_id, selected_val)
+
+            elif custom_id.startswith("v2Dash_Sub_Delete_Modal|"):
+                # Step 5: Modal Submission
+                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
+                group_name = parts.get("G")
+                series_id = parts.get("S")
+                
+                # Extract reason from modal data
+                reason = "Unknown Custom Reason"
+                try:
+                    rows = interaction.data.get("components", [])
+                    if rows:
+                        txt_input = rows[0].get("components", [{}])[0]
+                        reason = txt_input.get("value", "Other")
+                except:
+                    pass
+                
+                await self.finalize_sub_removal(interaction, group_name, series_id, f"Other: {reason}")
 
             elif custom_id.startswith("v2_btn_sub_move_yes_"):
                 # "Yes" to "Move this series to new channel?" -> Show channel select inline
