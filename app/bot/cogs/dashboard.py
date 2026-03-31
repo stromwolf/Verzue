@@ -351,6 +351,98 @@ class DashboardCog(commands.Cog):
             }
         }
 
+    async def get_sub_info_payload(self, group_name: str, series_id: str):
+        """Generates the metadata-rich 'Subscription Info' panel for a series."""
+        import datetime
+        from app.services.group_manager import load_group, _clean_url
+        group_data = load_group(group_name)
+        subs = group_data.get("subscriptions", [])
+        
+        # 🟢 Hardened ID Matching (Cast both to string to be safe with older numeric IDs)
+        sub = next((s for s in subs if str(s.get("series_id")) == str(series_id)), None)
+        
+        if not sub:
+            logger.error(f"Subscription Info Error: Series {series_id} not found in group {group_name}")
+            return {"flags": 32768, "components": [{"type": 17, "components": [{"type": 10, "content": f"❌ **Subscription not found.**\nSeries ID: `{series_id}`"}]}]}
+
+        url = _clean_url(sub.get("series_url") or "")
+        overrides = group_data.get("title_overrides", {})
+        custom_title = overrides.get(url)
+        original_title = sub.get("series_title", "Unknown")
+        
+        # Status Logic (Derive from day/metadata)
+        day = sub.get("release_day") or "Unscheduled"
+        status_text = f"🟢 Ongoing (Release at {day})"
+        # (Future: check a dedicated 'status' field if we ever add it to the scraper/sub)
+        
+        # Aligned Labels Logic
+        # We'll use backticks and spaces to ensure constant width for the labels.
+        # Fixed width for the label part (including bold markers)
+        def align(label, value):
+            target_width = 30 # Adjust based on longest label
+            padding = " " * (target_width - len(label))
+            return f"{label}{padding} | {value}"
+
+        details = [
+            align(f"**Original Title**", original_title),
+            align(f"**{group_name}'s Title **", custom_title or "No Override"),
+            align(f"**Platform **", sub.get("platform", "Unknown").capitalize()),
+            align(f"**Channel **", f"<#{sub.get('channel_id')}>"),
+        ]
+        
+        # Handle added_at / added_by gracefully (older subs might not have them)
+        if sub.get("added_at"):
+            try:
+                # Use built-in fromisoformat (available in 3.7+ / improved in 3.11+)
+                iso_str = sub["added_at"].replace("Z", "+00:00")
+                date_obj = datetime.datetime.fromisoformat(iso_str)
+                details.append(align(f"**Subscribed at **", date_obj.strftime("%Y-%m-%d")))
+            except Exception as e:
+                logger.warning(f"Failed to parse date '{sub.get('added_at')}': {e}")
+        
+        if sub.get("added_by"):
+            details.append(align(f"**Subscribed by **", f"<@{sub['added_by']}>"))
+
+        content = "\n".join(details)
+
+        # Header & Divider
+        header_text = f"# <:Series_Subscription:1488496671091462215> Subscription Info"
+        status_line = f"-# **Status** | {status_text}"
+        
+        # Buttons Row
+        action_row = {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2, "style": 2, "custom_id": "v2Dash_Home",
+                    "emoji": {"id": "1482405757394751619"}
+                },
+                {
+                    "type": 2, "style": 4, "custom_id": f"v2Dash_Sub_Delete_Start|G:{group_name}|S:{series_id}",
+                    "emoji": {"id": "1488506591149031495"}
+                }
+            ]
+        }
+
+        container_components = [
+            {"type": 10, "content": header_text},
+            {"type": 14, "divider": True, "spacing": 1},
+            {"type": 10, "content": status_line},
+            {"type": 14, "divider": True, "spacing": 1},
+            {"type": 10, "content": content},
+            {"type": 14, "divider": True, "spacing": 1}
+        ]
+
+        return {
+            "type": 7, # UPDATE_MESSAGE
+            "data": {
+                "components": [
+                    {"type": 17, "components": container_components},
+                    action_row
+                ]
+            }
+        }
+
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
         """🟢 EVENT LISTENER: Catch raw V2 interactions."""
@@ -467,9 +559,8 @@ class DashboardCog(commands.Cog):
                 payload = await self.get_group_subs_list_payload(group_name, page=page, platform_filter=platform)
                 await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=payload)
 
-            # --- View Series Detail ---
+            # --- View Series Detail (Subscription Info Panel) ---
             elif custom_id.startswith("v2Dash_Detail|") or custom_id.startswith("v2Dash_Detail_Select|"):
-                # "View Detail" launches the UniversalDashboard for that series
                 if custom_id.startswith("v2Dash_Detail_Select|"):
                     series_id = interaction.data.get("values", [None])[0]
                     parts = dict(p.split(":") for p in custom_id.split("|")[1:])
@@ -481,46 +572,9 @@ class DashboardCog(commands.Cog):
                 
                 if not series_id: return
                 
-                # We need to find the series URL and platform
-                redis_brain = RedisManager()
-                sub_data_raw = await redis_brain.client.hget("verzue:index:subs", series_id)
-                if not sub_data_raw:
-                    return await interaction.response.send_message("❌ Series metadata not found in Redis. Please try syncing.", ephemeral=True)
-                
-                sub_data = json.loads(sub_data_raw)
-                url = sub_data.get("url")
-                
-                # Defer to show loading while we fetch current chapters
-                await interaction.response.defer(ephemeral=True)
-                
-                # Launch Extractor logic
-                p_url_low = url.lower()
-                platform_type = "jumptoon" if "jumptoon" in p_url_low else "piccoma" if "piccoma" in p_url_low else "mecha"
-                scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
-                
-                try:
-                    # S-Grade: Use get_series_info instead of non-existent fetch_metadata
-                    title, total_chapters, all_chapters, image_url, series_id, release_day, release_time, status_label, genre_label = await scraper.get_series_info(url)
-                    
-                    ctx_data = {
-                        "url": url,
-                        "title": title or sub_data.get("title", "Unknown"),
-                        "original_title": title or sub_data.get("title", "Unknown"),
-                        "chapters": all_chapters or [],
-                        "total_chapters": total_chapters or 0,
-                        "image_url": image_url or "",
-                        "status_label": status_label,
-                        "req_id": uuid.uuid4().hex[:8],
-                        "series_id": series_id,
-                        "user": interaction.user.name
-                    }
-                    from app.bot.common.view import UniversalDashboard
-                    view = UniversalDashboard(self.bot, ctx_data, platform_type)
-                    view.interaction = interaction # 🟢 CRITICAL: Link the interaction!
-                    await view.update_view(interaction)
-                except Exception as e:
-                    logger.error(f"Failed to launch detail view: {e}")
-                    await interaction.followup.send(f"❌ Failed to fetch series details: {e}", ephemeral=True)
+                # 🟢 S-GRADE: Show Subscription Info panel instead of Extractor Dashboard
+                payload = await self.get_sub_info_payload(group_name, series_id)
+                await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=payload)
 
             # --- Back to Home ---
             elif custom_id == "v2Dash_Home":
@@ -528,6 +582,82 @@ class DashboardCog(commands.Cog):
                 await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=payload)
 
             # --- Interaction Redirection (Original Logic) ---
+                # --- Delete Subscription Workflow ---
+            elif custom_id.startswith("v2Dash_Sub_Delete_Start|"):
+                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
+                group_name = parts.get("G")
+                series_id = parts.get("S")
+                
+                confirm_payload = {
+                    "type": 7, # UPDATE_MESSAGE
+                    "data": {
+                        "flags": 32768,
+                        "components": [
+                            {
+                                "type": 17,
+                                "components": [
+                                    {"type": 10, "content": "⚠️ **Are you sure you want to delete this subscription?**\nAll chapter tracking for this series in this group will be permanently removed."}
+                                ]
+                            },
+                            {
+                                "type": 1,
+                                "components": [
+                                    {
+                                        "type": 2, "style": 4, "label": "Yes, Delete", 
+                                        "custom_id": f"v2Dash_Sub_Delete_Confirm|G:{group_name}|S:{series_id}"
+                                    },
+                                    {
+                                        "type": 2, "style": 2, "label": "Cancel", 
+                                        "custom_id": f"v2Dash_Detail|G:{group_name}|S:{series_id}"
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+                await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=confirm_payload)
+
+            elif custom_id.startswith("v2Dash_Sub_Delete_Confirm|"):
+                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
+                group_name = parts.get("G")
+                series_id = parts.get("S")
+                
+                from app.services.group_manager import load_group, remove_subscription, _clean_url
+                group_data = load_group(group_name)
+                subs = group_data.get("subscriptions", [])
+                sub = next((s for s in subs if s.get("series_id") == series_id), None)
+                
+                if sub:
+                    # Perform Removal
+                    remove_subscription(group_name, sub.get("series_url"))
+                    
+                    success_payload = {
+                        "type": 7, # UPDATE_MESSAGE
+                        "data": {
+                            "flags": 32768,
+                            "components": [
+                                {
+                                    "type": 17,
+                                    "components": [
+                                        {"type": 10, "content": f"🗑️ **Subscription Deleted Successfully.**\nThe series tracking has been removed from **{group_name}**."}
+                                    ]
+                                },
+                                {
+                                    "type": 1,
+                                    "components": [
+                                        {
+                                            "type": 2, "style": 2, "label": "Back to Dashboard", 
+                                            "custom_id": "v2Dash_Home", "emoji": {"id": "1482405757394751619"}
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                    await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=success_payload)
+                else:
+                    await interaction.response.send_message("❌ Failed to delete: Subscription not found.", ephemeral=True)
+
             elif custom_id.startswith("v2_btn_sub_move_yes_"):
                 # "Yes" to "Move this series to new channel?" -> Show channel select inline
                 parts = custom_id.replace("v2_btn_sub_move_yes_", "").split("|", 1)
