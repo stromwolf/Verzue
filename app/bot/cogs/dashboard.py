@@ -56,7 +56,7 @@ class DashboardCog(commands.Cog):
         # Limit to TOP 3 as per user request
         display_subs = group_subs[:3]
         
-        weeklies_text = "# Today Weeklies\n"
+        weeklies_text = "## Today Weeklies\n"
         if display_subs:
             for i, sub in enumerate(display_subs, 1):
                 url = sub.get("url", "").lower()
@@ -1597,7 +1597,7 @@ class DashboardCog(commands.Cog):
             })
 
         # 2. Build Weeklies Text (Top 3 for 'Today')
-        weeklies_text = "# 📅 Today's Mock Weeklies\n"
+        weeklies_text = "## 📅 Today's Mock Weeklies\n"
         for i, sub in enumerate(dummy_subs[:3], 1):
             weeklies_text += f"{i}. {sub['emoji']} **{sub['title']}** (<#{sub['channel_id']}>)\n"
         
