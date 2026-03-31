@@ -365,13 +365,15 @@ class PiccomaProvider(BaseProvider):
         res.raise_for_status()
         out_path = f"{out_dir}/page_{idx:03d}.png"
         
-        if seed and seed.isupper() and Canvas:
+        if seed and len(seed) > 1 and Canvas:
             try:
                 def unscramble():
                     if not Canvas:
                         raise ScraperError("pycasso (scrambler) not installed. Cannot process Piccoma images.")
                     img_io = BytesIO(res.content)
-                    canvas = Canvas(img_io, (50, 50), dd(seed))
+                    # Seed goes directly to pycasso (no dd() transform).
+                    # Matches Piccoma _s.min.js: unscrambleImg(img, 50, seed)
+                    canvas = Canvas(img_io, (50, 50), seed)
                     return canvas.export(mode="unscramble", format="png").getvalue()
                 content = await asyncio.to_thread(unscramble)
                 with open(out_path, "wb") as f: f.write(content)
@@ -383,7 +385,7 @@ class PiccomaProvider(BaseProvider):
     def _calculate_seed(self, url, region):
         parsed = urllib.parse.urlparse(url)
         qs = urllib.parse.parse_qs(parsed.query)
-        chk = qs.get('q', [''])[0] if region == "fr" else url.split('?')[0].split('/')[-2]
+        chk = qs.get('q', [''])[0] if region == "fr" else url.split('?')[0].rstrip('/').split('/')[-1]
         
         # S+ Enhancement: Strip Piccoma bracket suffixes or other artifacts
         if isinstance(chk, str): 
