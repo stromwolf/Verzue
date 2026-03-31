@@ -428,7 +428,7 @@ class DashboardCog(commands.Cog):
                     "emoji": {"id": "1482405757394751619"}
                 },
                 {
-                    "type": 2, "style": 4, "custom_id": f"v2Dash_Sub_Delete_Start|G:{group_name}|S:{series_id}",
+                    "type": 2, "style": 2, "custom_id": f"v2Dash_Sub_Delete_Start|G:{group_name}|S:{series_id}",
                     "emoji": {"id": "1488511488842006750"}
                 }
             ]
