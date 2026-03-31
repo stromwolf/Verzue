@@ -67,7 +67,8 @@ class TaskWorker:
                 self._sync_view_status(task)
                 provider = self.provider_manager.get_provider(task.service)
                 if not provider:
-                     raise Exception(f"No provider found for service: {task.service}")
+                     from app.core.exceptions import MechaException
+                     raise MechaException(f"No provider found for service: {task.service}", code="SY_002")
                 
                 logger.info(f"🔍 STAGE 1/3: Provider: {provider.__class__.__name__}")
                 
@@ -87,7 +88,9 @@ class TaskWorker:
                         await asyncio.sleep(Settings.DOWNLOAD_DELAY)
                 
                 valid_imgs = [f for f in os.listdir(raw_dir) if f.lower().endswith(('.png', '.webp', '.jpg', '.jpeg'))]
-                if not valid_imgs: raise Exception("No images found after scrape.")
+                if not valid_imgs: 
+                    from app.core.exceptions import MechaException
+                    raise MechaException("No images found after scrape.", code="ST_001")
                 logger.info(f"✅ STAGE 1 COMPLETE: {len(valid_imgs)} images.")
 
                 # --- STAGE 2: STITCHING (Semaphore-Controlled CPU Offloading) ---

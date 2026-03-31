@@ -107,15 +107,20 @@ class MechaBot(commands.Bot):
     async def handle_task_failure(self, task, error_message):
         """Alerts the user AND the admin channel when a task crashes."""
         try:
+            # 🟢 S-GRADE: Extract Error Code if available
+            error_code = getattr(error_message, "code", None) if not isinstance(error_message, str) else None
+            err_text = str(error_message).split('\n')[0]
+            
             # 1. Notify User Channel
             user_channel = self.get_channel(task.channel_id)
-            err_text = str(error_message).split('\n')[0]
             
             embed = discord.Embed(
                 title="❌ Extraction Failed",
                 description=f"**Chapter:** `{task.title}`\n**Reason:** {err_text}",
                 color=0xe74c3c
             )
+            if error_code:
+                embed.add_field(name="Error Code", value=f"`{error_code}`", inline=True)
             embed.set_footer(text=f"Task ID: {task.id}")
 
             if user_channel:
@@ -138,8 +143,11 @@ class MechaBot(commands.Bot):
         except Exception as e:
             self.logger.error(f"Failed to send extraction error alert: {e}")
 
+        except Exception as e:
+            self.logger.error(f"Failed to send extraction error alert: {e}")
+
     # --- S-GRADE: GLOBAL CRASH SENTINEL ---
-    async def dispatch_error(self, error: Exception, ctx: commands.Context = None, interaction: discord.Interaction = None, event: str = None):
+    async def dispatch_error(self, error: Exception, ctx: commands.Context = None, interaction: discord.Interaction = None, event: str = None, code: str = None):
         """Standardized crash reporter that dispatches reports to the admin legacy channel."""
         import traceback
         self.logger.error(f"Sentinel Dispatch: {error}")
@@ -154,6 +162,9 @@ class MechaBot(commands.Bot):
                     self.logger.error("Sentinel failed to fetch admin channel!")
                     return
 
+            # 🟢 S-GRADE: Extract Error Code
+            error_code = code or getattr(error, "code", "SY_002") # Default to System Logic Crash if no code
+            
             # 2. Build Report Embed
             title = "💥 Command Crash Detected" if (ctx or interaction) else "💀 Critical System Event Error"
             if event: title = f"💀 System Error: {event}"
@@ -167,6 +178,8 @@ class MechaBot(commands.Bot):
                 timestamp=discord.utils.utcnow()
             )
             
+            embed.add_field(name="Error Code", value=f"`{error_code}`", inline=True)
+
             if ctx:
                 embed.add_field(name="Command", value=f"`{ctx.command}`", inline=True)
                 embed.add_field(name="User", value=f"{ctx.author} (`{ctx.author.id}`)", inline=True)

@@ -129,7 +129,8 @@ class MechaProvider(BaseProvider):
         auth_session = await self._get_authenticated_session()
         base_series_url = url.split('?')[0]
         res = await auth_session.get(f"{base_series_url}?page=1", timeout=30)
-        if res.status_code != 200: raise ScraperError(f"Mecha error: {res.status_code}")
+        if res.status_code != 200: 
+            raise ScraperError(f"Mecha error: {res.status_code}", code="SC_002")
         await self.session_service.record_session_success("mecha")
         
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -225,7 +226,8 @@ class MechaProvider(BaseProvider):
         if not viewer_url:
             viewer_url = await self.fast_purchase(task)
         
-        if not viewer_url: raise ScraperError("Failed to access chapter.")
+        if not viewer_url: 
+            raise ScraperError("Failed to access chapter. Check session or purchase status.", code="AC_001")
         await self.session_service.record_session_success("mecha")
 
         qs = parse_qs(urlparse(viewer_url).query)
