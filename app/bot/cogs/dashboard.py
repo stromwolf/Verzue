@@ -1570,8 +1570,8 @@ class DashboardCog(commands.Cog):
             route = discord.http.Route('POST', f'/channels/{ctx.channel.id}/messages')
             await self.bot.http.request(route, json=payload)
         except Exception as e:
-            logger.error(f"Failed to send $ui_sub: {e}")
-            await ctx.send(f"❌ Failed to load subscription UI: {e}")
+            logger.error(f"Failed to send $ui_sub_test: {e}")
+            await ctx.send(f"❌ Failed to load debug UI: {e}")
 
 async def setup(bot):
     await bot.add_cog(DashboardCog(bot))
