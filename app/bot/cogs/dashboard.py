@@ -754,34 +754,6 @@ class DashboardCog(commands.Cog):
                 # Directly response with MODAL instead of UPDATE_MESSAGE
                 await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=modal_payload)
 
-            elif custom_id.startswith("v2Dash_Sub_Delete_Modal|"):
-                # Step 4: Final Modal Submission
-                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
-                group_name = parts.get("G")
-                series_id = parts.get("S")
-                
-                # Extract reason from modal data using V2 Type 18 structure
-                final_reason = "Unknown Reason"
-                try:
-                    dropdown_val = ""
-                    text_val = ""
-                    for row in interaction.data.get("components", []):
-                        inner = row.get("component", {})
-                        cid = inner.get("custom_id")
-                        if cid == "sel_sub_delete_reason":
-                            dropdown_val = inner.get("value", "")
-                        elif cid == "txt_sub_delete_reason":
-                            text_val = inner.get("value", "")
-
-                    if dropdown_val == "others_modal":
-                        final_reason = f"Other: {text_val}" if text_val else "Other"
-                    else:
-                        final_reason = dropdown_val
-                        if text_val: final_reason += f" ({text_val})"
-                except Exception as e:
-                    logger.error(f"Failed to parse Delete Modal data: {e}")
-                
-                await self.finalize_sub_removal(interaction, group_name, series_id, final_reason)
 
             elif custom_id.startswith("v2_btn_sub_move_yes_"):
                 # "Yes" to "Move this series to new channel?" -> Show channel select inline
@@ -1112,6 +1084,35 @@ class DashboardCog(commands.Cog):
                     "✅ **Report Sent!** Our team has been notified and will look into it. Thank you for your feedback.",
                     ephemeral=True
                 )
+
+            elif custom_id.startswith("v2Dash_Sub_Delete_Modal|"):
+                # Step 4: Final Modal Submission
+                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
+                group_name = parts.get("G")
+                series_id = parts.get("S")
+                
+                # Extract reason from modal data using V2 Type 18 structure
+                final_reason = "Unknown Reason"
+                try:
+                    dropdown_val = ""
+                    text_val = ""
+                    for row in interaction.data.get("components", []):
+                        inner = row.get("component", {})
+                        cid = inner.get("custom_id")
+                        if cid == "sel_sub_delete_reason":
+                            dropdown_val = inner.get("value", "")
+                        elif cid == "txt_sub_delete_reason":
+                            text_val = inner.get("value", "")
+
+                    if dropdown_val == "others_modal":
+                        final_reason = f"Other: {text_val}" if text_val else "Other"
+                    else:
+                        final_reason = dropdown_val
+                        if text_val: final_reason += f" ({text_val})"
+                except Exception as e:
+                    logger.error(f"Failed to parse Delete Modal data: {e}")
+                
+                return await self.finalize_sub_removal(interaction, group_name, series_id, final_reason)
 
             if custom_id.startswith("modal_select_"):
                 req_id = custom_id.split("_")[-1]
