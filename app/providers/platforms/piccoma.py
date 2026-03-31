@@ -371,9 +371,11 @@ class PiccomaProvider(BaseProvider):
                     if not Canvas:
                         raise ScraperError("pycasso (scrambler) not installed. Cannot process Piccoma images.")
                     img_io = BytesIO(res.content)
-                    # Seed goes directly to pycasso (no dd() transform).
-                    # Matches Piccoma _s.min.js: unscrambleImg(img, 50, seed)
-                    canvas = Canvas(img_io, (50, 50), seed)
+                    # V30 React viewer: this.seed = window.dd(get_seed(e,t))
+                    # The intermediate seed must be passed through dd() (WASM transform)
+                    # before being fed into the PRNG for tile unshuffling.
+                    final_seed = dd(seed)
+                    canvas = Canvas(img_io, (50, 50), final_seed)
                     return canvas.export(mode="unscramble", format="png").getvalue()
                 content = await asyncio.to_thread(unscramble)
                 with open(out_path, "wb") as f: f.write(content)
