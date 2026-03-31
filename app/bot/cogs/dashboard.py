@@ -534,6 +534,19 @@ class DashboardCog(commands.Cog):
             route = discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original')
             await self.bot.http.request(route, json=success_payload["data"])
 
+        # 4. AUTO-DELETE AFTER 5 MINUTES (300s)
+        async def delayed_delete():
+            await asyncio.sleep(300)
+            try:
+                # Use standard DELETE route for the original message
+                if interaction.message:
+                    route = discord.http.Route('DELETE', f'/channels/{interaction.channel_id}/messages/{interaction.message.id}')
+                    await self.bot.http.request(route)
+            except:
+                pass # Already deleted or navigated away
+        
+        asyncio.create_task(delayed_delete())
+
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
         """🟢 EVENT LISTENER: Catch raw V2 interactions."""
