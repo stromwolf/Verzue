@@ -46,6 +46,7 @@ class ChapterTask:
     share_link: Optional[str] = None
     purchase_progress: int = 0 # 0-100%
     purchase_status: str = "Waiting" # e.g., "Navigating", "Clicking Buy", "Done"
+    error_message: Optional[str] = None # 🔴 Why this task failed
 
     def __post_init__(self):
         if self.waiters is None: self.waiters = []

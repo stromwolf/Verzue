@@ -268,13 +268,33 @@ class UniversalDashboard:
             inner_components.append(divider)
 
             # 6. ID Footer Section with Error Button Accessory
+            has_failures = any(t.status == TaskStatus.FAILED for t in self.active_tasks)
+            
+            footer_components = []
+            if has_failures:
+                # 🟢 S-GRADE: Unified Retry Button (only appears on failure)
+                footer_components.append({
+                    "type": 2, "style": 3, # Success (Green) for recovery
+                    "label": "Retry Failed",
+                    "emoji": {"name": "🔄"},
+                    "custom_id": f"btn_error_retry_{self.req_id}"
+                })
+            
+            # The original Error Report button
+            footer_components.append({
+                "type": 2, 
+                "style": 4 if has_failures else 2, # Red if failure, Grey if success
+                "label": "Report Error" if has_failures else None,
+                "emoji": {"id": "1480954865516548126", "name": "Error_Chapter"},
+                "custom_id": f"btn_report_error_{self.req_id}"
+            })
+
             inner_components.append({
                 "type": 9, # Section
                 "components": [{"type": 10, "content": footer_text}],
                 "accessory": {
-                    "type": 2, "style": 2, # Secondary (Dull)
-                    "emoji": {"id": "1480954865516548126", "name": "Error_Chapter"},
-                    "custom_id": f"btn_report_error_{self.req_id}"
+                    "type": 1, # Action Row for multiple buttons if needed
+                    "components": footer_components
                 }
             })
             

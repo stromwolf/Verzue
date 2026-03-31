@@ -149,6 +149,7 @@ class TaskWorker:
 
             except Exception as e:
                 task.status = TaskStatus.FAILED
+                task.error_message = str(e)
                 logger.error(f"❌ TASK FAILURE: {e}")
                 await EventBus.emit("task_failed", task, str(e))
                 await self._clean_dirs(raw_dir, final_dir)
@@ -173,6 +174,7 @@ class TaskWorker:
             await EventBus.emit("task_completed", task)
         except Exception as e:
             task.status = TaskStatus.FAILED
+            task.error_message = str(e)
             self._sync_view_status(task)
             logger.error(f"❌ BACKGROUND UPLOAD FAILED: {e}")
             await EventBus.emit("task_failed", task, str(e))
@@ -202,6 +204,7 @@ class TaskWorker:
                     t.share_link = task.share_link
                     t.pre_created_folder_id = task.pre_created_folder_id
                     t.final_folder_name = task.final_folder_name
+                    t.error_message = task.error_message
                     break
         
         # 2. Distributed Sync (Redis PubSub)

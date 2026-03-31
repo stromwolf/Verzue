@@ -528,12 +528,40 @@ class DashboardCog(commands.Cog):
                 view.interaction = interaction
                 view.last_interaction_time = time.time() # 🔄 Reset session timer on every interaction
 
-                # NEW: Error Report Logic
+                # NEW: Error Report Logic (Launches Modal)
                 if custom_id.startswith("btn_report_error_"):
-                    acknowledgement = (
-                        "Thank you for reporting this. We'll improve this feature to allow detailed error reporting soon."
-                    )
-                    return await interaction.response.send_message(acknowledgement, ephemeral=True)
+                    modal_payload = {
+                        "type": 9, # MODAL_DISPLAY
+                        "data": {
+                            "custom_id": f"modal_report_error_{req_id}",
+                            "title": "Report Download Error",
+                            "components": [
+                                {
+                                    "type": 1,
+                                    "components": [
+                                        {
+                                            "type": 4, # TEXT_INPUT
+                                            "custom_id": "error_desc",
+                                            "label": "What happened?",
+                                            "style": 2, # PARAGRAPH
+                                            "placeholder": "Example: Some pages are blurry, or chapter 5 is missing...",
+                                            "required": True,
+                                            "min_length": 10,
+                                            "max_length": 500
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                    try:
+                        return await self.bot.http.request(
+                            discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                            json=modal_payload
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to launch Error Modal: {e}")
+                        return await interaction.response.send_message("❌ Failed to open report form. Please try again.", ephemeral=True)
 
                 if custom_id.startswith("btn_pending_link_"):
                     return await interaction.response.send_message("This link is still being generated. Please wait a moment.", ephemeral=True)
@@ -745,6 +773,60 @@ class DashboardCog(commands.Cog):
         elif interaction.type == discord.InteractionType.modal_submit:
             custom_id = interaction.data.get("custom_id", "")
             
+            # 🔴 NEW: Error Report Submission
+            if custom_id.startswith("modal_report_error_"):
+                req_id = custom_id.split("_")[-1]
+                from app.bot.common.view import UniversalDashboard
+                view: UniversalDashboard | None = UniversalDashboard.active_views.get(req_id)
+                if not view: return
+                
+                # Extract User Feedback
+                user_msg = ""
+                for row in interaction.data.get("components", []):
+                    for comp in row.get("components", []):
+                        if comp.get("custom_id") == "error_desc":
+                            user_msg = comp.get("value", "")
+
+                # 🟢 S-GRADE: Prepare Detailed Admin Embed
+                admin_channel_id = Settings.ADMIN_LOG_CHANNEL_ID
+                admin_channel = self.bot.get_channel(admin_channel_id)
+                
+                if admin_channel:
+                    embed = discord.Embed(
+                        title=f"🚨 Chapter Error Reported",
+                        description=f"**Series:** [{view.title}]({view.url})\n**User:** {interaction.user.mention} ({interaction.user.name})",
+                        color=0xe74c3c, # Red
+                        timestamp=datetime.datetime.now(datetime.timezone.utc)
+                    )
+                    embed.add_field(name="User Description", value=user_msg or "No description provided.", inline=False)
+                    
+                    # Inspect Task Failures
+                    failed_chapters = [t for t in view.active_tasks if t.status == TaskStatus.FAILED]
+                    if failed_chapters:
+                        fail_text = ""
+                        for t in failed_chapters:
+                            error = t.error_message or "Unknown internal error."
+                            fail_text += f"• **{t.chapter_str}**: `{error}`\n"
+                        embed.add_field(name="Technical Failures", value=fail_text[:1024], inline=False)
+                    else:
+                        # Success case but user reported something (e.g. blurry images)
+                        ch_list = ", ".join([t.chapter_str for t in view.active_tasks]) or "No active tasks"
+                        embed.add_field(name="Chapters Involved", value=ch_list, inline=False)
+
+                    embed.set_footer(text=f"Request ID: {req_id} | Series ID: {view.series_id}")
+                    
+                    # Add jump link to original message if available
+                    if interaction.message:
+                        embed.add_field(name="Context", value=f"[Jump to Message]({interaction.message.jump_url})", inline=False)
+                    
+                    await admin_channel.send(embed=embed)
+                
+                # Friendly confirmation to user
+                return await interaction.response.send_message(
+                    "✅ **Report Sent!** Our team has been notified and will look into it. Thank you for your feedback.",
+                    ephemeral=True
+                )
+
             if custom_id.startswith("modal_select_"):
                 req_id = custom_id.split("_")[-1]
                 from app.bot.common.view import UniversalDashboard
