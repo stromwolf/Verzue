@@ -440,15 +440,15 @@ class DashboardCog(commands.Cog):
             {"type": 10, "content": status_line},
             {"type": 14, "divider": True, "spacing": 1},
             {"type": 10, "content": content},
-            {"type": 14, "divider": True, "spacing": 1}
+            {"type": 14, "divider": True, "spacing": 1},
+            action_row
         ]
 
         return {
             "type": 7, # UPDATE_MESSAGE
             "data": {
                 "components": [
-                    {"type": 17, "components": container_components},
-                    action_row
+                    {"type": 17, "components": container_components}
                 ]
             }
         }
