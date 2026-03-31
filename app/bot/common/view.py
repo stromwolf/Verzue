@@ -40,6 +40,7 @@ class UniversalDashboard:
     _last_hash: int
     retry_active: bool
     existing_links: dict[str, Any]
+    series_share_link: Optional[str]
 
     def __init__(self, bot, ctx_data, service_type):
         self.bot = bot
@@ -51,6 +52,8 @@ class UniversalDashboard:
         self.status_label = ctx_data.get('status_label')
         self.genre_label = ctx_data.get('genre_label')
         self.service_type, self.color = service_type, COLORS.get(service_type, 0x2b2d31)
+        
+        self.series_share_link = None
         
         if self.service_type == "mecha" and getattr(self.bot.task_queue, "browser_service", None):
             self.bot.task_queue.browser_service.inc_session()
@@ -288,6 +291,18 @@ class UniversalDashboard:
                 "emoji": {"id": "1480954865516548126", "name": "Error_Chapter"},
                 "custom_id": f"btn_report_error_{self.req_id}"
             })
+
+            if self.series_share_link:
+                inner_components.append({
+                    "type": 9, # Section
+                    "components": [{"type": 10, "content": "### Full Series Access"}],
+                    "accessory": {
+                        "type": 2, "style": 5, 
+                        "label": "Open Drive Folder", 
+                        "emoji": {"id": "1482676886680113172", "name": "drive"},
+                        "url": self.series_share_link
+                    }
+                })
 
             inner_components.append({
                 "type": 9, # Section

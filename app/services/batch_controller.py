@@ -137,7 +137,14 @@ class BatchController:
                 await view_ref._full_scan_task
                 all_chapters = view_ref.all_chapters
 
-            shortcuts_to_create = [] # (main_existing_id, folder_name)
+            # 🟢 S-GRADE: Fetch and store Series Share Link
+            if view_ref and drive_series_id:
+                try:
+                    view_ref.series_share_link = await asyncio.to_thread(self.uploader.get_share_link, drive_series_id)
+                    logger.info(f"🔗 Series Share Link: {view_ref.series_share_link}")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch series share link: {e}")
+
             if view_ref: view_ref.existing_links = {}
 
             for idx in selected_indices:

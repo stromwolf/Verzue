@@ -94,15 +94,20 @@ class TaskWorker:
                 task.status = TaskStatus.STITCHING
                 self._sync_view_status(task)
                 
-                # Fetch early share link as soon as folder is ready (before stitching completes)
-                if drive_folder_task and not task.share_link:
+                # 🟢 Ensure Folder ID and Share Link are populated
+                if not task.pre_created_folder_id and drive_folder_task:
                     try:
                         task.pre_created_folder_id = await drive_folder_task
+                    except Exception as e:
+                        logger.error(f"Failed to create/fetch drive folder ID: {e}")
+
+                if task.pre_created_folder_id and not task.share_link:
+                    try:
                         task.share_link = await asyncio.to_thread(self.uploader.get_share_link, task.pre_created_folder_id)
-                        logger.info(f"🔗 Early Link Generated: {task.share_link}")
+                        logger.info(f"🔗 Link Generated: {task.share_link}")
                         self._sync_view_status(task) # 🟢 Update UI immediately with the link
                     except Exception as e:
-                        logger.warning(f"Failed to fetch early link: {e}")
+                        logger.warning(f"Failed to fetch share link: {e}")
 
                 logger.info("🧵 STAGE 2/3: Stitching (Waiting for CPU Slot)...")
                 
