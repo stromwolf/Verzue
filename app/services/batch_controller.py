@@ -190,14 +190,6 @@ class BatchController:
                 if view_ref: view_ref.phases["purchase"] = "done"
 
             if view_ref:
-                if len(selected_indices) == 1:
-                    idx = list(selected_indices)[0]
-                    ch_data = all_chapters[idx]
-                    folder_name = self._make_task(idx, ch_data, title, url, scan_group, interaction, series_id, req_id).folder_name
-                    main_existing_id = main_manifest.get(folder_name)
-                    view_ref.final_link = await asyncio.to_thread(self.uploader.get_share_link, main_existing_id) if main_existing_id else None
-                else:
-                    view_ref.final_link = await asyncio.to_thread(self.uploader.get_share_link, requester_folder['id']) if requester_folder else None
                 
                 view_ref.phases["analyze"] = "done"
                 view_ref.trigger_refresh()

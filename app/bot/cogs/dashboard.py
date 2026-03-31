@@ -566,7 +566,6 @@ class DashboardCog(commands.Cog):
                     # 3. Reset View State
                     view.processing_mode = True
                     view.phases["download"] = "loading"
-                    view.final_link = None
                     view.trigger_refresh()
                     
                     # 4. Re-queue tasks

@@ -34,7 +34,6 @@ class UniversalDashboard:
     selected_indices: set[int]
     active_tasks: list[ChapterTask]
     phases: dict[str, str]
-    final_link: Optional[str]
     interaction: Optional[discord.Interaction]
     sub_status: Any
     processing_mode: bool
@@ -61,7 +60,7 @@ class UniversalDashboard:
         self.selected_indices, self.active_tasks = set(), []
         
         self.phases = {"analyze": "waiting", "purchase": "waiting", "download": "waiting"}
-        self.final_link, self.interaction, self.sub_status, self.processing_mode, self._last_hash = None, None, None, False, 0
+        self.interaction, self.sub_status, self.processing_mode, self._last_hash = None, None, False, 0
         self.retry_active = False
         self.existing_links = {} # 🟢 S-GRADE: {chapter_str: link} for pre-existing chapters
         self._latest_ui_update: float = 0.0 # 🟢 Throttle for background updates
@@ -213,7 +212,7 @@ class UniversalDashboard:
                 if item["type"] == "active":
                     task: ChapterTask = item["task"] # type: ignore
                     ch_str = task.chapter_str
-                    link: Optional[str] = task.share_link or self.final_link
+                    link: Optional[str] = task.share_link
                 else:
                     ch_str = item["ch"]
                     info: dict = item["info"]
@@ -248,18 +247,6 @@ class UniversalDashboard:
                     }]
                 })
             
-            # Add Main Folder button at bottom for convenience
-            if self.final_link:
-                inner_components.append({
-                    "type": 9,
-                    "components": [{"type": 10, "content": "**Full Series Folder**"}],
-                    "accessory": {
-                        "type": 2, "style": 5,
-                        "label": "Open Google Drive",
-                        "emoji": {"id": "1482676886680113172", "name": "drive"},
-                        "url": self.final_link
-                    }
-                })
 
             # Fallback ONLY if both are empty
             if not all_sorted_items:
@@ -274,7 +261,7 @@ class UniversalDashboard:
                         "type": 2, "style": 5, 
                         "label": "Visit Drive", 
                         "emoji": {"id": "1482676886680113172", "name": "drive"},
-                        "url": self.final_link or "https://google.com"
+                        "url": "https://drive.google.com"
                     }
                 })
 
@@ -404,7 +391,7 @@ class UniversalDashboard:
                         if task.status == TaskStatus.FAILED: continue
                         
                         if task.status == TaskStatus.COMPLETED:
-                            link = task.share_link or self.final_link
+                            link = task.share_link
                             status_line = f"> **{task.chapter_str}**"
                         else:
                             # Status text assembly
@@ -627,14 +614,6 @@ class UniversalDashboard:
     async def monitor_tasks(self):
         while self.phases["download"] != "done":
             if self.active_tasks:
-                # 🟢 DYNAMIC LINK UPDATE: Update final_link for single-chapter tasks as soon as folder is ready
-                if len(self.selected_indices) == 1 and not self.final_link:
-                    task = self.active_tasks[0]
-                    if task.pre_created_folder_id:
-                        try:
-                            uploader = self.bot.task_queue.uploader
-                            self.final_link = await asyncio.to_thread(uploader.get_share_link, task.pre_created_folder_id)
-                        except: pass
 
                 if all(t.status in [TaskStatus.COMPLETED, TaskStatus.FAILED] for t in self.active_tasks): 
                     self.phases["download"] = "done"
@@ -649,7 +628,7 @@ class UniversalDashboard:
             self.trigger_refresh()
             if self.phases["download"] == "done":
                 # 🟢 SEND NOTIFICATION: Always ping when done
-                if self.final_link and self.interaction:
+                if self.interaction:
                     try:
                         # 🟢 ROBUST PING: Try multiple ways to reach the user/channel
                         channel = self.bot.get_channel(self.interaction.channel_id)

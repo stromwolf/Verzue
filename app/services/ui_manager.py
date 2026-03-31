@@ -62,8 +62,6 @@ class UIManager:
                         f"{str(payload_components)}"
                         f"{view.phases}"
                         f"{task_states}"
-                        f"{len(view.active_tasks)}"
-                        f"{view.final_link}"
                         f"{getattr(view, 'sub_status', '')}"
                     )
                     new_hash = hash(state_blob)
