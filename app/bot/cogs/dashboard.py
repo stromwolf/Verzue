@@ -722,36 +722,31 @@ class DashboardCog(commands.Cog):
                         "title": "Reason Selection",
                         "components": [
                             {
-                                "type": 1, 
-                                "components": [
-                                    {
-                                        "type": 18, # STRING_SELECT (Inside Modal)
-                                        "custom_id": "sel_sub_delete_reason",
-                                        "label": "Choose Deletion Reason",
-                                        "placeholder": "Select Reason...",
-                                        "options": [
-                                            {"label": "Not Interested", "value": "Not Interested", "emoji": {"name": "😒"}},
-                                            {"label": "Hiatus", "value": "Hiatus", "emoji": {"name": "⏸️"}},
-                                            {"label": "We're dropping this series", "value": "We're dropping this series", "emoji": {"name": "📉"}},
-                                            {"label": "Others", "value": "others_modal", "emoji": {"name": "✏️"}}
-                                        ],
-                                        "required": True
-                                    }
-                                ]
+                                "type": 18, # Specialized Radio Group Container
+                                "label": "Choose Deletion Reason",
+                                "component": {
+                                    "type": 21, # Radio Group
+                                    "custom_id": "sel_sub_delete_reason",
+                                    "options": [
+                                        {"label": "Not Interested", "value": "Not Interested", "emoji": {"name": "😒"}},
+                                        {"label": "Hiatus", "value": "Hiatus", "emoji": {"name": "⏸️"}},
+                                        {"label": "We're dropping this series", "value": "We're dropping this series", "emoji": {"name": "📉"}},
+                                        {"label": "Others", "value": "others_modal", "emoji": {"name": "✏️"}}
+                                    ],
+                                    "required": True
+                                }
                             },
                             {
-                                "type": 1,
-                                "components": [
-                                    {
-                                        "type": 4, # TEXT_INPUT
-                                        "custom_id": "txt_sub_delete_reason",
-                                        "label": "Write Reason (Optional for others)",
-                                        "style": 2, # Paragraph
-                                        "placeholder": "Type your detailed reason here...",
-                                        "required": False,
-                                        "min_length": 5
-                                    }
-                                ]
+                                "type": 18, # Container for Text Input
+                                "label": "Write Reason (Optional for others)",
+                                "component": {
+                                    "type": 4, # TEXT_INPUT
+                                    "custom_id": "txt_sub_delete_reason",
+                                    "style": 2, # Paragraph
+                                    "placeholder": "Type your detailed reason here...",
+                                    "required": False,
+                                    "min_length": 5
+                                }
                             }
                         ]
                     }
@@ -765,19 +760,18 @@ class DashboardCog(commands.Cog):
                 group_name = parts.get("G")
                 series_id = parts.get("S")
                 
-                # Extract reason from modal data
+                # Extract reason from modal data using V2 Type 18 structure
                 final_reason = "Unknown Reason"
                 try:
-                    rows = interaction.data.get("components", [])
                     dropdown_val = ""
                     text_val = ""
-                    
-                    if len(rows) > 0:
-                        inner = rows[0].get("components", [{}])[0]
-                        dropdown_val = inner.get("value", "")
-                    if len(rows) > 1:
-                        inner = rows[1].get("components", [{}])[0]
-                        text_val = inner.get("value", "")
+                    for row in interaction.data.get("components", []):
+                        inner = row.get("component", {})
+                        cid = inner.get("custom_id")
+                        if cid == "sel_sub_delete_reason":
+                            dropdown_val = inner.get("value", "")
+                        elif cid == "txt_sub_delete_reason":
+                            text_val = inner.get("value", "")
 
                     if dropdown_val == "others_modal":
                         final_reason = f"Other: {text_val}" if text_val else "Other"
