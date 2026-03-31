@@ -42,13 +42,8 @@ class DashboardCog(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to send V2 Dashboard: {e}")
 
-    async def get_dashboard_payload(self, interaction: discord.Interaction, is_update=False):
-        """Standardized payload generator for the refined V2 Dashboard."""
-        guild_id = interaction.guild.id if interaction.guild else 0
-        channel_id = interaction.channel.id if interaction.channel else 0
-        scan_name = Settings.SERVER_MAP.get(channel_id) or Settings.SERVER_MAP.get(guild_id) or Settings.DEFAULT_CLIENT_NAME
-
-        # 🟢 S-GRADE: Fetch Today's Weeklies from Redis (O(1))
+    async def get_weeklies_section(self, scan_name: str):
+        """Generates the 'Today Weeklies' text and action row components."""
         from app.services.redis_manager import RedisManager
         redis_brain = RedisManager()
         
@@ -57,12 +52,52 @@ class DashboardCog(commands.Cog):
         
         # Get hydrated sub data for today
         group_subs = await redis_brain.get_schedule_for_group(scan_name, today_name)
-        total_scheduled = len(group_subs)
         
         # Limit to TOP 3 as per user request
         display_subs = group_subs[:3]
         
-        logger.info(f"Dashboard Load for {scan_name}: Today={today_name}, Found {total_scheduled} weeklies (showing 3).")
+        weeklies_text = "# Today Weeklies\n"
+        if display_subs:
+            for i, sub in enumerate(display_subs, 1):
+                url = sub.get("url", "").lower()
+                title = sub.get("title", "Unknown Series")
+                
+                # Platform Emoji
+                emoji = "📖"
+                if "piccoma" in url: emoji = "<:Piccoma:1478368704164134912>"
+                elif "mecha" in url: emoji = "<:Mechacomic:1478369141957333083>"
+                elif "jumptoon" in url: emoji = "<:Jumptoon:1478367963928068168>"
+                
+                weeklies_text += f"{i}. {emoji} **{title}** (<#{sub.get('channel_id') or '0'}>)\n"
+        else:
+            weeklies_text += "> *No scheduled series subscriptions for today.*"
+
+        weeklies_section = {
+            "type": 10, # TEXT_DISPLAY
+            "content": weeklies_text
+        }
+
+        action_row = {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2, "style": 2, "label": "View All Subscriptions",
+                    "custom_id": f"v2_btn_view_all_subs_{scan_name}",
+                    "emoji": {"name": "📋"}
+                }
+            ]
+        }
+        
+        return weeklies_section, action_row
+
+    async def get_dashboard_payload(self, interaction: discord.Interaction, is_update=False):
+        """Standardized payload generator for the refined V2 Dashboard."""
+        guild_id = interaction.guild.id if interaction.guild else 0
+        channel_id = interaction.channel.id if interaction.channel else 0
+        scan_name = Settings.SERVER_MAP.get(channel_id) or Settings.SERVER_MAP.get(guild_id) or Settings.DEFAULT_CLIENT_NAME
+
+        # 🟢 S-GRADE: Fetch Weeklies via helper
+        weeklies_section, action_row = await self.get_weeklies_section(scan_name)
         
         # Custom Logo
         custom_emoji = get_group_emoji(scan_name)
@@ -72,33 +107,6 @@ class DashboardCog(commands.Cog):
         header_section = {
             "type": 10, # TEXT_DISPLAY
             "content": f"# {header_logo}{scan_name}'s Dashboard"
-        }
-
-        # 2. WEEKLIES SECTION
-        weeklies_text = "# Today Weeklies\n"
-        if display_subs:
-            for i, sub in enumerate(display_subs, 1):
-                weeklies_text += f"{i}. <#{sub.get('channel_id')}>\n"
-        else:
-            weeklies_text += "> *No scheduled series subscriptions for today.*"
-        
-        weeklies_section = {
-            "type": 10, # TEXT_DISPLAY
-            "content": weeklies_text
-        }
-
-        # 4. ACTION ROW (View All)
-        action_row = {
-            "type": 1,
-            "components": [
-                {
-                    "type": 2,
-                    "style": 2,
-                    "label": "View All Subscriptions",
-                    "custom_id": f"v2_btn_view_all_subs_{scan_name}",
-                    "emoji": {"name": "📋"}
-                }
-            ]
         }
 
         # 3. PLATFORM LIST & SELECT
@@ -1515,6 +1523,55 @@ class DashboardCog(commands.Cog):
                 pass # Already deleted or expired
         
         asyncio.create_task(_internal_delete())
+
+    @commands.command(name="ui_sub")
+    async def ui_sub(self, ctx: commands.Context):
+        """Prefix command to show today's subscription highlights."""
+        logger.info(f"Prefix Command $ui_sub triggered by {ctx.author} in {ctx.channel}")
+        guild_id = ctx.guild.id if ctx.guild else 0
+        channel_id = ctx.channel.id
+        scan_name = Settings.SERVER_MAP.get(channel_id) or Settings.SERVER_MAP.get(guild_id) or Settings.DEFAULT_CLIENT_NAME
+
+        # 1. Fetch Weeklies
+        weeklies_section, action_row = await self.get_weeklies_section(scan_name)
+
+        # 2. Header
+        custom_emoji = get_group_emoji(scan_name)
+        header_logo = f"{custom_emoji} " if custom_emoji else ""
+        header_section = {
+            "type": 10, "content": f"# {header_logo}{scan_name}'s Subscriptions"
+        }
+
+        # 3. Footer
+        footer_section = {
+            "type": 10, "content": f"-# CS-ID: {guild_id if guild_id else '0'}"
+        }
+
+        # 🟢 ASSEMBLE V2 PAYLOAD
+        payload = {
+            "flags": 32768,
+            "components": [
+                {
+                    "type": 17,
+                    "components": [
+                        header_section,
+                        {"type": 14, "divider": True, "spacing": 1},
+                        weeklies_section,
+                        action_row,
+                        {"type": 14, "divider": True, "spacing": 1},
+                        footer_section
+                    ]
+                }
+            ]
+        }
+
+        # 🟢 Dispatch via Raw HTTP
+        try:
+            route = discord.http.Route('POST', f'/channels/{ctx.channel.id}/messages')
+            await self.bot.http.request(route, json=payload)
+        except Exception as e:
+            logger.error(f"Failed to send $ui_sub: {e}")
+            await ctx.send(f"❌ Failed to load subscription UI: {e}")
 
 async def setup(bot):
     await bot.add_cog(DashboardCog(bot))
