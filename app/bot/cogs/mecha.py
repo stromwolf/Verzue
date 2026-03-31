@@ -111,8 +111,10 @@ class MechaCog(commands.Cog):
                 logger.info(f"✅ Dashboard active for '{title}'")
 
                 # 8. SPECULATIVE WARMUP
-                asyncio.create_task(self.bot.task_queue.browser_service.start())
-                logger.info("🔥 Browser Warmup Triggered (Background)")
+                browser = getattr(self.bot.task_queue, "browser_service", None)
+                if browser:
+                    asyncio.create_task(browser.start())
+                    logger.info("🔥 Browser Warmup Triggered (Background)")
 
             except Exception as e:
                 logger.error(f"System Failure: {e}", exc_info=True)

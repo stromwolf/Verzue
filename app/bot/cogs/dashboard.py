@@ -1516,7 +1516,9 @@ class DashboardCog(commands.Cog):
             await self.bot.http.request(route, json=payload_data)
             
             if service_type == "mecha":
-                asyncio.create_task(self.bot.task_queue.browser_service.start())
+                browser = getattr(self.bot.task_queue, "browser_service", None)
+                if browser:
+                    asyncio.create_task(browser.start())
                 
         except Exception as e:
             logger.error(f"Failed to fetch metadata: {e}", exc_info=True)
