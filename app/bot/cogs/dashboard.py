@@ -376,34 +376,44 @@ class DashboardCog(commands.Cog):
         # (Future: check a dedicated 'status' field if we ever add it to the scraper/sub)
         
         # Aligned Labels Logic
-        # We'll use backticks and spaces to ensure constant width for the labels.
-        # Fixed width for the label part (including bold markers)
+        # We'll use a code block (```) to ensure perfect monospaced alignment.
+        # labels will NO LONGER be bold as they are inside a code block.
         def align(label, value):
-            target_width = 30 # Adjust based on longest label
+            target_width = 25 
             padding = " " * (target_width - len(label))
             return f"{label}{padding} | {value}"
 
+        # Resolve Names for monospaced display (Mentions don't work in code blocks)
+        channel_id = sub.get('channel_id')
+        channel_name = f"#{channel_id}"
+        if channel_id:
+            ch = self.bot.get_channel(int(channel_id))
+            if ch: channel_name = f"#{ch.name}"
+            
+        user_name = "Unknown"
+        if sub.get("added_by"):
+            u = self.bot.get_user(int(sub["added_by"]))
+            user_name = f"@{u.display_name}" if u else f"ID: {sub['added_by']}"
+
         details = [
-            align(f"**Original Title**", original_title),
-            align(f"**{group_name}'s Title **", custom_title or "No Override"),
-            align(f"**Platform **", sub.get("platform", "Unknown").capitalize()),
-            align(f"**Channel **", f"<#{sub.get('channel_id')}>"),
+            align(f"Original Title", original_title),
+            align(f"{group_name}'s Title", custom_title or "No Override"),
+            align(f"Platform", sub.get("platform", "Unknown").capitalize()),
+            align(f"Channel", channel_name),
         ]
         
-        # Handle added_at / added_by gracefully (older subs might not have them)
         if sub.get("added_at"):
             try:
-                # Use built-in fromisoformat (available in 3.7+ / improved in 3.11+)
                 iso_str = sub["added_at"].replace("Z", "+00:00")
                 date_obj = datetime.datetime.fromisoformat(iso_str)
-                details.append(align(f"**Subscribed at **", date_obj.strftime("%Y-%m-%d")))
-            except Exception as e:
-                logger.warning(f"Failed to parse date '{sub.get('added_at')}': {e}")
+                details.append(align(f"Subscribed at", date_obj.strftime("%Y-%m-%d")))
+            except: pass
         
         if sub.get("added_by"):
-            details.append(align(f"**Subscribed by **", f"<@{sub['added_by']}>"))
+            details.append(align(f"Subscribed by", user_name))
 
-        content = "\n".join(details)
+        # 🟢 WRAP IN CODE BLOCK
+        content = "```\n" + "\n".join(details) + "\n```"
 
         # Header & Divider
         header_text = f"# <:Series_Subscription:1488496671091462215> Subscription Info"
