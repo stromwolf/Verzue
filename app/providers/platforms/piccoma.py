@@ -318,7 +318,7 @@ class PiccomaProvider(BaseProvider):
 
         async def process_one(img_data, i):
             async with self._download_semaphore:
-                await self._download_robust(auth_session, img_data, i+1, output_dir, master_seed)
+                await self._download_robust(auth_session, img_data, i+1, output_dir, master_seed, region)
             stats["completed"] += 1
             progress.update(stats["completed"])
 
@@ -355,7 +355,7 @@ class PiccomaProvider(BaseProvider):
             
         return None
 
-    async def _download_robust(self, session, img_data, idx, out_dir, seed):
+    async def _download_robust(self, session, img_data, idx, out_dir, seed, region="jp"):
         url = img_data['path']
         if not url.startswith('http'): url = 'https:' + url
         d_task = session.get(url, timeout=30)
@@ -372,6 +372,14 @@ class PiccomaProvider(BaseProvider):
                     # 🧩 S-GRADE: Lock the unscramble process to protect pycasso's global state
                     with self._unscramble_lock:
                         img_io = BytesIO(res.content)
+                        # S-GRADE: pyccoma v0.7.2 logic - only unscramble if seed is UPPERCASE (for JP)
+                        if region == "jp" and seed.isupper():
+                            # Apply 'dd' parity transformation to seed
+                            final_seed = self._dd_transform(seed)
+                            canvas = Canvas(img_io, (50, 50), final_seed)
+                            return canvas.export(mode="unscramble", format="png").getvalue()
+                        
+                        # Fallback for FR or non-uppercase JP (legacy or un-scrambled)
                         canvas = Canvas(img_io, (50, 50), seed)
                         return canvas.export(mode="unscramble", format="png").getvalue()
                 
@@ -382,6 +390,25 @@ class PiccomaProvider(BaseProvider):
                 with open(out_path, "wb") as f: f.write(res.content)
         else:
             with open(out_path, "wb") as f: f.write(res.content)
+
+    def _dd_transform(self, input_string: str) -> str:
+        """S+ Mirrors pyccoma's dd() seed parity manipulator."""
+        result_bytearray = bytearray()
+        for index, byte in enumerate(bytes(input_string, 'utf-8')):
+            if index < 3:
+                byte = byte + (1 - 2 * (byte % 2))
+            elif 2 < index < 6 or index == 8:
+                pass
+            elif index < 10:
+                byte = byte + (1 - 2 * (byte % 2))
+            elif 12 < index < 15 or index == 16:
+                byte = byte + (1 - 2 * (byte % 2))
+            elif index == len(input_string[:-1]) or index == len(input_string[:-2]):
+                byte = byte + (1 - 2 * (byte % 2))
+            else:
+                pass
+            result_bytearray.append(byte)
+        return str(result_bytearray, 'utf-8')
 
     def _calculate_seed(self, url, region):
         """Precise mirror of Piccoma's get_seed() JS logic."""
@@ -403,14 +430,15 @@ class PiccomaProvider(BaseProvider):
         logger.debug(f"[Piccoma] Calculating seed from URL: {path_only} | Raw Checksum: {chk} | Expires: {expires}")
         
         if expires and chk:
-            # Sum of digits logic (Piccoma V30 update)
-            sum_digits = sum(int(digit) for digit in str(expires) if digit.isdigit())
-            shift = sum_digits % len(chk)
-            
-            if shift != 0:
-                # Rotate right
-                chk = chk[-shift:] + chk[:-shift]
-                logger.debug(f"[Piccoma] Seed rotated by {shift} (Sum: {sum_digits}) -> {chk}")
+            # S+ Mirrors pyccoma's iterative rotation logic
+            # This is more precise than the 'sum-then-modulo' approach for modern Piccoma
+            for num in str(expires):
+                if num.isdigit() and int(num) != 0:
+                    shift = int(num)
+                    # Rotate right
+                    chk = chk[-shift:] + chk[:-shift]
+                    
+            logger.debug(f"[Piccoma] Seed derived via iterative rotation -> {chk}")
         
         return chk
 
