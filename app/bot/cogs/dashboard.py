@@ -12,6 +12,8 @@ import datetime
 import json
 from typing import TYPE_CHECKING, List, Dict, Any, Optional
 from app.core.exceptions import MechaException
+from config.settings import Settings
+from app.models.chapter import TaskStatus
 from app.services.group_manager import load_group, get_group_emoji
 from app.services.redis_manager import RedisManager
 
