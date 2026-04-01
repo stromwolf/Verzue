@@ -48,8 +48,9 @@ class DashboardCog(commands.Cog):
         from app.services.redis_manager import RedisManager
         redis_brain = RedisManager()
         
-        jst_now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=9)
-        today_name = jst_now.strftime("%A")
+        # 🟢 Day Rollover: Use UTC to match AutoPoller
+        now = datetime.datetime.now(datetime.timezone.utc)
+        today_name = now.strftime("%A")
         
         # Get hydrated sub data for today
         group_subs = await redis_brain.get_schedule_for_group(scan_name, today_name)
@@ -215,8 +216,9 @@ class DashboardCog(commands.Cog):
         day_order = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
         
         # Get Current Day (UTC+9 for JST context)
-        jst_now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=9)
-        today_name = jst_now.strftime("%A")
+        # 🟢 Day Rollover: Use UTC to match AutoPoller
+        now = datetime.datetime.now(datetime.timezone.utc)
+        today_name = now.strftime("%A")
 
         # Sort by Day -> Time -> Title
         def get_sort_key(s):

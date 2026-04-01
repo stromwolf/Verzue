@@ -195,6 +195,7 @@ def set_release_day(group_name: str, target_url: str, day: str) -> bool:
 
 
 def update_last_chapter(group_name: str, series_id: str, chapter_id: str):
+    data = load_group(group_name)
     changed = False
     for sub in data["subscriptions"]:
         if sub["series_id"] == series_id:
