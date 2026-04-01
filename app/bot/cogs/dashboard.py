@@ -548,6 +548,42 @@ class DashboardCog(commands.Cog):
                 pass # Already deleted or navigated away
         
         asyncio.create_task(delayed_delete())
+    
+    async def _trigger_redownload(self, view, interaction: discord.Interaction):
+        """Helper to reset view and re-queue tasks for a fresh download."""
+        req_id = view.req_id
+        
+        # 1. Forensic Deletion (Remove existing folders on Drive)
+        uploader = self.bot.task_queue.uploader
+        if uploader:
+            logger.info(f"[{req_id}] 🗑️ Retrying: Deleting existing Drive assets...")
+            for task in view.active_tasks:
+                # Search for folder in MAIN
+                folder_name = task.folder_name
+                main_id = task.main_folder_id or Settings.GDRIVE_ROOT_ID
+                existing_id = uploader.find_folder(folder_name, main_id)
+                if existing_id: uploader.delete_file(existing_id)
+                
+                # Search for [Uploading] version
+                temp_name = f"[Uploading] {folder_name}"
+                temp_id = uploader.find_folder(temp_name, main_id)
+                if temp_id: uploader.delete_file(temp_id)
+
+        # 2. Reset View State
+        view.processing_mode = True
+        view.phases["download"] = "loading"
+        view.trigger_refresh()
+        
+        # 3. Re-queue tasks
+        new_tasks = []
+        for t in view.active_tasks:
+            # Reset task object
+            t.status = TaskStatus.QUEUED
+            t.pre_created_folder_id = None
+            new_tasks.append(await self.bot.task_queue.add_task(t))
+        
+        view.active_tasks = new_tasks
+        asyncio.create_task(view.monitor_tasks())
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
@@ -848,37 +884,8 @@ class DashboardCog(commands.Cog):
                     await interaction.response.send_message(apology, ephemeral=True)
                     view.retry_active = True # 🟡 Flag for monitor_tasks to send fresh notification
                     
-                    # 2. Forensic Deletion (Remove existing folders on Drive)
-                    uploader = self.bot.task_queue.uploader
-                    if uploader:
-                        logger.info(f"[{req_id}] 🗑️ Retrying: Deleting existing Drive assets...")
-                        for task in view.active_tasks:
-                            # Search for folder in MAIN
-                            folder_name = task.folder_name
-                            main_id = task.main_folder_id or Settings.GDRIVE_ROOT_ID
-                            existing_id = uploader.find_folder(folder_name, main_id)
-                            if existing_id: uploader.delete_file(existing_id)
-                            
-                            # Search for [Uploading] version
-                            temp_name = f"[Uploading] {folder_name}"
-                            temp_id = uploader.find_folder(temp_name, main_id)
-                            if temp_id: uploader.delete_file(temp_id)
-
-                    # 3. Reset View State
-                    view.processing_mode = True
-                    view.phases["download"] = "loading"
-                    view.trigger_refresh()
-                    
-                    # 4. Re-queue tasks
-                    new_tasks = []
-                    for t in view.active_tasks:
-                        # Reset task object
-                        t.status = TaskStatus.QUEUED
-                        t.pre_created_folder_id = None
-                        new_tasks.append(await self.bot.task_queue.add_task(t))
-                    
-                    view.active_tasks = new_tasks
-                    asyncio.create_task(view.monitor_tasks())
+                    # 2. Execute re-download trigger
+                    await self._trigger_redownload(view, interaction)
                     return
 
                 # A. Clear Selections (Cancel SR)
@@ -1096,11 +1103,16 @@ class DashboardCog(commands.Cog):
                     
                     await admin_channel.send(embed=embed)
                 
+                # 🟢 S-GRADE: Automatically trigger re-download for the user
+                await self._trigger_redownload(view, interaction)
+                
                 # Friendly confirmation to user
-                return await interaction.response.send_message(
-                    "✅ **Report Sent!** Our team has been notified and will look into it. Thank you for your feedback.",
-                    ephemeral=True
+                confirm_msg = (
+                    "✅ **Report Sent!** Our team has been notified, and the system is automatically re-initiating "
+                    "the download for these chapters. If the issue persists after this second attempt, "
+                    "please ping the administrators for a manual review."
                 )
+                return await interaction.response.send_message(confirm_msg, ephemeral=True)
 
             elif custom_id.startswith("v2Dash_Sub_Delete_Modal|"):
                 # Step 4: Final Modal Submission
