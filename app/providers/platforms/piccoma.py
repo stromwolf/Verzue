@@ -428,8 +428,8 @@ class PiccomaProvider(BaseProvider):
             else:
                 chk_raw = segments[-1] if segments else ""
         
-        # 🟢 FIX: Remove .upper(). pyccoma uses the raw checksum segment.
-        chk = str(chk_raw)
+        # 🟢 FIX: V30 requires uppercase seed for the dd transform and PRNG to match the server.
+        chk = str(chk_raw).upper()
         
         expires = qs.get('expires', [''])[0]
         logger.info(f"[Piccoma V30 Debug] _calculate_seed:")
