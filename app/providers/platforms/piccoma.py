@@ -365,8 +365,8 @@ class PiccomaProvider(BaseProvider):
         res.raise_for_status()
         out_path = f"{out_dir}/page_{idx:03d}.png"
         
-        # 🟢 VERBATIM: pyccoma v0.7.2 implementation
-        if seed and seed.isupper() and Canvas:
+        # 🟢 FIX: Remove isupper() to allow numeric/lowercase seeds.
+        if seed and Canvas:
             try:
                 def unscramble():
                     # 🧩 S-GRADE: Lock the unscramble process
@@ -374,9 +374,10 @@ class PiccomaProvider(BaseProvider):
                         img_io = BytesIO(res.content)
                         # Apply 'dd' parity transformation to seed (Mirrors piccoma.py:162)
                         final_seed = self._dd_transform(seed)
-                        # Use mode="scramble" (Mirrors piccoma.py:163)
+                        # Use mode="unscramble" (Matches internal pycasso reconstruction)
                         canvas = Canvas(img_io, (50, 50), final_seed)
-                        return canvas.export(mode="scramble", format="png").getvalue()
+                        logger.info(f"[Piccoma] Unscrambling page {idx} with seed: {seed}")
+                        return canvas.export(mode="unscramble", format="png").getvalue()
                 
                 content = await asyncio.to_thread(unscramble)
                 with open(out_path, "wb") as f: f.write(content)
@@ -384,7 +385,7 @@ class PiccomaProvider(BaseProvider):
                 logger.error(f"[Piccoma] Unscramble error (V3 Seed: {seed}): {e}")
                 with open(out_path, "wb") as f: f.write(res.content)
         else:
-            # If not uppercase or no Canvas, save raw bytes (Mirrors piccoma.py:166)
+            # If no seed or no Canvas, save raw bytes
             with open(out_path, "wb") as f: f.write(res.content)
 
     def _dd_transform(self, input_string: str) -> str:
@@ -420,7 +421,8 @@ class PiccomaProvider(BaseProvider):
         
         # The checksum is the second to last segment
         chk_raw = qs.get('q', [''])[0] if region == "fr" else (segments[-2] if len(segments) >= 2 else "")
-        chk = str(chk_raw)
+        # 🟢 FIX: Checksum must be uppercase for the v30.0 seed parity shift
+        chk = str(chk_raw).upper()
         
         expires = qs.get('expires', [''])[0]
         logger.debug(f"[Piccoma] Calculating seed from URL: {path_only} | Raw Checksum: {chk} | Expires: {expires}")
