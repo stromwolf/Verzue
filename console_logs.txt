@@ -1,0 +1,2 @@
+"https://piccoma.com"!==location.origin&&console.log("[debug][pcmGA sendGTM] args: event=".concat(t,", label=").concat(e,", param1=").concat(r,", param2=").concat(n,", param3=").concat(i,", href=").concat(o,",")),window&&window.dataLayer?window.dataLayer.push(
+):console.log("[pcmGA sendGTM] not found dataLayer")

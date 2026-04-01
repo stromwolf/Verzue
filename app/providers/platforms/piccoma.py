@@ -418,8 +418,9 @@ class PiccomaProvider(BaseProvider):
             chk_raw = qs.get('q', [''])[0]
         else:
             # JP V30.0 checksum segment is always the 2nd to last element
-            url_path = url.split('?')[0].rstrip('/')
-            chk_raw = url_path.split('/')[-2] if '/' in url_path else ""
+            # 🟢 FIX: Exactly match pyccoma's img_url.split('/')[-2].
+            # Previous use of rstrip('/') caused off-by-one errors on directory URLs.
+            chk_raw = url.split('/')[-2] if '/' in url else ""
 
         # 🟢 FIX: DO NOT FORCE UPPERCASE. 
         # pyccoma uses the natural case (isupper()) to distinguish between 

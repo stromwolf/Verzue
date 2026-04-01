@@ -1,0 +1,33 @@
+def _calculate_seed(self, url, region):
+        """Precise mirror of Piccoma's get_seed() JS logic."""
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query)
+        
+        # 🟢 S-GRADE: Precise path segment extraction
+        # We must mirror JS .split('/') behavior exactly.
+        # "a/b/c/".split('/') -> ["a", "b", "c", ""]
+        # .slice(-2)[0] -> "c" (second to last)
+        path_only = url.split('?')[0].rstrip('/')
+        segments = path_only.split('/')
+        
+        # 🟢 FIX: V30 urls often omit the trailing /1.png, placing the UUID at the end.
+        if region == "fr":
+            chk_raw = qs.get('q', [''])[0]
+        else:
+            if segments[-1].endswith(('.png', '.jpg', '.webp', '.jpeg')):
+                chk_raw = segments[-2] if len(segments) >= 2 else ""
+            else:
+                chk_raw = segments[-1] if segments else ""
+        
+        # 🟢 FIX: Remove .upper(). pyccoma uses the raw checksum segment.
+        chk = str(chk_raw)
+        
+        expires = qs.get('expires', [''])[0]
+        logger.debug(f"[Piccoma] Calculating seed from URL: {path_only} | Raw Checksum: {chk} | Expires: {expires}")
+        
+        if expires and chk:
+            # S+ Mirrors pyccoma's iterative rotation logic
+            # This is more precise than the 'sum-then-modulo' approach for modern Piccoma
+            for num in str(expires):
+                if num.isdigit() and int(num) != 0:
+                    shift = int(num)
