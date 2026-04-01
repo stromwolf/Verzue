@@ -408,48 +408,41 @@ class PiccomaProvider(BaseProvider):
         return str(result_bytearray, 'utf-8')
 
     def _calculate_seed(self, url, region):
-        """Precise mirror of Piccoma's get_seed() JS logic."""
+        """Precise mirror of pyccoma 0.7.2's get_seed() JS logic."""
         parsed = urllib.parse.urlparse(url)
         qs = urllib.parse.parse_qs(parsed.query)
         
-        # 🟢 S-GRADE: Precise path segment extraction
-        # We must mirror JS .split('/') behavior exactly.
-        # "a/b/c/".split('/') -> ["a", "b", "c", ""]
-        # .slice(-2)[0] -> "c" (second to last)
-        path_only = url.split('?')[0].rstrip('/')
-        segments = path_only.split('/')
-        
-        # 🟢 FIX: V30 urls often omit the trailing /1.png, placing the UUID at the end.
+        # 🟢 FIX: PICCOMA COMMUNICATION LAYER
+        # Use pyccoma's simple split('/')[-2] logic. It is more robust than segment/ext checking.
         if region == "fr":
             chk_raw = qs.get('q', [''])[0]
         else:
-            if segments[-1].endswith(('.png', '.jpg', '.webp', '.jpeg')):
-                chk_raw = segments[-2] if len(segments) >= 2 else ""
-            else:
-                chk_raw = segments[-1] if segments else ""
-        
+            # JP V30.0 checksum segment is always the 2nd to last element
+            url_path = url.split('?')[0].rstrip('/')
+            chk_raw = url_path.split('/')[-2] if '/' in url_path else ""
+
         # 🟢 FIX: V30 requires uppercase seed for the dd transform and PRNG to match the server.
         chk = str(chk_raw).upper()
         
         expires = qs.get('expires', [''])[0]
-        logger.info(f"[Piccoma V30 Debug] _calculate_seed:")
-        logger.info(f"[Piccoma V30 Debug]   URL: {path_only}")
-        logger.info(f"[Piccoma V30 Debug]   Extracted UUID Checksum: '{chk}'")
-        logger.info(f"[Piccoma V30 Debug]   Expires string: '{expires}'")
+        
+        # 🟢 COMMUNICATION LOGS: Log the raw data flow for verification
+        logger.info(f"[Piccoma V30 Debug] Raw URL Segment (Checksum): {chk_raw}")
+        logger.info(f"[Piccoma V30 Debug] Force-Upper Checksum: {chk}")
+        logger.info(f"[Piccoma V30 Debug] Expiry Key: {expires}")
         
         if expires and chk:
             # S+ Mirrors pyccoma's iterative rotation logic
-            # This is more precise than the 'sum-then-modulo' approach for modern Piccoma
             for num in str(expires):
                 if num.isdigit() and int(num) != 0:
                     shift = int(num)
                     # Rotate right
                     chk = chk[-shift:] + chk[:-shift]
                     
-            logger.info(f"[Piccoma V30 Debug]   Rotated Seed: '{chk}'")
-            logger.debug(f"[Piccoma] Seed derived via iterative rotation -> {chk}")
+            logger.info(f"[Piccoma V30 Debug] Rotated Seed Result: {chk}")
+            logger.info(f"[Piccoma V30 Debug] Transformed Seed (Ready): {self._dd_transform(chk)}")
         else:
-            logger.info(f"[Piccoma V30 Debug]   No expires found. Seed remains: '{chk}'")
+            logger.warning(f"[Piccoma V30 Debug] Missing parameters for unscramble. Chk: {bool(chk)}, Expires: {bool(expires)}")
         
         return chk
 
