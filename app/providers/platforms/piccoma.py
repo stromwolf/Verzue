@@ -366,7 +366,7 @@ class PiccomaProvider(BaseProvider):
         out_path = f"{out_dir}/page_{idx:03d}.png"
         
         # 🟢 V30.0 FIX: Match pyccoma-main mirror 1:1
-        if seed and Canvas and seed.isupper():
+        if seed and Canvas:
             try:
                 def unscramble():
                     # 🧩 S-GRADE: Lock the unscramble process
