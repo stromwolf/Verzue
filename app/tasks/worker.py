@@ -116,9 +116,10 @@ class TaskWorker:
                 
                 seed_string = None
                 if "jumptoon.com" in task.url.lower():
-                    # 🟢 UNSCRAMBLE AT DOWNLOAD: Jumptoon is now unscrambled in api.py
-                    # immediately after download. We pass None to the stitcher to avoid
-                    # double-processing or errors.
+                    # 🟢 UNSCRAMBLE AT DOWNLOAD: Jumptoon is now unscrambled at source
+                    seed_string = None
+                elif "piccoma.com" in task.url.lower():
+                    # 🟢 UNSCRAMBLE AT DOWNLOAD: Piccoma is now unscrambled at source
                     seed_string = None
                 elif "webtoon.kakao.com" in task.url.lower():
                     seed_string = task.series_id_key

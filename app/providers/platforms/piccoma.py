@@ -373,10 +373,10 @@ class PiccomaProvider(BaseProvider):
                     with self._unscramble_lock:
                         from io import BytesIO
                         img_io = BytesIO(res.content)
-                        # Apply 'dd' parity transform as pyccoma unscrambler uses it
+                        # 🟢 V30: Use 'unscramble' mode (inverse) for reconstruction.
                         canvas = Canvas(img_io, (50, 50), self._dd_transform(seed))
                         logger.info(f"[Piccoma] Unscrambling page {idx} with V3 seed: {seed}")
-                        return canvas.export(mode="scramble", format="png").getvalue()
+                        return canvas.export(mode="unscramble", format="png").getvalue()
                 
                 content = await asyncio.to_thread(unscramble)
                 with open(out_path, "wb") as f: f.write(content)
