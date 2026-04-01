@@ -1291,12 +1291,21 @@ class DashboardCog(commands.Cog):
             pass
 
         platform = custom_id.replace("v2_modal_", "")
-        url, action = "", "download"
+        raw_url, action = "", "download"
         
         for row in interaction.data.get("components", []):
             inner = row.get("component", {})
             if inner.get("custom_id") == "action_radio": action = inner.get("value", "download") 
-            elif inner.get("custom_id") == "url_input": url = inner.get("value", "")
+            elif inner.get("custom_id") == "url_input": raw_url = inner.get("value", "").strip()
+        
+        # 🟢 URL EXTRACTION (REGEX BASED)
+        # Handle cases like "junk https://piccoma.com/series/id" 
+        url = raw_url
+        if raw_url:
+            match = re.search(r'(https?://[^\s\"\'\<\>]+)', raw_url)
+            if match:
+                url = match.group(1)
+                logger.info(f"📍 URL Extracted: '{raw_url}' -> '{url}'")
         
         platform_domains = {"Mecha Comic": "mechacomic.jp", "Jumptoon": "jumptoon.com", "KakaoPage": "kakao.com", "Kuaikan Manhua": "kuaikanmanhua.com", "Piccoma": "piccoma.com", "AC.QQ": "ac.qq.com"}
         expected_domain = platform_domains.get(platform)

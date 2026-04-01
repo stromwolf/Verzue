@@ -20,6 +20,14 @@ class JumptoonCog(commands.Cog):
         Phase 1: Intelligence.
         Fetches metadata and launches the Universal Dashboard.
         """
+        # 🟢 URL EXTRACTION (REGEX BASED)
+        # Handle cases like "junk https://jumptoon.com/series/id" 
+        raw_url = url.strip()
+        match = re.search(r'(https?://[^\s\"\'\<\>]+)', raw_url)
+        if match:
+            url = match.group(1)
+            logger.info(f"📍 URL Extracted: '{raw_url}' -> '{url}'")
+
         # 1. Immediate Defer (The 3-Second Rule)
         try:
             await interaction.response.defer()
