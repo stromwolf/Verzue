@@ -555,19 +555,26 @@ class DashboardCog(commands.Cog):
         
         # 1. Forensic Deletion (Remove existing folders on Drive)
         uploader = self.bot.task_queue.uploader
+        redis = self.bot.task_queue.redis
+        
         if uploader:
             logger.info(f"[{req_id}] 🗑️ Retrying: Deleting existing Drive assets...")
             for task in view.active_tasks:
-                # Search for folder in MAIN
-                folder_name = task.folder_name
-                main_id = task.main_folder_id or Settings.GDRIVE_ROOT_ID
-                existing_id = uploader.find_folder(folder_name, main_id)
-                if existing_id: uploader.delete_file(existing_id)
-                
-                # Search for [Uploading] version
-                temp_name = f"[Uploading] {folder_name}"
-                temp_id = uploader.find_folder(temp_name, main_id)
-                if temp_id: uploader.delete_file(temp_id)
+                # 🟢 S-GRADE: Prioritize deletion by ID if we have it
+                if task.pre_created_folder_id:
+                    logger.info(f"[{req_id}] Deleting folder by ID: {task.pre_created_folder_id}")
+                    uploader.delete_file(task.pre_created_folder_id)
+                else:
+                    # Search fallback by name
+                    folder_name = task.folder_name
+                    main_id = task.main_folder_id or Settings.GDRIVE_ROOT_ID
+                    
+                    existing_id = uploader.find_folder(folder_name, main_id)
+                    if existing_id: uploader.delete_file(existing_id)
+                    
+                    temp_name = f"[Uploading] {folder_name}"
+                    temp_id = uploader.find_folder(temp_name, main_id)
+                    if temp_id: uploader.delete_file(temp_id)
 
         # 2. Reset View State
         view.processing_mode = True
@@ -577,9 +584,20 @@ class DashboardCog(commands.Cog):
         # 3. Re-queue tasks
         new_tasks = []
         for t in view.active_tasks:
+            # 🟢 CRITICAL: Clear the Redis Active Task Flag to allow deduplication to pass
+            key = f"{t.series_id_key}:{t.episode_id}"
+            await redis.remove_active_task(key)
+
             # Reset task object
             t.status = TaskStatus.QUEUED
             t.pre_created_folder_id = None
+            t.share_link = None
+            t.error_message = None
+            
+            # 🟢 S-GRADE: Prune existing_links from view to ensure fresh UI
+            if hasattr(view, 'existing_links') and t.chapter_str in view.existing_links:
+                del view.existing_links[t.chapter_str]
+            
             new_tasks.append(await self.bot.task_queue.add_task(t))
         
         view.active_tasks = new_tasks
