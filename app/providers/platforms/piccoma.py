@@ -365,18 +365,21 @@ class PiccomaProvider(BaseProvider):
         res.raise_for_status()
         out_path = f"{out_dir}/page_{idx:03d}.png"
         
-        # 🟢 V30.0 FIX: Match pyccoma-main mirror 1:1
-        if seed and seed.isupper() and Canvas:
+        # 🟢 V30.0 FIX: Relaxing isupper() check to handle alphanumeric/numeric seeds.
+        # We only skip if seed is empty or contains lowercase letters (which shouldn't happen for V30).
+        is_valid_seed = seed and (seed.isupper() or all(not c.islower() for c in seed))
+
+        if is_valid_seed and Canvas:
             try:
                 def unscramble():
                     # 🧩 S-GRADE: Lock the unscramble process
                     with self._unscramble_lock:
                         from io import BytesIO
                         img_io = BytesIO(res.content)
-                        # 🟢 V30: Use 'unscramble' mode (inverse) for reconstruction.
+                        # 🟢 V30: Use 'scramble' mode (matching pyccoma reference) for reconstruction.
                         canvas = Canvas(img_io, (50, 50), self._dd_transform(seed))
-                        logger.info(f"[Piccoma] Unscrambling page {idx} with V3 seed: {seed}")
-                        return canvas.export(mode="unscramble", format="png").getvalue()
+                        logger.info(f"[Piccoma] Unscrambling page {idx} with V3 seed: {seed} (Mode: scramble)")
+                        return canvas.export(mode="scramble", format="png").getvalue()
                 
                 content = await asyncio.to_thread(unscramble)
                 with open(out_path, "wb") as f: f.write(content)
@@ -384,8 +387,8 @@ class PiccomaProvider(BaseProvider):
                 logger.error(f"[Piccoma] Unscramble error (V3 Seed: {seed}): {e}")
                 with open(out_path, "wb") as f: f.write(res.content)
         else:
-            # 🟢 S-GRADE: pycasso-main skips unscrambling if !isupper()
-            logger.debug(f"[Piccoma] Page {idx} - No unscramble (Seed: {seed} | isupper: {seed.isupper() if seed else False})")
+            # 🟢 S-GRADE: Skip unscrambling if seed doesn't meet criteria
+            logger.debug(f"[Piccoma] Page {idx} - No unscramble (Seed: {seed} | valid: {is_valid_seed})")
             with open(out_path, "wb") as f: f.write(res.content)
 
     def _dd_transform(self, input_string: str) -> str:
