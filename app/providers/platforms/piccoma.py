@@ -421,14 +421,15 @@ class PiccomaProvider(BaseProvider):
             url_path = url.split('?')[0].rstrip('/')
             chk_raw = url_path.split('/')[-2] if '/' in url_path else ""
 
-        # 🟢 FIX: V30 requires uppercase seed for the dd transform and PRNG to match the server.
-        chk = str(chk_raw).upper()
+        # 🟢 FIX: DO NOT FORCE UPPERCASE. 
+        # pyccoma uses the natural case (isupper()) to distinguish between 
+        # scrambled (UPPER) and legible (lower) images.
+        chk = str(chk_raw)
         
         expires = qs.get('expires', [''])[0]
         
         # 🟢 COMMUNICATION LOGS: Log the raw data flow for verification
-        logger.info(f"[Piccoma V30 Debug] Raw URL Segment (Checksum): {chk_raw}")
-        logger.info(f"[Piccoma V30 Debug] Force-Upper Checksum: {chk}")
+        logger.info(f"[Piccoma V30 Debug] Raw Checksum Segment: {chk_raw}")
         logger.info(f"[Piccoma V30 Debug] Expiry Key: {expires}")
         
         if expires and chk:
