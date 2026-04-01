@@ -331,8 +331,8 @@ class DashboardCog(commands.Cog):
 
         # Back to Dashboard Home
         pagination_row["components"].append({
-            "type": 2, "style": 4, "label": "Back to Dashboard",
-            "custom_id": f"v2Dash_Home", "emoji": {"id": "1482405757394751619"}
+            "type": 2, "style": 2, "label": "Back to Dashboard",
+            "custom_id": f"v2Dash_Home"
         })
 
         # ASSEMBLE V2 PAYLOAD
@@ -435,8 +435,7 @@ class DashboardCog(commands.Cog):
             "type": 1,
             "components": [
                 {
-                    "type": 2, "style": 2, "custom_id": "v2Dash_Home",
-                    "emoji": {"id": "1482405757394751619"}
+                    "type": 2, "style": 2, "label": "Back", "custom_id": "v2Dash_Home"
                 },
                 {
                     "type": 2, "style": 2, "custom_id": f"v2Dash_Sub_Delete_Start|G:{group_name}|S:{series_id}",
@@ -521,7 +520,7 @@ class DashboardCog(commands.Cog):
                         "components": [
                             {
                                 "type": 2, "style": 2, "label": "Back to Dashboard", 
-                                "custom_id": "v2Dash_Home", "emoji": {"id": "1482405757394751619"}
+                                "custom_id": "v2Dash_Home"
                             }
                         ]
                     }
@@ -1318,7 +1317,7 @@ class DashboardCog(commands.Cog):
                             "components": [
                                 {
                                     "type": 2, "style": 2, "label": "Back to Dashboard",
-                                    "custom_id": "v2Dash_Home", "emoji": {"name": "🏠"}
+                                    "custom_id": "v2Dash_Home"
                                 }
                             ]
                         }
@@ -1438,7 +1437,7 @@ class DashboardCog(commands.Cog):
                         "type": 1,
                         "components": [
                             {"type": 2, "style": 3, "label": "Yes", "custom_id": yes_id},
-                            {"type": 2, "style": 4, "label": "No (Use other)", "custom_id": no_id},
+                            {"type": 2, "style": 2, "label": "Back to Dashboard", "custom_id": "v2Dash_Home"},
                             {"type": 2, "style": 2, "label": "Cancel", "custom_id": f"v2_btn_sub_cancel_{platform}"}
                         ]
                     }
@@ -1468,7 +1467,7 @@ class DashboardCog(commands.Cog):
                                 "components": [
                                     {
                                         "type": 2, "style": 2, "label": "Back to Dashboard",
-                                        "custom_id": "v2Dash_Home", "emoji": {"name": "🏠"}
+                                        "custom_id": "v2Dash_Home"
                                     }
                                 ]
                             }
@@ -1605,7 +1604,7 @@ class DashboardCog(commands.Cog):
                             "components": [
                                 {
                                     "type": 2, "style": 2, "label": "Back to Dashboard",
-                                    "custom_id": "v2Dash_Home", "emoji": {"id": "1482405757394751619"}
+                                    "custom_id": "v2Dash_Home"
                                 }
                             ]
                         }
@@ -1758,6 +1757,11 @@ class DashboardCog(commands.Cog):
                         }]
                     }]
                 }
+                # Add Back button
+                error_payload["components"].append({
+                    "type": 1,
+                    "components": [{"type": 2, "style": 2, "label": "Back to Dashboard", "custom_id": "v2Dash_Home"}]
+                })
                 await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'), json=error_payload)
                 return self._queue_auto_delete(interaction, 1800)
 
@@ -1806,10 +1810,16 @@ class DashboardCog(commands.Cog):
             if not group_name:
                 error_payload = {
                     "flags": 32768,
-                    "components": [{
-                        "type": 17,
-                        "components": [{"type": 10, "content": "❌ **No Group Profile Linked**\nPlease link this server to a group via `/register-server` first."}]
-                    }]
+                    "components": [
+                        {
+                            "type": 17,
+                            "components": [{"type": 10, "content": "❌ **No Group Profile Linked**\nPlease link this server to a group via `/register-server` first."}]
+                        },
+                        {
+                            "type": 1,
+                            "components": [{"type": 2, "style": 2, "label": "Back to Dashboard", "custom_id": "v2Dash_Home"}]
+                        }
+                    ]
                 }
                 await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_payload)
                 return self._queue_auto_delete(interaction, 1800)
@@ -1871,7 +1881,13 @@ class DashboardCog(commands.Cog):
         except Exception as e:
             logger.error(f"Subscription setup failed: {e}", exc_info=True)
             err = str(e).splitlines()[0] if str(e) else "Unknown Error"
-            error_p = {"flags": 32768, "components": [{"type": 17, "components": [{"type": 10, "content": f"❌ **Subscription Failed:**\n`{err}`"}]}]}
+            error_p = {
+                "flags": 32768, 
+                "components": [
+                    {"type": 17, "components": [{"type": 10, "content": f"❌ **Subscription Failed:**\n`{err}`"}]},
+                    {"type": 1, "components": [{"type": 2, "style": 2, "label": "Back to Dashboard", "custom_id": "v2Dash_Home"}]}
+                ]
+            }
             try: 
                 await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_p)
                 # 🟢 S-GRADE: Auto-delete error message after 30 minutes

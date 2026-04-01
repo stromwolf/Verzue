@@ -118,7 +118,7 @@ class UniversalDashboard:
                 break
 
     def _get_footer_action_row(self):
-        """Constructs a unified, premium footer Action Row for help/recovery."""
+        """Constructs a unified, premium footer Action Row for help/recovery (No error button)."""
         has_failures = any(t.status == TaskStatus.FAILED for t in self.active_tasks)
         
         # 1. Retry Failed Button (Only if failures exist)
@@ -131,17 +131,9 @@ class UniversalDashboard:
                 "custom_id": f"btn_error_retry_{self.req_id}"
             })
         
-        # 2. Report Error Button (Always present)
-        # Red if failure, Grey otherwise. Label dynamic for context.
-        footer_components.append({
-            "type": 2, 
-            "style": 4 if has_failures else 2, # Red if failure, Grey if success/idle
-            "emoji": {"id": "1480954865516548126", "name": "Error_Chapter"},
-            "custom_id": f"btn_report_error_{self.req_id}"
-        })
-        
+        # NOTE: Error Button (btn_report_error_) removed from here; it now only appears in the 'done' state.
 
-        return {"type": 1, "components": footer_components}
+        return {"type": 1, "components": footer_components} if footer_components else None
 
     def build_v2_payload(self):
         """Constructs the pure Discord V2 Container Layout"""
@@ -465,7 +457,9 @@ class UniversalDashboard:
 
             inner_components.append(divider)
             inner_components.append({ "type": 10, "content": footer_text })
-            inner_components.append(self._get_footer_action_row()) # 🟢 S-GRADE: Unified Fixed Footer
+            
+            footer = self._get_footer_action_row()
+            if footer: inner_components.append(footer)
         else:
             header_text = f"## {self.title}"
             if self.original_title and self.original_title != self.title:
@@ -510,7 +504,9 @@ class UniversalDashboard:
 
             inner_components.append({"type": 1, "components": action_buttons})
             inner_components.append({ "type": 10, "content": footer_text })
-            inner_components.append(self._get_footer_action_row()) # 🟢 S-GRADE: Unified Fixed Footer
+            
+            footer = self._get_footer_action_row()
+            if footer: inner_components.append(footer)
 
         return [{
             "type": 17,

@@ -47,7 +47,7 @@ class JumptoonCog(commands.Cog):
                                 "components": [
                                     {
                                         "type": 2, "style": 2, "label": "Back to Dashboard",
-                                        "custom_id": "v2Dash_Home", "emoji": {"name": "🏠"}
+                                        "custom_id": "v2Dash_Home"
                                     }
                                 ]
                             }
