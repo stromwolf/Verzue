@@ -8,6 +8,7 @@ import os
 import random
 import threading
 import struct
+from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
