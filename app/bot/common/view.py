@@ -40,7 +40,6 @@ class UniversalDashboard:
     _last_hash: int
     retry_active: bool
     existing_links: dict[str, Any]
-    series_share_link: Optional[str]
 
     def __init__(self, bot, ctx_data, service_type):
         self.bot = bot
@@ -53,7 +52,6 @@ class UniversalDashboard:
         self.genre_label = ctx_data.get('genre_label')
         self.service_type, self.color = service_type, COLORS.get(service_type, 0x2b2d31)
         
-        self.series_share_link = None
         
         if self.service_type == "mecha" and getattr(self.bot.task_queue, "browser_service", None):
             self.bot.task_queue.browser_service.inc_session()
@@ -138,18 +136,11 @@ class UniversalDashboard:
         footer_components.append({
             "type": 2, 
             "style": 4 if has_failures else 2, # Red if failure, Grey if success/idle
-            "label": "Report Error" if has_failures else "Report Bug",
             "emoji": {"id": "1480954865516548126", "name": "Error_Chapter"},
             "custom_id": f"btn_report_error_{self.req_id}"
         })
         
-        # 3. Home Button (Always available for navigation)
-        footer_components.append({
-            "type": 2, "style": 2, 
-            "emoji": {"id": "1482405757394751619", "name": "Home"},
-            "custom_id": f"btn_home_{self.req_id}"
-        })
-            
+
         return {"type": 1, "components": footer_components}
 
     def build_v2_payload(self):
@@ -303,22 +294,33 @@ class UniversalDashboard:
 
             inner_components.append(divider)
 
-            if self.series_share_link:
+
+            has_failures = any(t.status == TaskStatus.FAILED for t in self.active_tasks)
+            
+            # --- Results Footer Section ---
+            # 1. Retry Action Row (Only if failures exist)
+            if has_failures:
                 inner_components.append({
-                    "type": 9, # Section
-                    "components": [{"type": 10, "content": "### Full Series Access"}],
-                    "accessory": {
-                        "type": 2, "style": 5, 
-                        "label": "Open Drive Folder", 
-                        "emoji": {"id": "1482676886680113172", "name": "drive"},
-                        "url": self.series_share_link
-                    }
+                    "type": 1,
+                    "components": [{
+                        "type": 2, "style": 3, # Success (Green) for recovery
+                        "label": "Retry Failed",
+                        "emoji": {"name": "🔄"},
+                        "custom_id": f"btn_error_retry_{self.req_id}"
+                    }]
                 })
 
+            # 2. Combined ID Footer + Report Bug Button (Premium Section Layout)
             inner_components.append({
-                "type": 10, "content": footer_text
+                "type": 9, # Section
+                "components": [{"type": 10, "content": footer_text}],
+                "accessory": {
+                    "type": 2, 
+                    "style": 4 if has_failures else 2, # Red if failure, Grey if success/idle
+                    "emoji": {"id": "1480954865516548126", "name": "Error_Chapter"},
+                    "custom_id": f"btn_report_error_{self.req_id}"
+                }
             })
-            inner_components.append(self._get_footer_action_row()) # 🟢 S-GRADE: Unified Fixed Footer
             
             return [{
                 "type": 17,

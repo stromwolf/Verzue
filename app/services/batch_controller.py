@@ -138,13 +138,6 @@ class BatchController:
                 all_chapters = view_ref.all_chapters
 
             shortcuts_to_create = [] # 🟢 RESTORED: Prevents NameError
-            # 🟢 S-GRADE: Fetch and store Series Share Link
-            if view_ref and drive_series_id:
-                try:
-                    view_ref.series_share_link = await asyncio.to_thread(self.uploader.get_share_link, drive_series_id)
-                    logger.info(f"🔗 Series Share Link: {view_ref.series_share_link}")
-                except Exception as e:
-                    logger.warning(f"Failed to fetch series share link: {e}")
 
             if view_ref: view_ref.existing_links = {}
 
@@ -192,7 +185,13 @@ class BatchController:
                     view_ref.purchase_count = len(chapters_to_unlock)
                     view_ref.phases["purchase"] = "loading"
                     view_ref.trigger_refresh()
-                await self.unlocker.unlock_batch(chapters_to_unlock, view_ref=view_ref)
+                
+                # 🟢 S-GRADE: Resolve NoneType crash in Browserless mode
+                if self.unlocker:
+                    await self.unlocker.unlock_batch(chapters_to_unlock, view_ref=view_ref)
+                else:
+                    logger.warning("⚠️ Unlock skipped: No browser service available (Browserless/VPS Mode)")
+                
                 if view_ref: view_ref.phases["purchase"] = "done"
             else:
                 if view_ref: view_ref.phases["purchase"] = "done"

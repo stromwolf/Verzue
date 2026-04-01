@@ -256,6 +256,7 @@ class Discovery(commands.Cog):
             
         except Exception as e:
             logger.error(f"Download Chapter Error: {e}")
+            await self.bot.admin_dispatch(title if 'title' in locals() else "Discovery", "RED", f"Chapter Download Failure: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(f"❌ Failed to start download: `{e}`", ephemeral=True)
             else:
@@ -319,6 +320,7 @@ class Discovery(commands.Cog):
             
         except Exception as e:
             logger.error(f"Preview Error: {e}")
+            await self.bot.admin_dispatch(title if 'title' in locals() else "Discovery", "RED", f"Preview Failure: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(f"❌ Failed to start preview: `{e}`", ephemeral=True)
             else:
@@ -381,6 +383,7 @@ class Discovery(commands.Cog):
             
         except Exception as e:
             logger.error(f"Download All Error: {e}")
+            await self.bot.admin_dispatch(title if 'title' in locals() else "Discovery", "RED", f"Bulk Download Failure: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(f"❌ Failed to start bulk download: `{e}`", ephemeral=True)
             else:

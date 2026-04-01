@@ -24,9 +24,9 @@ setup(
     project_urls={
         "Bug Tracker": "https://github.com/catsital/pyccoma/issues",
     },
+    license="Apache-2.0",
     classifiers=[
         "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: Apache Software License",
         "Operating System :: OS Independent",
     ],
     packages=find_packages(),
