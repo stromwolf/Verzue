@@ -318,7 +318,8 @@ class PiccomaProvider(BaseProvider):
 
         async def process_one(img_data, i):
             async with self._download_semaphore:
-                await self._download_robust(auth_session, img_data, i+1, output_dir, master_seed, region)
+                # S+ Fully Switch to pyccoma v0.7.2 logic
+                await self._download_robust(auth_session, img_data, i+1, output_dir, master_seed)
             stats["completed"] += 1
             progress.update(stats["completed"])
 
@@ -355,7 +356,8 @@ class PiccomaProvider(BaseProvider):
             
         return None
 
-    async def _download_robust(self, session, img_data, idx, out_dir, seed, region="jp"):
+    async def _download_robust(self, session, img_data, idx, out_dir, seed):
+        """S+ Verbatim 100% Mirror of pyccoma's Scraper.download logic."""
         url = img_data['path']
         if not url.startswith('http'): url = 'https:' + url
         d_task = session.get(url, timeout=30)
@@ -363,25 +365,18 @@ class PiccomaProvider(BaseProvider):
         res.raise_for_status()
         out_path = f"{out_dir}/page_{idx:03d}.png"
         
-        if seed and len(seed) > 1 and Canvas:
+        # 🟢 VERBATIM: pyccoma v0.7.2 implementation
+        if seed and seed.isupper() and Canvas:
             try:
                 def unscramble():
-                    if not Canvas:
-                        raise ScraperError("pycasso (scrambler) not installed. Cannot process Piccoma images.")
-                    
-                    # 🧩 S-GRADE: Lock the unscramble process to protect pycasso's global state
+                    # 🧩 S-GRADE: Lock the unscramble process
                     with self._unscramble_lock:
                         img_io = BytesIO(res.content)
-                        # S-GRADE: pyccoma v0.7.2 logic - only unscramble if seed is UPPERCASE (for JP)
-                        if region == "jp" and seed.isupper():
-                            # Apply 'dd' parity transformation to seed
-                            final_seed = self._dd_transform(seed)
-                            canvas = Canvas(img_io, (50, 50), final_seed)
-                            return canvas.export(mode="unscramble", format="png").getvalue()
-                        
-                        # Fallback for FR or non-uppercase JP (legacy or un-scrambled)
-                        canvas = Canvas(img_io, (50, 50), seed)
-                        return canvas.export(mode="unscramble", format="png").getvalue()
+                        # Apply 'dd' parity transformation to seed (Mirrors piccoma.py:162)
+                        final_seed = self._dd_transform(seed)
+                        # Use mode="scramble" (Mirrors piccoma.py:163)
+                        canvas = Canvas(img_io, (50, 50), final_seed)
+                        return canvas.export(mode="scramble", format="png").getvalue()
                 
                 content = await asyncio.to_thread(unscramble)
                 with open(out_path, "wb") as f: f.write(content)
@@ -389,6 +384,7 @@ class PiccomaProvider(BaseProvider):
                 logger.error(f"[Piccoma] Unscramble error (V3 Seed: {seed}): {e}")
                 with open(out_path, "wb") as f: f.write(res.content)
         else:
+            # If not uppercase or no Canvas, save raw bytes (Mirrors piccoma.py:166)
             with open(out_path, "wb") as f: f.write(res.content)
 
     def _dd_transform(self, input_string: str) -> str:
