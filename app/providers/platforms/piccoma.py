@@ -306,10 +306,6 @@ class PiccomaProvider(BaseProvider):
         valid_images = [img for img in images if img.get('path')]
         if not valid_images: raise ScraperError("No accessible images found in manifest.")
 
-        # Seed is derived per task, no instance storage
-        master_seed = self._calculate_seed(valid_images[0]['path'], region)
-        logger.info(f"[Piccoma] Using derived master seed: {master_seed} | Region: {region}")
-        
         total = len(valid_images)
         stats = {"completed": 0}
         from app.core.logger import ProgressBar
@@ -318,8 +314,8 @@ class PiccomaProvider(BaseProvider):
 
         async def process_one(img_data, i):
             async with self._download_semaphore:
-                # S+ Fully Switch to pyccoma v0.7.2 logic
-                await self._download_robust(auth_session, img_data, i+1, output_dir, master_seed)
+                # S+ Fully Switch to pyccoma v0.7.2 logic - Now per-image seed calculation
+                await self._download_robust(auth_session, img_data, i+1, output_dir, region)
             stats["completed"] += 1
             progress.update(stats["completed"])
 
@@ -356,10 +352,14 @@ class PiccomaProvider(BaseProvider):
             
         return None
 
-    async def _download_robust(self, session, img_data, idx, out_dir, seed):
+    async def _download_robust(self, session, img_data, idx, out_dir, region):
         """S+ Verbatim 100% Mirror of pyccoma's Scraper.download logic."""
         url = img_data['path']
         if not url.startswith('http'): url = 'https:' + url
+        
+        # S+ Per-image seed calculation for V30 compatibility
+        seed = self._calculate_seed(url, region)
+        
         d_task = session.get(url, timeout=30)
         res = await d_task
         res.raise_for_status()
@@ -409,27 +409,31 @@ class PiccomaProvider(BaseProvider):
 
     def _calculate_seed(self, url, region):
         """Precise mirror of pyccoma 0.7.2's get_seed() JS logic."""
-        parsed = urllib.parse.urlparse(url)
-        qs = urllib.parse.parse_qs(parsed.query)
+        # 🟢 S-GRADE: Robust segment extraction
+        # Handle both ".../seed/1.jpg" and ".../seed?expires=..."
+        path_only = url.split('?')[0].rstrip('/')
+        segments = [s for s in path_only.split('/') if s]
         
-        # 🟢 FIX: PICCOMA COMMUNICATION LAYER
-        # Use pyccoma's simple split('/')[-2] logic. It is more robust than segment/ext checking.
         if region == "fr":
+            parsed = urllib.parse.urlparse(url)
+            qs = urllib.parse.parse_qs(parsed.query)
             chk_raw = qs.get('q', [''])[0]
         else:
-            # JP V30.0 checksum segment is always the 2nd to last element
-            # 🟢 FIX: Exactly match pyccoma's img_url.split('/')[-2].
-            # Previous use of rstrip('/') caused off-by-one errors on directory URLs.
-            chk_raw = url.split('/')[-2] if '/' in url else ""
+            # Check if last segment is a file or a seed
+            if segments and segments[-1].lower().endswith(('.png', '.jpg', '.webp', '.jpeg')):
+                chk_raw = segments[-2] if len(segments) >= 2 else ""
+            else:
+                chk_raw = segments[-1] if segments else ""
 
-        # 🟢 FIX: DO NOT FORCE UPPERCASE. 
-        # pyccoma uses the natural case (isupper()) to distinguish between 
-        # scrambled (UPPER) and legible (lower) images.
+        # 🟢 FIX: Exactly match pyccoma's img_url rotation.
         chk = str(chk_raw)
         
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query)
         expires = qs.get('expires', [''])[0]
         
         # 🟢 COMMUNICATION LOGS: Log the raw data flow for verification
+        logger.info(f"[Piccoma V30 Debug] Segment Source: {path_only}")
         logger.info(f"[Piccoma V30 Debug] Raw Checksum Segment: {chk_raw}")
         logger.info(f"[Piccoma V30 Debug] Expiry Key: {expires}")
         
