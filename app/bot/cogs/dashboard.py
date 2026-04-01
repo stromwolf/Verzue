@@ -1296,8 +1296,10 @@ class DashboardCog(commands.Cog):
                 else:
                     occupation_series = occ_sub
             
+            is_universal_server = (interaction.guild_id == 1419393318147719170)
+            
             # 🟢 SCENARIO A: Already Subscribed (Instant Response)
-            if is_already_here or occupation_series:
+            if is_already_here or (occupation_series and not is_universal_server):
                 logger.info(f"INSTANT MATCH: series={series_id}, same={is_already_here}")
                 trigger_components = []
                 
@@ -1690,7 +1692,9 @@ class DashboardCog(commands.Cog):
 
             # 2. Check Global Singularity rule
             is_subbed, existing_group = await is_series_subscribed_globally(series_id)
-            if is_subbed:
+            is_universal_server = (interaction.guild_id == 1419393318147719170)
+
+            if is_subbed and not is_universal_server:
                 error_payload = {
                     "flags": 32768,
                     "components": [{

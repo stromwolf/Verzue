@@ -123,18 +123,18 @@ def add_subscription(group_name: str, sub: dict) -> bool:
     data = load_group(group_name)
     existing_index = -1
     for i, s in enumerate(data["subscriptions"]):
-        if s["series_id"] == sub["series_id"]:
+        if s["series_id"] == sub["series_id"] and s.get("channel_id") == sub.get("channel_id"):
             existing_index = i
             break
             
     if existing_index >= 0:
         # Update existing
         data["subscriptions"][existing_index].update(sub)
-        logger.info(f"[GroupManager] Updated subscription for {sub['series_id']} in {group_name}")
+        logger.info(f"[GroupManager] Updated subscription for {sub['series_id']} (Channel: {sub.get('channel_id')}) in {group_name}")
     else:
         # Add new
         data["subscriptions"].append(sub)
-        logger.info(f"[GroupManager] Added new subscription for {sub['series_id']} in {group_name}")
+        logger.info(f"[GroupManager] Added new subscription for {sub['series_id']} (Channel: {sub.get('channel_id')}) in {group_name}")
         
     save_group(group_name, data)
     return True
@@ -195,13 +195,15 @@ def set_release_day(group_name: str, target_url: str, day: str) -> bool:
 
 
 def update_last_chapter(group_name: str, series_id: str, chapter_id: str):
-    """Updates the last known chapter ID after an auto-download."""
-    data = load_group(group_name)
+    changed = False
     for sub in data["subscriptions"]:
         if sub["series_id"] == series_id:
             sub["last_known_chapter_id"] = chapter_id
-            save_group(group_name, data)
-            return
+            changed = True
+    
+    if changed:
+        save_group(group_name, data)
+        logger.info(f"[GroupManager] Updated all subscriptions for {series_id} in {group_name} to chapter {chapter_id}")
 
 
 async def is_series_subscribed_globally(series_id: str) -> tuple[bool, str]:
