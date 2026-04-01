@@ -366,14 +366,15 @@ class PiccomaProvider(BaseProvider):
         out_path = f"{out_dir}/page_{idx:03d}.png"
         
         # 🟢 V30.0 FIX: Match pyccoma-main mirror 1:1
-        if seed and Canvas:
+        if seed and seed.isupper() and Canvas:
             try:
                 def unscramble():
                     # 🧩 S-GRADE: Lock the unscramble process
                     with self._unscramble_lock:
+                        from io import BytesIO
                         img_io = BytesIO(res.content)
-                        # V30 FIX: Do NOT apply 'dd' parity transform. The modern viewer passes the rotated seed raw!
-                        canvas = Canvas(img_io, (50, 50), seed)
+                        # Apply 'dd' parity transform as pyccoma unscrambler uses it
+                        canvas = Canvas(img_io, (50, 50), self._dd_transform(seed))
                         logger.info(f"[Piccoma] Unscrambling page {idx} with V3 seed: {seed}")
                         return canvas.export(mode="scramble", format="png").getvalue()
                 
@@ -431,7 +432,10 @@ class PiccomaProvider(BaseProvider):
         chk = str(chk_raw)
         
         expires = qs.get('expires', [''])[0]
-        logger.debug(f"[Piccoma] Calculating seed from URL: {path_only} | Raw Checksum: {chk} | Expires: {expires}")
+        logger.info(f"[Piccoma V30 Debug] _calculate_seed:")
+        logger.info(f"[Piccoma V30 Debug]   URL: {path_only}")
+        logger.info(f"[Piccoma V30 Debug]   Extracted UUID Checksum: '{chk}'")
+        logger.info(f"[Piccoma V30 Debug]   Expires string: '{expires}'")
         
         if expires and chk:
             # S+ Mirrors pyccoma's iterative rotation logic
@@ -442,7 +446,10 @@ class PiccomaProvider(BaseProvider):
                     # Rotate right
                     chk = chk[-shift:] + chk[:-shift]
                     
+            logger.info(f"[Piccoma V30 Debug]   Rotated Seed: '{chk}'")
             logger.debug(f"[Piccoma] Seed derived via iterative rotation -> {chk}")
+        else:
+            logger.info(f"[Piccoma V30 Debug]   No expires found. Seed remains: '{chk}'")
         
         return chk
 

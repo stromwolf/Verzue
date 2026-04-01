@@ -19,7 +19,12 @@ class HelperBot(commands.Bot):
 
     async def setup_hook(self):
         """Loads extensions and syncs commands."""
-        extensions = ["app.bot.cogs.helper_cogs", "app.bot.cogs.discovery", "app.bot.cogs.discovery_commands"]
+        extensions = [
+            "app.bot.cogs.helper_cogs", 
+            "app.bot.cogs.discovery", 
+            "app.bot.cogs.discovery_commands",
+            "app.bot.cogs.monitor_cog"
+        ]
         for ext in extensions:
             try:
                 await self.load_extension(ext)

@@ -119,6 +119,39 @@ class UniversalDashboard:
                     except: pass
                 break
 
+    def _get_footer_action_row(self):
+        """Constructs a unified, premium footer Action Row for help/recovery."""
+        has_failures = any(t.status == TaskStatus.FAILED for t in self.active_tasks)
+        
+        # 1. Retry Failed Button (Only if failures exist)
+        footer_components = []
+        if has_failures:
+            footer_components.append({
+                "type": 2, "style": 3, # Success (Green) for recovery
+                "label": "Retry Failed",
+                "emoji": {"name": "🔄"},
+                "custom_id": f"btn_error_retry_{self.req_id}"
+            })
+        
+        # 2. Report Error Button (Always present)
+        # Red if failure, Grey otherwise. Label dynamic for context.
+        footer_components.append({
+            "type": 2, 
+            "style": 4 if has_failures else 2, # Red if failure, Grey if success/idle
+            "label": "Report Error" if has_failures else "Report Bug",
+            "emoji": {"id": "1480954865516548126", "name": "Error_Chapter"},
+            "custom_id": f"btn_report_error_{self.req_id}"
+        })
+        
+        # 3. Home Button (Always available for navigation)
+        footer_components.append({
+            "type": 2, "style": 2, 
+            "emoji": {"id": "1482405757394751619", "name": "Home"},
+            "custom_id": f"btn_home_{self.req_id}"
+        })
+            
+        return {"type": 1, "components": footer_components}
+
     def build_v2_payload(self):
         """Constructs the pure Discord V2 Container Layout"""
         sel_count = len(self.selected_indices)
@@ -270,28 +303,6 @@ class UniversalDashboard:
 
             inner_components.append(divider)
 
-            # 6. ID Footer Section with Error Button Accessory
-            has_failures = any(t.status == TaskStatus.FAILED for t in self.active_tasks)
-            
-            footer_components = []
-            if has_failures:
-                # 🟢 S-GRADE: Unified Retry Button (only appears on failure)
-                footer_components.append({
-                    "type": 2, "style": 3, # Success (Green) for recovery
-                    "label": "Retry Failed",
-                    "emoji": {"name": "🔄"},
-                    "custom_id": f"btn_error_retry_{self.req_id}"
-                })
-            
-            # The original Error Report button
-            footer_components.append({
-                "type": 2, 
-                "style": 4 if has_failures else 2, # Red if failure, Grey if success
-                "label": "Report Error" if has_failures else None,
-                "emoji": {"id": "1480954865516548126", "name": "Error_Chapter"},
-                "custom_id": f"btn_report_error_{self.req_id}"
-            })
-
             if self.series_share_link:
                 inner_components.append({
                     "type": 9, # Section
@@ -305,13 +316,9 @@ class UniversalDashboard:
                 })
 
             inner_components.append({
-                "type": 9, # Section
-                "components": [{"type": 10, "content": footer_text}],
-                "accessory": {
-                    "type": 1, # Action Row for multiple buttons if needed
-                    "components": footer_components
-                }
+                "type": 10, "content": footer_text
             })
+            inner_components.append(self._get_footer_action_row()) # 🟢 S-GRADE: Unified Fixed Footer
             
             return [{
                 "type": 17,
@@ -455,7 +462,8 @@ class UniversalDashboard:
                 inner_components.append({"type": 10, "content": f"{ICONS['tick']} Download Completed."})
 
             inner_components.append(divider)
-            inner_components.append({"type": 10, "content": footer_text})
+            inner_components.append({ "type": 10, "content": footer_text })
+            inner_components.append(self._get_footer_action_row()) # 🟢 S-GRADE: Unified Fixed Footer
         else:
             header_text = f"## {self.title}"
             if self.original_title and self.original_title != self.title:
@@ -499,17 +507,8 @@ class UniversalDashboard:
                 action_buttons.append({"type": 2, "style": 3, "label": "Start", "custom_id": f"btn_start_{self.req_id}"})
 
             inner_components.append({"type": 1, "components": action_buttons})
-            inner_components.append({"type": 14, "spacing": 1})
-            
-            inner_components.append({
-                "type": 9,
-                "components": [{"type": 10, "content": footer_text}],
-                "accessory": {
-                    "type": 2, "style": 1, 
-                    "emoji": {"id": "1482405757394751619", "name": "Home"},
-                    "custom_id": f"btn_home_{self.req_id}"
-                }
-            })
+            inner_components.append({ "type": 10, "content": footer_text })
+            inner_components.append(self._get_footer_action_row()) # 🟢 S-GRADE: Unified Fixed Footer
 
         return [{
             "type": 17,
