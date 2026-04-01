@@ -372,10 +372,8 @@ class PiccomaProvider(BaseProvider):
                     # 🧩 S-GRADE: Lock the unscramble process
                     with self._unscramble_lock:
                         img_io = BytesIO(res.content)
-                        # Apply 'dd' parity transformation to seed (Mirrors pyccoma:162)
-                        final_seed = self._dd_transform(seed)
-                        # Use mode="scramble" (Matches working pyccoma-main scrapper.py:163)
-                        canvas = Canvas(img_io, (50, 50), final_seed)
+                        # V30 FIX: Do NOT apply 'dd' parity transform. The modern viewer passes the rotated seed raw!
+                        canvas = Canvas(img_io, (50, 50), seed)
                         logger.info(f"[Piccoma] Unscrambling page {idx} with V3 seed: {seed}")
                         return canvas.export(mode="scramble", format="png").getvalue()
                 
@@ -417,11 +415,18 @@ class PiccomaProvider(BaseProvider):
         # We must mirror JS .split('/') behavior exactly.
         # "a/b/c/".split('/') -> ["a", "b", "c", ""]
         # .slice(-2)[0] -> "c" (second to last)
-        path_only = url.split('?')[0]
+        path_only = url.split('?')[0].rstrip('/')
         segments = path_only.split('/')
         
-        # The checksum is the second to last segment
-        chk_raw = qs.get('q', [''])[0] if region == "fr" else (segments[-2] if len(segments) >= 2 else "")
+        # 🟢 FIX: V30 urls often omit the trailing /1.png, placing the UUID at the end.
+        if region == "fr":
+            chk_raw = qs.get('q', [''])[0]
+        else:
+            if segments[-1].endswith(('.png', '.jpg', '.webp', '.jpeg')):
+                chk_raw = segments[-2] if len(segments) >= 2 else ""
+            else:
+                chk_raw = segments[-1] if segments else ""
+        
         # 🟢 FIX: Remove .upper(). pyccoma uses the raw checksum segment.
         chk = str(chk_raw)
         
