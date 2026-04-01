@@ -8,6 +8,11 @@ import os
 import random
 import threading
 import struct
+from curl_cffi.requests import AsyncSession
+from app.providers.base import BaseProvider
+from app.services.session_service import SessionService
+from app.core.exceptions import ScraperError, MechaException
+from config.settings import Settings
 try:
     from app.lib.pycasso import Canvas
 except ImportError:
