@@ -7,16 +7,9 @@ import urllib.parse
 import os
 import random
 import threading
-from io import BytesIO
-from bs4 import BeautifulSoup
-from curl_cffi.requests import AsyncSession
-from app.providers.base import BaseProvider
-from app.services.session_service import SessionService
-from app.core.exceptions import ScraperError
-from config.settings import Settings
-
+import struct
 try:
-    from pycasso import Canvas
+    from app.lib.pycasso import Canvas
 except ImportError:
     Canvas = None
 
@@ -32,6 +25,7 @@ class PiccomaProvider(BaseProvider):
 
     def __init__(self):
         self.session_service = SessionService()
+        
         self.default_headers = {
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
@@ -297,12 +291,18 @@ class PiccomaProvider(BaseProvider):
         pdata = self._extract_pdata_heuristic(res.text)
         if not pdata: raise ScraperError("Could not extract chapter manifest via any heuristic.")
 
+        # Capture V30 metadata for debugging
+        p_category = pdata.get('category')
+        p_scroll = pdata.get('scroll')
+        logger.debug(f"[Piccoma] Metadata - Category: {p_category}, Scroll: {p_scroll}")
+
         images = pdata.get('img', pdata.get('contents', []))
         valid_images = [img for img in images if img.get('path')]
         if not valid_images: raise ScraperError("No accessible images found in manifest.")
 
         # Seed is derived per task, no instance storage
         master_seed = self._calculate_seed(valid_images[0]['path'], region)
+        logger.info(f"[Piccoma] Using derived master seed: {master_seed} | Region: {region}")
         
         total = len(valid_images)
         stats = {"completed": 0}
@@ -372,31 +372,40 @@ class PiccomaProvider(BaseProvider):
                 content = await asyncio.to_thread(unscramble)
                 with open(out_path, "wb") as f: f.write(content)
             except Exception as e:
-                logger.error(f"[Piccoma] Unscramble error (Seed: {seed}): {e}")
+                logger.error(f"[Piccoma] Unscramble error (V3 Seed: {seed}): {e}")
                 with open(out_path, "wb") as f: f.write(res.content)
         else:
             with open(out_path, "wb") as f: f.write(res.content)
 
     def _calculate_seed(self, url, region):
+        """Precise mirror of Piccoma's get_seed() JS logic."""
         parsed = urllib.parse.urlparse(url)
         qs = urllib.parse.parse_qs(parsed.query)
         
-        # 🟢 S-GRADE: Robust checksum extraction from parent path segment
-        # We strip query params and trailing slashes first, matching the browser's get_checksum() precisely.
-        segments = url.split('?')[0].rstrip('/').split('/')
-        chk = qs.get('q', [''])[0] if region == "fr" else segments[-2]
+        # 🟢 S-GRADE: Precise path segment extraction
+        # We must mirror JS .split('/') behavior exactly.
+        # "a/b/c/".split('/') -> ["a", "b", "c", ""]
+        # .slice(-2)[0] -> "c" (second to last)
+        path_only = url.split('?')[0]
+        segments = path_only.split('/')
+        
+        # The checksum is the second to last segment
+        chk_raw = qs.get('q', [''])[0] if region == "fr" else (segments[-2] if len(segments) >= 2 else "")
+        chk = str(chk_raw)
         
         expires = qs.get('expires', [''])[0]
-        if expires:
-            #  Sum of digits logic (Piccoma V30 update)
+        logger.debug(f"[Piccoma] Calculating seed from URL: {path_only} | Raw Checksum: {chk} | Expires: {expires}")
+        
+        if expires and chk:
+            # Sum of digits logic (Piccoma V30 update)
             sum_digits = sum(int(digit) for digit in str(expires) if digit.isdigit())
-            if len(chk) > 0:
-                shift = sum_digits % len(chk)
-                if shift != 0:
-                    c_base = str(chk)
-                    chk = c_base[-shift:] + c_base[:len(c_base)-shift]
-                    
-                logger.debug(f"[Piccoma] Seed calculated: {chk} (Chk: {segments[-2]}, Expires: {expires})")
+            shift = sum_digits % len(chk)
+            
+            if shift != 0:
+                # Rotate right
+                chk = chk[-shift:] + chk[:-shift]
+                logger.debug(f"[Piccoma] Seed rotated by {shift} (Sum: {sum_digits}) -> {chk}")
+        
         return chk
 
     async def fast_purchase(self, task) -> bool:
