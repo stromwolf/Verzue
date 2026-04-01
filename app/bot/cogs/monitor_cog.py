@@ -4,6 +4,7 @@ import logging
 import asyncio
 from discord.ext import commands, tasks
 from datetime import datetime
+from app.services.redis_manager import RedisManager
 
 logger = logging.getLogger("SystemMonitor")
 
@@ -12,6 +13,8 @@ class SystemMonitorCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.MONITOR_CHANNEL_ID = 1488728756054134946
+        self.redis = RedisManager()
+        self.REDIS_MSG_KEY = "verzue:monitor:usage_msg_id"
         self.monitor_loop.start()
 
     def cog_unload(self):
@@ -61,15 +64,32 @@ class SystemMonitorCog(commands.Cog):
             
             embed.set_footer(text="Updates every 30 seconds")
 
-            # 3. Send Message
+            # 3. Send/Edit Message
             channel = self.bot.get_channel(self.MONITOR_CHANNEL_ID)
             if not channel:
                 channel = await self.bot.fetch_channel(self.MONITOR_CHANNEL_ID)
             
-            if channel:
-                await channel.send(embed=embed)
-            else:
+            if not channel:
                 logger.error(f"❌ [SystemMonitor] Could not find monitor channel: {self.MONITOR_CHANNEL_ID}")
+                return
+
+            # Redis-based persistence
+            msg_id = await self.redis.client.get(self.REDIS_MSG_KEY)
+            
+            if msg_id:
+                try:
+                    # Attempt to fetch and edit existing message
+                    msg = await channel.fetch_message(int(msg_id))
+                    await msg.edit(embed=embed)
+                    # logger.debug(f"✅ [SystemMonitor] Updated persistent message: {msg_id}")
+                    return
+                except (discord.NotFound, discord.HTTPException):
+                    logger.warning(f"⚠️ [SystemMonitor] Persistent message {msg_id} not found, creating new one.")
+
+            # Create new message if none exists or edit failed
+            new_msg = await channel.send(embed=embed)
+            await self.redis.client.set(self.REDIS_MSG_KEY, str(new_msg.id))
+            logger.info(f"🆕 [SystemMonitor] New persistent message created: {new_msg.id}")
 
         except Exception as e:
             logger.error(f"❌ [SystemMonitor] Failed to gather or send metrics: {e}")

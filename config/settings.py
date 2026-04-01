@@ -55,7 +55,7 @@ class Settings:
     STITCH_HEIGHT = 15000
 
     # --- 7. RATE LIMITING ---
-    DOWNLOAD_DELAY = 3  # Seconds to wait between chapters of the same platform
+    DOWNLOAD_DELAY = 1.5  # Seconds to wait between chapters of the same platform
 
     # --- CLIENT MAPPING ---
     # --- GROUP REGISTRY ---

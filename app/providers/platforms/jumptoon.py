@@ -35,7 +35,7 @@ class JumptoonProvider(BaseProvider):
             'Referer': 'https://jumptoon.com/'
         }
         # S-Grade Backpressure Control: Restricted concurrency (3-5) to prevent bandwidth saturation
-        self._download_semaphore = asyncio.Semaphore(random.randint(3, 5))
+        self._download_semaphore = asyncio.Semaphore(10)
 
     async def _get_authenticated_session(self):
         """Fetches a healthy session from the Vault and initializes an AsyncSession."""
@@ -547,8 +547,6 @@ class JumptoonProvider(BaseProvider):
         progress.update(stats["completed"])
 
         async def download_one(item):
-            # 🟢 S-GRADE STAGGER: Small random delay to prevent connection resets on mass-start
-            await asyncio.sleep(random.uniform(0.1, 0.5))
             logger.log(5, f"🔗 [Jumptoon] Downloading {item['file']}: {item['url']}")
             async with self._download_semaphore:
 

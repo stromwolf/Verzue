@@ -39,7 +39,7 @@ class PiccomaProvider(BaseProvider):
             'Pragma': 'no-cache',
         }
         # S-Grade Backpressure
-        self._download_semaphore = asyncio.Semaphore(15)
+        self._download_semaphore = asyncio.Semaphore(10)
 
     def _get_context_from_url(self, url: str):
         """S+ Refinement: Stateless context derivation."""
@@ -504,15 +504,36 @@ class PiccomaProvider(BaseProvider):
                 "productId": series_id,
             }
             
+            # S-GRADE: Piccoma Security Hash Injection
+            import hashlib
+            seed_string = f"{episode_id}fh_SpJ#a4LuNa6t8"
+            sec_hash = hashlib.sha256(seed_string.encode('utf-8')).hexdigest()
+            
+            # Additional layer: provide it in Headers just in case
+            headers['X-Security-Hash'] = sec_hash
+            headers['X-Hash-Code'] = sec_hash
+            
             # Look for purchase form in the page and extract hidden fields
             purchase_form = soup.select_one('#js_purchaseForm, form[action*="purchase"], form[action*="episode"]')
+            hash_injected = False
             if purchase_form:
                 for hidden in purchase_form.find_all('input', type='hidden'):
-                    if hidden.get('name'):
-                        purchase_payload[hidden['name']] = hidden.get('value', '')
+                    name = hidden.get('name')
+                    if name:
+                        val = hidden.get('value', '')
+                        # If field looks like a hash or is empty and requested by the page, inject our computed hash.
+                        if not val and ('hash' in name.lower() or 'code' in name.lower() or 'sec' in name.lower()):
+                            val = sec_hash
+                            hash_injected = True
+                        purchase_payload[name] = val
                 action = purchase_form.get('action')
                 if action:
                     purchase_url = action if action.startswith('http') else f"{base_url}{action}"
+            
+            # Fallback if no specific field triggered it
+            if not hash_injected:
+                purchase_payload["hash"] = sec_hash
+                purchase_payload["hashCode"] = sec_hash
             
             # 4. POST purchase request
             logger.info(f"[Piccoma] Sending coin purchase request for episode {episode_id} (series {series_id})")
