@@ -846,19 +846,31 @@ class DashboardCog(commands.Cog):
                             "title": "Report Download Error",
                             "components": [
                                 {
-                                    "type": 1,
-                                    "components": [
-                                        {
-                                            "type": 4, # TEXT_INPUT
-                                            "custom_id": "error_desc",
-                                            "label": "What happened?",
-                                            "style": 2, # PARAGRAPH
-                                            "placeholder": "Example: Some pages are blurry, or chapter 5 is missing...",
-                                            "required": True,
-                                            "min_length": 10,
-                                            "max_length": 500
-                                        }
-                                    ]
+                                    "type": 18, # Radio Group Container
+                                    "label": "Select Error Type",
+                                    "component": {
+                                        "type": 21, # Radio Group
+                                        "custom_id": "sel_error_type",
+                                        "options": [
+                                            {"label": "Stitching Problem", "value": "Stitching Problem"},
+                                            {"label": "Missing Page", "value": "Missing Page"},
+                                            {"label": "Others", "value": "Others", "default": True}
+                                        ],
+                                        "required": True
+                                    }
+                                },
+                                {
+                                    "type": 18, # Container for Text Input
+                                    "label": "Additional Details",
+                                    "component": {
+                                        "type": 4, # TEXT_INPUT
+                                        "custom_id": "error_desc",
+                                        "style": 2, # Paragraph
+                                        "placeholder": "Provide more details if needed (e.g., Page 5 is blurry)...",
+                                        "required": False,
+                                        "min_length": 5,
+                                        "max_length": 500
+                                    }
                                 }
                             ]
                         }
@@ -1062,12 +1074,20 @@ class DashboardCog(commands.Cog):
                 view: UniversalDashboard | None = UniversalDashboard.active_views.get(req_id)
                 if not view: return
                 
-                # Extract User Feedback
-                user_msg = ""
-                for row in interaction.data.get("components", []):
-                    for comp in row.get("components", []):
-                        if comp.get("custom_id") == "error_desc":
-                            user_msg = comp.get("value", "")
+                # Extract User Feedback (V2 Modal Structure)
+                error_type = "Others"
+                user_msg = "No additional details provided."
+                
+                try:
+                    for row in interaction.data.get("components", []):
+                        inner = row.get("component", {})
+                        cid = inner.get("custom_id")
+                        if cid == "sel_error_type":
+                            error_type = inner.get("value", "Others")
+                        elif cid == "error_desc":
+                            user_msg = inner.get("value") or user_msg
+                except Exception as e:
+                    logger.error(f"Failed to parse Error Modal data: {e}")
 
                 # 🟢 S-GRADE: Prepare Detailed Admin Embed
                 admin_channel_id = Settings.ADMIN_LOG_CHANNEL_ID
@@ -1080,7 +1100,8 @@ class DashboardCog(commands.Cog):
                         color=0xe74c3c, # Red
                         timestamp=datetime.datetime.now(datetime.timezone.utc)
                     )
-                    embed.add_field(name="User Description", value=user_msg or "No description provided.", inline=False)
+                    embed.add_field(name="Report Category", value=f"**{error_type}**", inline=True)
+                    embed.add_field(name="User Description", value=user_msg, inline=False)
                     
                     # Inspect Task Failures
                     failed_chapters = [t for t in view.active_tasks if t.status == TaskStatus.FAILED]
