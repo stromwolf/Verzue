@@ -369,7 +369,12 @@ class PiccomaProvider(BaseProvider):
         # We only skip if seed is empty or contains lowercase letters (which shouldn't happen for V30).
         is_valid_seed = seed and (seed.isupper() or all(not c.islower() for c in seed))
 
-        if is_valid_seed and Canvas:
+        if is_valid_seed:
+            if not Canvas:
+                logger.warning(f"[Piccoma] 🛑 CANNOT UNSCRAMBLE: Canvas (pycasso) library not loaded. Page {idx} will remain scrambled.")
+                with open(out_path, "wb") as f: f.write(res.content)
+                return
+
             try:
                 def unscramble():
                     # 🧩 S-GRADE: Lock the unscramble process
