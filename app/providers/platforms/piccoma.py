@@ -381,9 +381,10 @@ class PiccomaProvider(BaseProvider):
                     with self._unscramble_lock:
                         from io import BytesIO
                         img_io = BytesIO(res.content)
-                        # 🟢 V30: Use rotated seed directly (modern V30 no longer uses dd_transform)
-                        canvas = Canvas(img_io, (50, 50), seed)
-                        logger.info(f"[Piccoma] Unscrambling page {idx} (Seed: {seed} | Mode: scramble)")
+                        # 🟢 V30: Follow pyccoma reference logic EXACTLY
+                        final_seed = self._dd_transform(seed) if seed.isupper() else seed
+                        canvas = Canvas(img_io, (50, 50), final_seed)
+                        logger.info(f"[Piccoma] Unscrambling page {idx} (Seed: {final_seed} | Mode: scramble)")
                         return canvas.export(mode="scramble", format="png").getvalue()
                 
                 content = await asyncio.to_thread(unscramble)

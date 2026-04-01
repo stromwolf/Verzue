@@ -3,45 +3,43 @@ from .constants import width, mask
 class ARC4:
     def __init__(self, key):
         self.key = key
-        self.keylen = len(self.key)
-        self.i = 0
-        self.j = 0
-        self.S = []
+
+        global keylen, t, i, j, s
+        keylen = len(self.key)
+        t = None
+        i = 0
+        j = self.i = self.j = 0
+        s = self.S = []
 
     def main(self):
-        # Local refs for performance
-        s = self.S
-        mask = 255 # Standard ARC4 mask for 256 byte state
-        keylen = self.keylen
-        key = self.key
+        global i, j
 
-        for i in range(256):
+        while i < width:
             s.append(i)
+            i += 1
 
-        j = 0
-        for i in range(256):
+        for i in range(width):
             t = s[i]
-            j = (j + key[i % keylen] + t) & mask
+            j = mask & (j + self.key[i % keylen] + t)
             s[i] = s[j]
             s[j] = t
 
-        self.j = j
-        self.i = 0 # Reset i for generation phase
+        self.g(width)
 
     def g(self, count):
-        mask = 255
+        t = None
+        r = 0
         i = self.i
         j = self.j
         s = self.S
-        r = 0
 
         while count:
-            i = (i + 1) & mask
+            i = mask & (i + 1)
             t = s[i]
-            j = (j + t) & mask
+            j = mask & (j + t)
             s[i] = s[j]
             s[j] = t
-            r = r * 256 + s[(s[i] + s[j]) & mask]
+            r = r * width + s[mask & (s[i] + s[j])]
             count -= 1
 
         self.i = i

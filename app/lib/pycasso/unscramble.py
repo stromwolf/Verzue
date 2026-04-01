@@ -72,18 +72,14 @@ class Canvas:
     def get_cols_in_group(self, slices):
         if len(slices) == 1:
             return 1
-        
         t = 'init'
         for i in range(0, len(slices)):
             if t == 'init':
                 t = slices[i]['y']
             if t != slices[i]['y']:
-                # The count of slices in the first row is 'i'
                 return i
-        
-        # If we finished the loop without breaking, there's only one row.
-        # The number of columns is thus the total number of slices.
-        return len(slices)
+                break
+        return i if (self.img_height % self.slice_height) == 0 else i + 1
 
     def get_group(self, slices):
         this = {}

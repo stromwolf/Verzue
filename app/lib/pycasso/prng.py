@@ -1,5 +1,4 @@
 from time import time
-
 from .constants import width, chunks, startdenom, significance, overflow, mask
 from .cipher import ARC4
 
