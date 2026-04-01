@@ -1,6 +1,6 @@
 import math
 
-from pycasso.prng import seedrandom
+from .prng import seedrandom
 
 def islist(this):
     return type(this) is list

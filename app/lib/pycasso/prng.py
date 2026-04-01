@@ -1,7 +1,7 @@
 from time import time
 
-from pycasso.constants import width, chunks, startdenom, significance, overflow, mask
-from pycasso.cipher import ARC4
+from .constants import width, chunks, startdenom, significance, overflow, mask
+from .cipher import ARC4
 
 def seedrandom(seed):
     key = []

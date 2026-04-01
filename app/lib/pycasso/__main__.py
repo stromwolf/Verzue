@@ -3,7 +3,7 @@
 import argparse
 import logging
 
-from pycasso.unscramble import Canvas
+from .unscramble import Canvas
 
 log = logging.getLogger("pycasso.cli")
 

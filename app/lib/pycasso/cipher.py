@@ -1,4 +1,4 @@
-from pycasso.constants import width, mask
+from .constants import width, mask
 
 class ARC4:
     def __init__(self, key):

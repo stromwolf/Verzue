@@ -7,7 +7,7 @@ import sys
 import math
 from PIL import Image
 
-from pycasso.shuffleseed import shuffle, unshuffle
+from .shuffleseed import shuffle, unshuffle
 
 class Canvas:
     def __init__(self, img, slice_size, seed=None):
