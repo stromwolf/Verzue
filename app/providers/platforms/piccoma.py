@@ -365,19 +365,19 @@ class PiccomaProvider(BaseProvider):
         res.raise_for_status()
         out_path = f"{out_dir}/page_{idx:03d}.png"
         
-        # 🟢 FIX: Remove isupper() to allow numeric/lowercase seeds.
-        if seed and Canvas:
+        # 🟢 V30.0 FIX: Match pyccoma-main mirror 1:1
+        if seed and Canvas and seed.isupper():
             try:
                 def unscramble():
                     # 🧩 S-GRADE: Lock the unscramble process
                     with self._unscramble_lock:
                         img_io = BytesIO(res.content)
-                        # Apply 'dd' parity transformation to seed (Mirrors piccoma.py:162)
+                        # Apply 'dd' parity transformation to seed (Mirrors pyccoma:162)
                         final_seed = self._dd_transform(seed)
-                        # Use mode="unscramble" (Matches internal pycasso reconstruction)
+                        # Use mode="scramble" (Matches working pyccoma-main scrapper.py:163)
                         canvas = Canvas(img_io, (50, 50), final_seed)
-                        logger.info(f"[Piccoma] Unscrambling page {idx} with seed: {seed}")
-                        return canvas.export(mode="unscramble", format="png").getvalue()
+                        logger.info(f"[Piccoma] Unscrambling page {idx} with V3 seed: {seed}")
+                        return canvas.export(mode="scramble", format="png").getvalue()
                 
                 content = await asyncio.to_thread(unscramble)
                 with open(out_path, "wb") as f: f.write(content)
@@ -385,7 +385,8 @@ class PiccomaProvider(BaseProvider):
                 logger.error(f"[Piccoma] Unscramble error (V3 Seed: {seed}): {e}")
                 with open(out_path, "wb") as f: f.write(res.content)
         else:
-            # If no seed or no Canvas, save raw bytes
+            # 🟢 S-GRADE: pycasso-main skips unscrambling if !isupper()
+            logger.debug(f"[Piccoma] Page {idx} - No unscramble (Seed: {seed} | isupper: {seed.isupper() if seed else False})")
             with open(out_path, "wb") as f: f.write(res.content)
 
     def _dd_transform(self, input_string: str) -> str:
@@ -421,8 +422,8 @@ class PiccomaProvider(BaseProvider):
         
         # The checksum is the second to last segment
         chk_raw = qs.get('q', [''])[0] if region == "fr" else (segments[-2] if len(segments) >= 2 else "")
-        # 🟢 FIX: Checksum must be uppercase for the v30.0 seed parity shift
-        chk = str(chk_raw).upper()
+        # 🟢 FIX: Remove .upper(). pyccoma uses the raw checksum segment.
+        chk = str(chk_raw)
         
         expires = qs.get('expires', [''])[0]
         logger.debug(f"[Piccoma] Calculating seed from URL: {path_only} | Raw Checksum: {chk} | Expires: {expires}")
