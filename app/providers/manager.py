@@ -4,6 +4,7 @@ import logging
 import os
 from typing import Dict, Type
 from app.providers.base import BaseProvider
+from app.core.exceptions import MechaException
 
 logger = logging.getLogger("ProviderManager")
 
@@ -51,14 +52,15 @@ class ProviderManager:
             logger.info(f"🔌 Loaded Provider{summary}")
 
     def get_provider(self, platform: str) -> BaseProvider:
-        """Returns the requested provider instance."""
+        """Returns the requested provider instance or raises MechaException."""
         provider = self._providers.get(platform.lower())
         if not provider:
-            logger.error(f"⚠️ Provider not found for platform: {platform}")
+            logger.error(f"⚠️ Provider lookup failed for platform: {platform}")
+            raise MechaException(f"No provider found for platform: {platform}", code="SY_002")
         return provider
 
     def get_provider_for_url(self, url: str) -> BaseProvider:
-        """S-Grade URL Routing: Maps a URL to the correct provider."""
+        """S-Grade URL Routing: Maps a URL to the correct provider or raises MechaException."""
         url_lower = url.lower()
         if "mechacomic.jp" in url_lower: return self.get_provider("mecha")
         if "jumptoon.com" in url_lower: return self.get_provider("jumptoon")
@@ -66,7 +68,8 @@ class ProviderManager:
         if "kakao.com" in url_lower: return self.get_provider("kakao")
         if "kuaikanmanhua.com" in url_lower: return self.get_provider("kuaikan")
         if "ac.qq.com" in url_lower: return self.get_provider("acqq")
-        return None
+        
+        raise MechaException(f"Unsupported platform URL: {url}", code="SY_002")
 
     def list_providers(self):
         """Returns a list of all loaded platform identifiers."""

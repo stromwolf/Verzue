@@ -11,8 +11,7 @@ import time
 import datetime
 import json
 from typing import TYPE_CHECKING, List, Dict, Any, Optional
-from config.settings import Settings
-from app.models.chapter import TaskStatus
+from app.core.exceptions import MechaException
 from app.services.group_manager import load_group, get_group_emoji
 from app.services.redis_manager import RedisManager
 
@@ -1461,6 +1460,11 @@ class DashboardCog(commands.Cog):
             
             scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
             logger.info(f"[{req_id}] 🚀 Handoff: Extraction starting for {platform}...")
+            
+            # 🛡️ Safety check (SY_002)
+            if not scraper:
+                raise MechaException(f"Unsupported platform URL: {url}", code="SY_002")
+
             # 🟢 Every Provider is now S-Grade Async
             data = await scraper.get_series_info(url)
                 
@@ -1676,6 +1680,9 @@ class DashboardCog(commands.Cog):
             
             # 1. Fetch Metadata (Fast Mode)
             scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
+            if not scraper:
+                raise MechaException(f"Unsupported platform URL: {url}", code="SY_002")
+            
             data = await scraper.get_series_info(url, fast=True)
             title, total_chapters, chapter_list, image_url, series_id, release_day, release_time, status_label, genre_label = data
 
