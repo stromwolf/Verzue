@@ -581,7 +581,8 @@ class PiccomaProvider(BaseProvider):
                     f"{base_url}/web/episode/use/purchase"
                 ]
                 
-                # 🧩 TIER 3: Snake Case Payload Retry logic
+                # 🧩 TIER 3: Multi-Format Payload Retry logic
+                # Now testing: [Camel/Snake] x [Form/JSON]
                 payload_variants = [
                     purchase_payload,
                     {**purchase_payload, "episode_id": episode_id, "product_id": series_id}
@@ -589,19 +590,27 @@ class PiccomaProvider(BaseProvider):
                 
                 for alt_url in discovery_endpoints:
                     for payload in payload_variants:
-                        logger.info(f"[Piccoma] 🔄 Retrying endpoint: {alt_url} (Payload: {'snake' if 'episode_id' in payload else 'camel'})")
-                        try:
-                            p_retry = auth_session.post(alt_url, data=payload, headers=headers, timeout=15)
-                            post_res = await p_retry
-                            if post_res.status_code in [200, 302]:
-                                logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url}")
-                                break
-                            else:
-                                logger.debug(f"[Piccoma] Alternative {alt_url} failed with {post_res.status_code}")
-                        except Exception as alt_e:
-                            logger.debug(f"[Piccoma] Error hitting {alt_url}: {alt_e}")
-                    if post_res.status_code in [200, 302]:
-                        break
+                        for is_json in [False, True]:
+                            ct = "application/json" if is_json else "application/x-www-form-urlencoded"
+                            headers["Content-Type"] = ct
+                            logger.info(f"[Piccoma] 🔄 Retrying: {alt_url} ({'snake' if 'episode_id' in payload else 'camel'}, {'JSON' if is_json else 'Form'})")
+                            try:
+                                p_retry = auth_session.post(
+                                    alt_url, 
+                                    json=payload if is_json else None,
+                                    data=None if is_json else payload,
+                                    headers=headers, timeout=15
+                                )
+                                post_res = await p_retry
+                                if post_res.status_code in [200, 302, 301]:
+                                    logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url} ({ct})")
+                                    break
+                                else:
+                                    logger.debug(f"[Piccoma] Alternative {alt_url} failed with {post_res.status_code}")
+                            except Exception as alt_e:
+                                logger.debug(f"[Piccoma] Error hitting {alt_url}: {alt_e}")
+                        if post_res.status_code in [200, 302, 301]: break
+                    if post_res.status_code in [200, 302, 301]: break
             
             # 7. Verification Loop
             if post_res.status_code in [200, 302]:
