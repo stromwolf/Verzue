@@ -67,29 +67,42 @@ class SystemMonitorCog(commands.Cog):
             # 3. Send/Edit Message
             channel = self.bot.get_channel(self.MONITOR_CHANNEL_ID)
             if not channel:
-                channel = await self.bot.fetch_channel(self.MONITOR_CHANNEL_ID)
+                try:
+                    channel = await self.bot.fetch_channel(self.MONITOR_CHANNEL_ID)
+                except:
+                    logger.error(f"❌ [SystemMonitor] Could not find monitor channel: {self.MONITOR_CHANNEL_ID}")
+                    return
             
             if not channel:
-                logger.error(f"❌ [SystemMonitor] Could not find monitor channel: {self.MONITOR_CHANNEL_ID}")
                 return
 
             # Redis-based persistence
             msg_id = await self.redis.client.get(self.REDIS_MSG_KEY)
+            msg = None
             
             if msg_id:
                 try:
-                    # Attempt to fetch and edit existing message
+                    # Attempt to fetch existing message from Redis ID
                     msg = await channel.fetch_message(int(msg_id))
-                    await msg.edit(embed=embed)
-                    # logger.debug(f"✅ [SystemMonitor] Updated persistent message: {msg_id}")
-                    return
-                except (discord.NotFound, discord.HTTPException):
-                    logger.warning(f"⚠️ [SystemMonitor] Persistent message {msg_id} not found, creating new one.")
+                except (discord.NotFound, discord.HTTPException, ValueError):
+                    logger.warning(f"⚠️ [SystemMonitor] Persistent message {msg_id} not found in fetch.")
 
-            # Create new message if none exists or edit failed
-            new_msg = await channel.send(embed=embed)
-            await self.redis.client.set(self.REDIS_MSG_KEY, str(new_msg.id))
-            logger.info(f"🆕 [SystemMonitor] New persistent message created: {new_msg.id}")
+            # 🟢 S-GRADE: Re-attachment logic (Search history if Redis ID is dead/missing)
+            if not msg:
+                msg = await self._find_existing_message(channel)
+                if msg:
+                    await self.redis.client.set(self.REDIS_MSG_KEY, str(msg.id))
+                    logger.info(f"🔗 [SystemMonitor] Re-attached to existing message in history: {msg.id}")
+
+            # 4. Final Action: Edit or Create
+            if msg:
+                await msg.edit(embed=embed)
+            else:
+                # Create new message if no existing one found
+                new_msg = await channel.send(embed=embed)
+                await self.redis.client.set(self.REDIS_MSG_KEY, str(new_msg.id))
+                logger.info(f"🆕 [SystemMonitor] New persistent message created: {new_msg.id}")
+
 
         except Exception as e:
             logger.error(f"❌ [SystemMonitor] Failed to gather or send metrics: {e}")
@@ -99,7 +112,19 @@ class SystemMonitorCog(commands.Cog):
         """Wait for the bot to be ready before starting the loop."""
         await self.bot.wait_until_ready()
 
+    async def _find_existing_message(self, channel):
+        """Searches the last 50 messages for an existing resource monitor embed."""
+        try:
+            async for message in channel.history(limit=50):
+                if message.author.id == self.bot.user.id and message.embeds:
+                    if message.embeds[0].title == "🖥️ System Resource Monitor":
+                        return message
+        except Exception as e:
+            logger.error(f"🔍 [SystemMonitor] History search failed: {e}")
+        return None
+
     def _get_color(self, cpu, ram, disk):
+
         """Determine embed color based on resource pressure."""
         if cpu > 90 or ram > 90 or disk > 95:
             return 0xe74c3c  # Red
