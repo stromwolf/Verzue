@@ -568,6 +568,8 @@ class PiccomaProvider(BaseProvider):
                 # 🧩 TIER 2: Smartoon-Aware Endpoint discovery
                 is_s = "s/" in task.url
                 discovery_endpoints = [
+                    f"{base_url}/web/viewer/waitfree/s/push",
+                    f"{base_url}/web/episode/waitfree/s/use",
                     f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/push",
                     f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/use",
                     f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/push",
@@ -575,6 +577,8 @@ class PiccomaProvider(BaseProvider):
                     f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/use",
                     f"{base_url}/web/episode/use/waitfree"
                 ] if is_waitfree else [
+                    f"{base_url}/web/viewer/purchase/s/push",
+                    f"{base_url}/web/episode/purchase/s",
                     f"{base_url}/web/viewer{'/s' if is_s else ''}/purchase/push",
                     f"{base_url}/web/episode{'/s' if is_s else ''}/purchase",
                     f"{base_url}/web/episode{'/s' if is_s else ''}/purchase/push",
