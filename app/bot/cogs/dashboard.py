@@ -1037,7 +1037,9 @@ class DashboardCog(commands.Cog):
                 # D. Home (Redirect to Main)
                 elif custom_id.startswith("btn_home_"):
                     if view.service_type == "mecha": 
-                        try: self.bot.task_queue.browser_service.dec_session()
+                        try: 
+                            browser = getattr(self.bot.task_queue, "browser_service", None)
+                            if browser: browser.dec_session()
                         except: pass
                     UniversalDashboard.active_views.pop(req_id, None)
                     
@@ -1051,7 +1053,11 @@ class DashboardCog(commands.Cog):
 
                 # E. Cancel Session
                 elif custom_id.startswith("btn_cancel_"):
-                    if view.service_type == "mecha": self.bot.task_queue.browser_service.dec_session()
+                    if view.service_type == "mecha": 
+                        try:
+                            browser = getattr(self.bot.task_queue, "browser_service", None)
+                            if browser: browser.dec_session()
+                        except: pass
                     UniversalDashboard.active_views.pop(req_id, None)
                     await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json={"type": 6})
                     try: await interaction.message.delete()

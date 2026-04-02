@@ -170,13 +170,27 @@ class AutoDownloadPoller:
                 return
 
             today_name = datetime.datetime.now(datetime.timezone.utc).strftime("%A")
-            logger.info(f"📅 [AutoPoller] Today is {today_name}. Checking {len(all_subs)} total subs.")
+            logger.info(f"📅 [AutoPoller] Today is {today_name}. Scanning {len(all_subs)} total subs for active schedules.")
 
-            # 🟢 S-GRADE: Include series with NO release_day (Cold Start/New Subscriptions)
-            todays_subs = [
-                (group_name, sub) for group_name, sub in all_subs
-                if sub and (not sub.get("release_day") or (sub.get("release_day") or "").lower() == today_name.lower())
-            ]
+            # 🟢 S-GRADE: Filter logic
+            # 1. Matches today's release day
+            # 2. OR Has NO release_day (Discovery) AND is NOT Completed
+            todays_subs = []
+            for group_name, sub in all_subs:
+                if not sub: continue
+                
+                rel_day = (sub.get("release_day") or "").lower()
+                status = (sub.get("status") or "").lower()
+                
+                if status == "completed":
+                    continue # Skip completed series in daily poll
+                
+                # Check if it's scheduled for today or needs discovery
+                is_scheduled = (rel_day == today_name.lower())
+                is_discovery = (not rel_day)
+                
+                if is_scheduled or is_discovery:
+                    todays_subs.append((group_name, sub))
 
             if not todays_subs:
                 logger.info(f"💤 [AutoPoller] No subscriptions scheduled for {today_name}. Going back to sleep.")
