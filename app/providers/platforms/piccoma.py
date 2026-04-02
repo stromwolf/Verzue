@@ -550,7 +550,7 @@ class PiccomaProvider(BaseProvider):
             # 🟢 S-GRADE: 404 Recovery & Discovery Heuristic
             if post_res.status_code == 404:
                 # 🧩 TIER 1: Log diagnostic details for the failure
-                logger.debug(f"[Piccoma] Primary endpoint 404. Body: {post_res.text[:200]}")
+                logger.error(f"[Piccoma] Primary endpoint ({target_url}) 404. Body: {post_res.text[:800]}")
                 
                 # 🧩 TIER 2: Automated Retry with known alternative endpoints
                 discovery_endpoints = [
