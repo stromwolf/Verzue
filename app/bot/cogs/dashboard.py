@@ -144,9 +144,9 @@ class DashboardCog(commands.Cog):
                     "custom_id": "v2_platform_select",
                     "placeholder": "Select Platform",
                     "options": [
-                        {"label": "Piccoma", "value": "Piccoma", "emoji": {"id": "1478368704164134912", "name": "Piccoma"}},
-                        {"label": "Mecha Comic", "value": "Mecha Comic", "emoji": {"id": "1478369141957333083", "name": "Mechacomic"}},
-                        {"label": "Jumptoon", "value": "Jumptoon", "emoji": {"id": "1478367963928068168", "name": "Jumptoon"}}
+                        {"label": "Piccoma", "value": "piccoma", "emoji": {"id": "1478368704164134912", "name": "Piccoma"}},
+                        {"label": "Mecha Comic", "value": "mecha", "emoji": {"id": "1478369141957333083", "name": "Mechacomic"}},
+                        {"label": "Jumptoon", "value": "jumptoon", "emoji": {"id": "1478367963928068168", "name": "Jumptoon"}}
                     ]
                 }
             ]
@@ -1312,7 +1312,14 @@ class DashboardCog(commands.Cog):
                 url = match.group(1)
                 logger.info(f"📍 URL Extracted: '{raw_url}' -> '{url}'")
         
-        platform_domains = {"Mecha Comic": "mechacomic.jp", "Jumptoon": "jumptoon.com", "KakaoPage": "kakao.com", "Kuaikan Manhua": "kuaikanmanhua.com", "Piccoma": "piccoma.com", "AC.QQ": "ac.qq.com"}
+        platform_domains = {
+            "mecha": "mechacomic.jp", 
+            "jumptoon": "jumptoon.com", 
+            "kakao": "kakao.com", 
+            "kuaikan": "kuaikanmanhua.com", 
+            "piccoma": "piccoma.com", 
+            "acqq": "ac.qq.com"
+        }
         expected_domain = platform_domains.get(platform)
         
         if expected_domain and expected_domain not in url.lower():

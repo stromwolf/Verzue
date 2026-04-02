@@ -75,12 +75,18 @@ class AutoDownloadPoller:
         today_name = datetime.datetime.now(datetime.timezone.utc).strftime("%A")
         targets = ["piccoma", "jumptoon", "mecha", "kakao"] # Added kakao to targets
         
-        # Filter to target platforms + today's release day
-        todays_targets = [
-            (group_name, sub) for group_name, sub in all_subs
-            if sub and (sub.get("platform") or "").lower() in targets and
-               (sub.get("release_day") or "").lower() == today_name.lower()
-        ]
+        todays_targets = []
+        for group_name, sub in all_subs:
+            if not sub: continue
+            
+            p_name = (sub.get("platform") or "").lower()
+            if "mecha" in p_name: p_name = "mecha"
+            elif "kakao" in p_name: p_name = "kakao"
+            elif "jumptoon" in p_name: p_name = "jumptoon"
+            elif "piccoma" in p_name: p_name = "piccoma"
+            
+            if p_name in targets and (sub.get("release_day") or "").lower() == today_name.lower():
+                todays_targets.append((group_name, sub))
 
         if not todays_targets:
             return
@@ -89,8 +95,8 @@ class AutoDownloadPoller:
         
         # 🟢 BATCH MECHA CHECK (Apr 2 Integration)
         # Separate Mecha from regular polling to use the Alerts Page optimization
-        mecha_targets = [t for t in todays_targets if t[1].get("platform", "").lower() == "mecha"]
-        other_targets = [t for t in todays_targets if t[1].get("platform", "").lower() != "mecha"]
+        mecha_targets = [t for t in todays_targets if "mecha" in t[1].get("platform", "").lower()]
+        other_targets = [t for t in todays_targets if "mecha" not in t[1].get("platform", "").lower()]
 
         # 1. Process Other Targets (Normal)
         for group_name, sub in other_targets:
@@ -197,8 +203,8 @@ class AutoDownloadPoller:
                 return
 
             # 🟢 BATCH MECHA CHECK (Daily Sweep)
-            mecha_targets = [t for t in todays_subs if t[1].get("platform", "").lower() == "mecha"]
-            other_targets = [t for t in todays_subs if t[1].get("platform", "").lower() != "mecha"]
+            mecha_targets = [t for t in todays_subs if "mecha" in t[1].get("platform", "").lower()]
+            other_targets = [t for t in todays_subs if "mecha" not in t[1].get("platform", "").lower()]
 
             logger.info(f"🚀 [AutoPoller] {len(todays_subs)} subs scheduled for today. Starting concurrent check...")
 

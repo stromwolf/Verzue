@@ -175,7 +175,12 @@ class Discovery(commands.Cog):
         if len(parts) < 4: return
         
         action = parts[1]
-        platform = parts[2]
+        platform = parts[2].lower()
+        if "mecha" in platform: platform = "mecha"
+        elif "kakao" in platform: platform = "kakao"
+        elif "jumptoon" in platform: platform = "jumptoon"
+        elif "piccoma" in platform: platform = "piccoma"
+        
         series_id = parts[3]
         
         if action == "download_all":
@@ -404,10 +409,18 @@ class Discovery(commands.Cog):
         from app.tasks.poller import JUMPTOON_NEW_SERIES_CHANNEL_ID
         all_platforms = ["jumptoon", "piccoma", "mecha"]
         
-        if platform and platform.lower() not in all_platforms:
-             return await msg.edit(content=f"❌ Unsupported platform: `{platform}`. Supported: `jumptoon`, `piccoma`, `mecha`.")
-
-        targets = [platform.lower()] if platform else all_platforms
+        if platform:
+            p_low = platform.lower()
+            if "mecha" in p_low: platform = "mecha"
+            elif "kakao" in p_low: platform = "kakao"
+            elif "jumptoon" in p_low: platform = "jumptoon"
+            elif "piccoma" in p_low: platform = "piccoma"
+            
+            if platform not in all_platforms:
+                 return await msg.edit(content=f"❌ Unsupported platform: `{platform}`. Supported: `jumptoon`, `piccoma`, `mecha`.")
+            targets = [platform]
+        else:
+            targets = all_platforms
         
         results = []
         for p_name in targets:

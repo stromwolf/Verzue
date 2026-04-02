@@ -53,9 +53,20 @@ class ProviderManager:
 
     def get_provider(self, platform: str) -> BaseProvider:
         """Returns the requested provider instance or raises MechaException."""
-        provider = self._providers.get(platform.lower())
+        p_name = platform.lower().strip()
+        
+        # 🟢 S-GRADE: Platform Alias Normalization
+        # Handles user-provided names or legacy DB entries
+        if "mecha" in p_name: p_name = "mecha"
+        elif "kakao" in p_name: p_name = "kakao"
+        elif "jumptoon" in p_name: p_name = "jumptoon"
+        elif "piccoma" in p_name: p_name = "piccoma"
+        elif "kuaikan" in p_name: p_name = "kuaikan"
+        elif "ac.qq" in p_name or "acqq" in p_name: p_name = "acqq"
+        
+        provider = self._providers.get(p_name)
         if not provider:
-            logger.error(f"⚠️ Provider lookup failed for platform: {platform}")
+            logger.error(f"⚠️ Provider lookup failed for platform: {platform} (Mapped: {p_name})")
             raise MechaException(f"No provider found for platform: {platform}", code="SY_002")
         return provider
 
