@@ -31,8 +31,10 @@ class MechaBot(commands.Bot):
             "app.bot.cogs.dashboard",
             "app.bot.cogs.subscriptions",
             "app.bot.cogs.discovery",
-            "app.bot.cogs.status"
+            "app.bot.cogs.status",
+            "app.bot.cogs.monitor_cog"
         ]
+
         
         for ext in extensions:
             try:
@@ -150,7 +152,7 @@ class MechaBot(commands.Bot):
     async def dispatch_error(self, error: Exception, ctx: commands.Context = None, interaction: discord.Interaction = None, event: str = None, code: str = None):
         """Standardized crash reporter that dispatches reports to the admin legacy channel."""
         import traceback
-        self.logger.error(f"Sentinel Dispatch: {error}")
+        self.logger.error(f"Sentinel Dispatch [{event or 'Unknown'}]: {error}", exc_info=True)
 
         try:
             # 1. Resolve Admin Channel (Persistent)
@@ -212,7 +214,12 @@ class MechaBot(commands.Bot):
 
     async def on_error(self, event_method, *args, **kwargs):
         """Global handler for all non-command event crashes."""
-        await self.dispatch_error(Exception("Event Loop Crash"), event=event_method)
+        import sys
+        _, exc, _ = sys.exc_info()
+        await self.dispatch_error(exc or Exception("Event Loop Crash"), event=event_method)
+
+    async def on_ready(self):
+        self.logger.info(f"✅ Bot is ONLINE as {self.user} (ID: {self.user.id})")
 
     # --- S-GRADE: ADMIN CONNECTIVITY DISPATCHERS ---
 

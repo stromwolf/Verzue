@@ -22,9 +22,9 @@ class HelperBot(commands.Bot):
         extensions = [
             "app.bot.cogs.helper_cogs", 
             "app.bot.cogs.discovery", 
-            "app.bot.cogs.discovery_commands",
-            "app.bot.cogs.monitor_cog"
+            "app.bot.cogs.discovery_commands"
         ]
+
         for ext in extensions:
             try:
                 await self.load_extension(ext)
