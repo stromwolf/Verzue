@@ -499,7 +499,7 @@ class PiccomaProvider(BaseProvider):
             
             # 2. Extract CSRF token and prepare headers
             headers = {
-                "Referer": task.url if "s/" in task.url else episode_page_url,
+                "Referer": episode_page_url,
                 "Origin": base_url,
                 "X-Requested-With": "XMLHttpRequest",
                 "Content-Type": "application/x-www-form-urlencoded",
