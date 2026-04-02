@@ -499,7 +499,7 @@ class PiccomaProvider(BaseProvider):
             
             # 2. Extract CSRF token and prepare headers
             headers = {
-                "Referer": episode_page_url,
+                "Referer": task.url if "s/" in task.url else episode_page_url,
                 "Origin": base_url,
                 "X-Requested-With": "XMLHttpRequest",
                 "Content-Type": "application/x-www-form-urlencoded",
@@ -568,27 +568,38 @@ class PiccomaProvider(BaseProvider):
                 discovery_endpoints = [
                     f"{base_url}/web/episode/waitfree/use",
                     f"{base_url}/web/episode/waitfree/push",
+                    f"{base_url}/web/viewer/waitfree/push",
                     f"{base_url}/web/episode/waitfree",
                     f"{base_url}/web/viewer/waitfree/use",
                     f"{base_url}/web/episode/use/waitfree"
                 ] if is_waitfree else [
                     f"{base_url}/web/episode/purchase",
                     f"{base_url}/web/episode/purchase/push",
+                    f"{base_url}/web/viewer/purchase/push",
                     f"{base_url}/web/episode/use/purchase"
                 ]
                 
+                # 🧩 TIER 3: Snake Case Payload Retry logic
+                payload_variants = [
+                    purchase_payload,
+                    {**purchase_payload, "episode_id": episode_id, "product_id": series_id}
+                ]
+                
                 for alt_url in discovery_endpoints:
-                    logger.info(f"[Piccoma] 🔄 Retrying alternative endpoint: {alt_url}")
-                    try:
-                        p_retry = auth_session.post(alt_url, data=purchase_payload, headers=headers, timeout=15)
-                        post_res = await p_retry
-                        if post_res.status_code in [200, 302]:
-                            logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url}")
-                            break
-                        else:
-                            logger.debug(f"[Piccoma] Alternative {alt_url} failed with {post_res.status_code}")
-                    except Exception as alt_e:
-                        logger.debug(f"[Piccoma] Error hitting {alt_url}: {alt_e}")
+                    for payload in payload_variants:
+                        logger.info(f"[Piccoma] 🔄 Retrying endpoint: {alt_url} (Payload: {'snake' if 'episode_id' in payload else 'camel'})")
+                        try:
+                            p_retry = auth_session.post(alt_url, data=payload, headers=headers, timeout=15)
+                            post_res = await p_retry
+                            if post_res.status_code in [200, 302]:
+                                logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url}")
+                                break
+                            else:
+                                logger.debug(f"[Piccoma] Alternative {alt_url} failed with {post_res.status_code}")
+                        except Exception as alt_e:
+                            logger.debug(f"[Piccoma] Error hitting {alt_url}: {alt_e}")
+                    if post_res.status_code in [200, 302]:
+                        break
             
             # 7. Verification Loop
             if post_res.status_code in [200, 302]:
