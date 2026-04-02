@@ -565,17 +565,19 @@ class PiccomaProvider(BaseProvider):
                 logger.error(f"[Piccoma] Primary endpoint ({target_url}) 404. Body: {post_res.text[:800]}")
                 
                 # 🧩 TIER 2: Automated Retry with known alternative endpoints
+                # 🧩 TIER 2: Smartoon-Aware Endpoint discovery
+                is_s = "s/" in task.url
                 discovery_endpoints = [
-                    f"{base_url}/web/episode/waitfree/use",
-                    f"{base_url}/web/episode/waitfree/push",
-                    f"{base_url}/web/viewer/waitfree/push",
-                    f"{base_url}/web/episode/waitfree",
-                    f"{base_url}/web/viewer/waitfree/use",
+                    f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/push",
+                    f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/use",
+                    f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/push",
+                    f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree",
+                    f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/use",
                     f"{base_url}/web/episode/use/waitfree"
                 ] if is_waitfree else [
-                    f"{base_url}/web/episode/purchase",
-                    f"{base_url}/web/episode/purchase/push",
-                    f"{base_url}/web/viewer/purchase/push",
+                    f"{base_url}/web/viewer{'/s' if is_s else ''}/purchase/push",
+                    f"{base_url}/web/episode{'/s' if is_s else ''}/purchase",
+                    f"{base_url}/web/episode{'/s' if is_s else ''}/purchase/push",
                     f"{base_url}/web/episode/use/purchase"
                 ]
                 
