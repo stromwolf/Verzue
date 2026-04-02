@@ -151,6 +151,18 @@ class PiccomaProvider(BaseProvider):
                     release_time = "15:00" # Midnight JST = 15:00 UTC
                     break
 
+        # 🟢 S-GRADE: Smartoon Detection
+        # Piccoma uses different viewer URL structures for 'Smartoon' (Webtoons) and standard manga.
+        # Smartoons: /web/viewer/s/{series_id}/{chapter_id}
+        # Standard:  /web/viewer/{series_id}/{chapter_id}
+        is_smartoon = "smartoon" in title.lower() or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon'))
+        if not is_smartoon:
+             # Check for common smartoon patterns if indicators are missing
+             is_smartoon = any(kw in title for kw in ["【SMARTOON】", "[SMARTOON]"])
+        
+        task_viewer_prefix = f"{base_url}/web/viewer" + ("/s" if is_smartoon else "")
+        logger.info(f"[Piccoma] Series '{title}' (ID: {series_id}) - Smartoon: {is_smartoon}")
+
         # 🟢 S-GRADE: FAST LOADING SUPPORT
         # If fast=True, we parse whatever episodes are already on the landing page (if any)
         # Usually Piccoma has a few episodes on the product page, but for deep list we go to /episodes
@@ -180,7 +192,7 @@ class PiccomaProvider(BaseProvider):
                     is_locked = "待てば￥0" not in item.get_text() and "無料" not in item.get_text() and "¥0" not in item.get_text()
                 
                 all_chapters.append({
-                    'id': cid, 'title': c_title, 'notation': notation, 'url': f"{base_url}/web/viewer/{series_id}/{cid}",
+                    'id': cid, 'title': c_title, 'notation': notation, 'url': f"{task_viewer_prefix}/{series_id}/{cid}",
                     'is_locked': is_locked, 'is_new': "NEW" in item.get_text().upper()
                 })
             
@@ -237,7 +249,7 @@ class PiccomaProvider(BaseProvider):
                     'id': cid,
                     'title': c_title,
                     'notation': notation,
-                    'url': f"{base_url}/web/viewer/{series_id}/{cid}",
+                    'url': f"{task_viewer_prefix}/{series_id}/{cid}",
                     'is_locked': is_locked,
                     'is_new': "NEW" in item.get_text().upper()
                 })
@@ -257,7 +269,7 @@ class PiccomaProvider(BaseProvider):
                                 'id': cid,
                                 'title': title,
                                 'notation': title,
-                                'url': f"{base_url}/web/viewer/s/{series_id}/{cid}",
+                                'url': f"{task_viewer_prefix}/{series_id}/{cid}",
                                 'is_locked': not ep.get('is_free', False),
                                 'is_new': ep.get('is_new', False)
                             })
@@ -554,11 +566,16 @@ class PiccomaProvider(BaseProvider):
                 
                 # 🧩 TIER 2: Automated Retry with known alternative endpoints
                 discovery_endpoints = [
+                    f"{base_url}/web/episode/waitfree/use",
+                    f"{base_url}/web/episode/waitfree/push",
+                    f"{base_url}/web/episode/waitfree",
                     f"{base_url}/web/viewer/waitfree/use",
-                    f"{base_url}/web/episode/use/waitfree",
-                    f"{base_url}/web/viewer/use/waitfree",
-                    f"{base_url}/web/viewer/use_waitfree"
-                ] if is_waitfree else [f"{base_url}/web/episode/use/purchase"]
+                    f"{base_url}/web/episode/use/waitfree"
+                ] if is_waitfree else [
+                    f"{base_url}/web/episode/purchase",
+                    f"{base_url}/web/episode/purchase/push",
+                    f"{base_url}/web/episode/use/purchase"
+                ]
                 
                 for alt_url in discovery_endpoints:
                     logger.info(f"[Piccoma] 🔄 Retrying alternative endpoint: {alt_url}")
