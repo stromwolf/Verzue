@@ -586,11 +586,19 @@ class PiccomaProvider(BaseProvider):
                 ]
                 
                 # 🧩 TIER 3: Multi-Format Payload Retry logic
-                # Now testing: [Camel/Snake] x [Form/JSON]
-                payload_variants = [
-                    purchase_payload,
-                    {**purchase_payload, "episode_id": episode_id, "product_id": series_id}
-                ]
+                # Now testing: [Camel/Snake] x [Form/JSON] x [Confirm True/False]
+                payload_variants = []
+                for cid in ["episodeId", "episode_id"]:
+                    for pid in ["productId", "product_id"]:
+                        for conf in ["false", "true"]:
+                            p = {
+                                cid: episode_id,
+                                pid: series_id,
+                                "confirm": conf,
+                                "hasWaitFree": "true" if is_waitfree else ("true" if conf == "true" else "false")
+                            }
+                            if p not in payload_variants:
+                                payload_variants.append(p)
                 
                 for alt_url in discovery_endpoints:
                     for payload in payload_variants:
