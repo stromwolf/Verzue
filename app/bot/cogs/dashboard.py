@@ -853,8 +853,8 @@ class DashboardCog(commands.Cog):
                     else:
                         return await interaction.response.send_message(error_msg, ephemeral=True)
                 
-                view.interaction = interaction
-                view.last_interaction_time = time.time() # 🔄 Reset session timer on every interaction
+                # 🔄 Reset session timer on every interaction
+                view.last_interaction_time = time.time() 
 
                 # NEW: Error Report Logic (Launches Modal)
                 if custom_id.startswith("btn_report_error_"):
@@ -901,13 +901,21 @@ class DashboardCog(commands.Cog):
                         )
                     except Exception as e:
                         logger.error(f"Failed to launch Error Modal: {e}")
-                        return await interaction.response.send_message("❌ Failed to open report form. Please try again.", ephemeral=True)
+                        # 🟢 S-GRADE: Use followup if the initial response (modal) failed/expired
+                        try:
+                            if not interaction.response.is_done():
+                                await interaction.response.send_message("❌ Failed to open report form. Please try again.", ephemeral=True)
+                            else:
+                                await interaction.followup.send("❌ Failed to open report form. Please try again.", ephemeral=True)
+                        except: pass
+                        return
 
                 if custom_id.startswith("btn_pending_link_"):
                     return await interaction.response.send_message("This link is still being generated. Please wait a moment.", ephemeral=True)
 
                 # NEW: Error Retry Logic
                 if custom_id.startswith("btn_error_retry_"):
+                    view.interaction = interaction
                     # 1. Immediate Ephemeral Feedback
                     apology = (
                         "We apologize for the inconvenience. I'll re-download this chapter and get back to you soon."
@@ -921,6 +929,7 @@ class DashboardCog(commands.Cog):
 
                 # A. Clear Selections (Cancel SR)
                 if custom_id.startswith("btn_clear_"):
+                    view.interaction = interaction
                     view.selected_indices.clear()
                     return await view.update_view(interaction)
 
@@ -992,17 +1001,27 @@ class DashboardCog(commands.Cog):
                         return await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=modal_payload)
                     except discord.HTTPException as e:
                         if e.code in [10062, 40060]: pass
-                        else: logger.error(f"Failed to open selection menu: {e}")
+                        else: 
+                            logger.error(f"Failed to open selection menu: {e}")
+                            try:
+                                if not interaction.response.is_done():
+                                    await interaction.response.send_message("❌ Failed to open menu. Please try again.", ephemeral=True)
+                                else:
+                                    await interaction.followup.send("❌ Failed to open menu. Please try again.", ephemeral=True)
+                            except: pass
+                        return
 
                 # B. Deprecated Handler for old dropdown (safeguard)
                 elif custom_id.startswith("mode_select_"):
                     # Should no longer be triggered, log and ignore
                     logger.warning("Received deprecated mode_select_ component interaction")
+                    view.interaction = interaction
                     return await interaction.response.defer()
 
                 # C. Page Navigation
                 elif custom_id.startswith("page_select_"):
                     # 🟢 DEFER IMMEDIATELY: Lazy loading can take > 3 seconds
+                    view.interaction = interaction
                     await interaction.response.defer(ephemeral=True)
                     view.page = int(interaction.data.get("values", ["1"])[0])
                     
@@ -1036,6 +1055,7 @@ class DashboardCog(commands.Cog):
 
                 # D. Home (Redirect to Main)
                 elif custom_id.startswith("btn_home_"):
+                    view.interaction = interaction
                     if view.service_type == "mecha": 
                         try: 
                             browser = getattr(self.bot.task_queue, "browser_service", None)
@@ -1053,6 +1073,7 @@ class DashboardCog(commands.Cog):
 
                 # E. Cancel Session
                 elif custom_id.startswith("btn_cancel_"):
+                    view.interaction = interaction
                     if view.service_type == "mecha": 
                         try:
                             browser = getattr(self.bot.task_queue, "browser_service", None)
@@ -1065,6 +1086,7 @@ class DashboardCog(commands.Cog):
 
                 # E. Start Batch Process
                 elif custom_id.startswith("btn_start_"):
+                    view.interaction = interaction
                     try:
                         view.processing_mode = True
                         view.phases["analyze"] = "loading"
@@ -1095,9 +1117,10 @@ class DashboardCog(commands.Cog):
             # 🔴 NEW: Error Report Submission
             if custom_id.startswith("modal_report_error_"):
                 req_id = custom_id.split("_")[-1]
-                from app.bot.common.view import UniversalDashboard
                 view: UniversalDashboard | None = UniversalDashboard.active_views.get(req_id)
                 if not view: return
+                view.interaction = interaction
+                view.last_interaction_time = time.time()
                 
                 # Extract User Feedback (V2 Modal Structure)
                 error_type = "Others"
@@ -1194,6 +1217,7 @@ class DashboardCog(commands.Cog):
                 from app.bot.common.view import UniversalDashboard
                 view: UniversalDashboard | None = UniversalDashboard.active_views.get(req_id)
                 if not view: return
+                view.interaction = interaction
                 view.last_interaction_time = time.time() # 🔄 Reset session timer on modal submit
                 
                 range_val = ""
