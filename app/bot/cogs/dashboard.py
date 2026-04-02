@@ -842,16 +842,48 @@ class DashboardCog(commands.Cog):
                 from app.bot.common.view import UniversalDashboard
                 view: UniversalDashboard = UniversalDashboard.active_views.get(req_id)
                 if not view: 
-                    error_msg = (
-                        "❌ **Session Expired or Process Conflict.**\n\n"
-                        "This can happen for two reasons:\n"
-                        "1. **Timeout**: The session was inactive for more than 15 minutes.\n"
-                        "2. **Process Conflict**: Multiple bots are running. **Please kill all `main.py` processes and run only one.**"
-                    )
-                    if interaction.response.is_done():
-                        return await interaction.followup.send(error_msg, ephemeral=True)
-                    else:
-                        return await interaction.response.send_message(error_msg, ephemeral=True)
+                    # 🟢 Premium V2 Error UI
+                    error_payload = {
+                        "flags": 32832, # Ephemeral + V2
+                        "components": [
+                            {
+                                "type": 17, # Container
+                                "accent_color": 0xe74c3c, # Red
+                                "components": [
+                                    {"type": 10, "content": "### ❌ Session Expired or Process Conflict"},
+                                    {"type": 14, "divider": True, "spacing": 1},
+                                    {
+                                        "type": 9, # Section
+                                        "components": [
+                                            {"type": 10, "content": "This dashboard session is no longer active.\n- **Timeout**: Inactive for >15 mins.\n- **Conflict**: Multiple processes running."}
+                                        ],
+                                        "accessory": {
+                                            "type": 2, 
+                                            "style": 3, # Success (Green)
+                                            "label": "Back to Dashboard",
+                                            "emoji": {"id": "1480951111614730302", "name": "Success"},
+                                            "custom_id": "v2Dash_Home"
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                    try:
+                        if interaction.response.is_done():
+                            # Webhook PATCH for already acknowledged interactions
+                            route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original')
+                            await self.bot.http.request(route, json=error_payload)
+                        else:
+                            # Initial POST if not responded yet
+                            callback_payload = {"type": 4, "data": error_payload}
+                            route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
+                            await self.bot.http.request(route, json=callback_payload)
+                    except:
+                        # Final safety fallback
+                        try: await interaction.followup.send("❌ Session Expired. Please restart the dashboard.", ephemeral=True)
+                        except: pass
+                    return
                 
                 # 🔄 Reset session timer on every interaction
                 view.last_interaction_time = time.time() 
