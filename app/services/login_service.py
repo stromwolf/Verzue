@@ -76,6 +76,9 @@ class LoginService:
         login_page_url = f"{base_url}/web/acc/email/signin"
         
         async with AsyncSession(impersonate="chrome120", proxy=Settings.get_proxy()) as session:
+            # 🟢 Stability Patch: Tiny warm-up delay for proxy tunnel
+            await asyncio.sleep(1.0)
+            
             # 1. Get CSRF Token (Piccoma uses csrfmiddlewaretoken)
             res = await session.get(login_page_url)
             if res.status_code != 200:
@@ -155,6 +158,9 @@ class LoginService:
         login_page_url = f"{base_url}/session/input"
         
         async with AsyncSession(impersonate="chrome120", proxy=Settings.get_proxy()) as session:
+            # 🟢 Stability Patch: Tiny warm-up delay for proxy tunnel
+            await asyncio.sleep(1.0)
+            
             # 1. Get Authenticity Token
             res = await session.get(login_page_url)
             if res.status_code != 200:
