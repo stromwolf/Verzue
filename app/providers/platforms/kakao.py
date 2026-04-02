@@ -5,7 +5,7 @@ import math
 import asyncio
 import random
 import time
-from curl_cffi.requests import AsyncSession, ProxyError
+from curl_cffi.requests import AsyncSession, RequestsError
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError
@@ -119,8 +119,9 @@ class KakaoProvider(BaseProvider):
         meta_query = "query contentHomeOverview($seriesId: Long!) { contentHomeOverview(seriesId: $seriesId) { content { title thumbnail } } }"
         try:
             res_meta = await auth_session.post(self.GRAPHQL_URL, json={"query": meta_query, "variables": {"seriesId": int(series_id)}})
-        except ProxyError:
-             raise ScraperError("Scraping Proxy Denied Access (403) during GraphQL Meta fetch.", code="PX_403")
+        except RequestsError as e:
+            logger.error(f"[Kakao] Request Error (Potential Proxy): {e}")
+            raise ScraperError("Scraping Proxy Denied Access (403). Check bandwidth or IP Whitelist in Vess Dashboard.", code="PX_403")
              
         if res_meta.status_code == 200:
             meta = res_meta.json().get('data', {}).get('contentHomeOverview', {}).get('content', {})

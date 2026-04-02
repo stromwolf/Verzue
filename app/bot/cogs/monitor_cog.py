@@ -100,8 +100,13 @@ class SystemMonitorCog(commands.Cog):
 
             # 4. Final Action: Edit or Create
             if msg:
-                await msg.edit(embed=embed)
-            else:
+                try:
+                    await msg.edit(embed=embed)
+                except (discord.NotFound, discord.HTTPException):
+                    logger.warning(f"⚠️ [SystemMonitor] Message {msg.id} became invalid during edit. Re-creating.")
+                    msg = None
+
+            if not msg:
                 # Create new message if no existing one found
                 new_msg = await channel.send(embed=embed)
                 await self.redis.client.set(self.REDIS_MSG_KEY, str(new_msg.id))

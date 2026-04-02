@@ -9,7 +9,7 @@ import random
 import threading
 import struct
 from bs4 import BeautifulSoup
-from curl_cffi.requests import AsyncSession, ProxyError
+from curl_cffi.requests import AsyncSession, RequestsError
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError, MechaException
@@ -118,8 +118,8 @@ class PiccomaProvider(BaseProvider):
             # Geo-block detection: Piccoma shows a short page when accessed from outside Japan
             if len(res.text) < 10000 and ("日本国内でのみ" in res.text or "only be used from Japan" in res.text):
                 raise ScraperError("Piccoma geo-blocked: This service can only be accessed from Japan. Use a Japan VPN or proxy.")
-        except ProxyError as e:
-            logger.error(f"[Piccoma] Proxy Error (403/Forbidden): {e}")
+        except RequestsError as e:
+            logger.error(f"[Piccoma] Request Error (Potential Proxy): {e}")
             raise ScraperError("Scraping Proxy Denied Access (403). Check bandwidth or IP Whitelist in Vess Dashboard.", code="PX_403")
         except Exception as e:
             if "ScraperError" in type(e).__name__: raise

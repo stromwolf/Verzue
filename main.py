@@ -42,6 +42,7 @@ async def main():
                 if proc.is_running() and "python" in proc.name().lower():
                     logger.critical(f"🛑 CRITICAL: Another instance (PID {old_pid}) is already running!")
                     logger.info("Please kill the existing process or use 'python main.py --force'")
+                    logger.info("Windows Command: taskkill /F /IM python.exe /T")
                     sys.exit(1)
         except (ValueError, psutil.NoSuchProcess):
             pass # Stale PID, safe to overwrite
@@ -90,9 +91,11 @@ async def main():
     
     # 3. Init Helper Bot
     helper_bot = None
-    if Settings.HELPER_TOKEN:
+    if Settings.HELPER_TOKEN and Settings.HELPER_TOKEN != Settings.DISCORD_TOKEN:
         logger.info("🤖 Starting Secondary Helper Bot (Slash Commands)...")
         helper_bot = HelperBot(token=Settings.HELPER_TOKEN, main_bot=bot)
+    elif Settings.HELPER_TOKEN == Settings.DISCORD_TOKEN:
+        logger.warning("⚠️ Skipping HelperBot startup: HELPER_TOKEN is identical to DISCORD_TOKEN. (Prevents interaction conflicts)")
 
     try:
         tasks = [bot.start_bot()]

@@ -126,43 +126,30 @@ class CookieStatusCog(commands.Cog):
                             session = await self.redis.get_session(p_name, aids[0])
                     
                     status_emoji = "🔴 Uh Oh"
-                    expiry_text = "No active session found in vault."
+                    details_text = "> Status: No active session found."
                     
                     if session and session.get("cookies"):
+                        last_refreshed = session.get("last_ritual_at") or session.get("updated_at") or time.time()
                         expiry_ts = self._get_earliest_expiry(session["cookies"])
+                        
                         if expiry_ts:
                             now = time.time()
                             days_left = (expiry_ts - now) / 86400
-                            
-                            dt_obj = datetime.fromtimestamp(expiry_ts)
-                            # Formatting: "29th April"
-                            day = dt_obj.day
-                            suffix = 'th' if 11 <= day <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
-                            date_str = dt_obj.strftime(f"{day}{suffix} %B")
-                            
-                            if days_left > 7:
-                                status_emoji = "🟢 Good"
-                                expiry_text = f"Will expire at {date_str}."
-                            elif days_left > 0:
-                                status_emoji = "🟠 Okay"
-                                expiry_text = f"Will expire soon at {date_str}."
-                            else:
-                                status_emoji = "🟠 Uh Oh"
-                                expiry_text = "Has expired."
+                            status_emoji = "🟢 Good" if days_left > 7 else ("🟠 Okay" if days_left > 0 else "🟠 Uh Oh")
+                            details_text = f"> Last Renewed: <t:{int(last_refreshed)}:F>\n> Expiry: <t:{int(expiry_ts)}:F>"
                         else:
                             # 🟢 S-GRADE: Handle session with cookies but NO expiry (session cookies)
                             status_emoji = "🟢 Good"
-                            expiry_text = "Session cookies active (No fixed expiry)."
+                            # For session cookies, we show a 'Service-level' expiry (usually 24h for the next check)
+                            projected_expiry = last_refreshed + 86400 
+                            details_text = f"> Last Renewed: <t:{int(last_refreshed)}:F>\n> Expiry: <t:{int(projected_expiry)}:F>"
                         
                         # Override if status is explicitly EXPIRED
                         if session.get("status") == "EXPIRED":
                             status_emoji = "🟠 Uh Oh"
-                            expiry_text = "Session marked as Expired/Blocked."
-                    elif session:
-                         status_emoji = "🟠 Uh Oh"
-                         expiry_text = "Session exists but has no cookies."
-
-                    statuses.append(f"{idx}. {p_name.capitalize()} - {status_emoji}\n- {expiry_text}")
+                            details_text = f"> Status: Expired/Blocked\n> Last Action: <t:{int(last_refreshed)}:R>"
+                    
+                    statuses.append(f"{idx}. {p_name.capitalize()} - {status_emoji}\n{details_text}")
 
                 # 2. Build V2 Component Payload
                 inner = []

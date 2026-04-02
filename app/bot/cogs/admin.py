@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 
 from config.settings import Settings
+from app.services.login_service import LoginService
 
 logger = logging.getLogger("AdminCog")
 PID_FILE = Path("bot.pid")
@@ -18,6 +19,7 @@ PID_FILE = Path("bot.pid")
 class AdminCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.login_service = LoginService()
 
     async def cog_check(self, ctx):
         """
@@ -181,6 +183,93 @@ class AdminCog(commands.Cog):
             import traceback
             logger.error(f"Metadata Test Failed: {e}\n{traceback.format_exc()}")
             await msg.edit(content=f"❌ **Metadata Test Failed:**\n`{e}`")
+
+    # --- 🟢 [NEW] AUTOMATED ACCOUNT MANAGEMENT (FOR TESTING BOT) ---
+
+    @app_commands.command(name="add-account", description="[Admin] Register account credentials for automated headless login.")
+    @app_commands.describe(
+        platform="The platform (e.g. piccoma, mecha)",
+        email="Account email/username",
+        password="Account password",
+        account_id="Optional: Target account ID (Default: primary)"
+    )
+    @app_commands.choices(platform=[
+        app_commands.Choice(name="Piccoma", value="piccoma"),
+        app_commands.Choice(name="Mecha Comic", value="mecha"),
+    ])
+    async def add_account(self, interaction: discord.Interaction, platform: str, email: str, password: str, account_id: str = "primary"):
+        """Register credentials for the automated cookie recovery system."""
+        # Standard Cog interaction_check handles security and deferral automatically.
+        
+        success = await self.login_service.save_credentials(platform, email, password, account_id)
+        if success:
+            await interaction.followup.send(f"✅ **Account Registered:** Credentials for **{platform}** ({email}) saved for automated fallback.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ **Error:** Failed to save credentials. Check logs.", ephemeral=True)
+
+    @app_commands.command(name="force-refresh", description="[Admin] Manually trigger the automated headless login to refresh cookies.")
+    @app_commands.describe(
+        platform="The platform to refresh",
+        account_id="Optional: Target account ID (Default: primary)"
+    )
+    @app_commands.choices(platform=[
+        app_commands.Choice(name="Piccoma", value="piccoma"),
+        app_commands.Choice(name="Mecha Comic", value="mecha"),
+    ])
+    async def force_refresh(self, interaction: discord.Interaction, platform: str, account_id: str = "primary"):
+        """Manually trigger the headless login flow."""
+        # Standard Cog interaction_check handles security and deferral automatically.
+        
+        await interaction.followup.send(f"🔄 **Refresh Initiated:** Attempting headless login for **{platform}**...", ephemeral=True)
+        
+        success = await self.login_service.auto_login(platform, account_id)
+        if success:
+            await interaction.followup.send(f"✅ **Refresh Successful:** Cookies for **{platform}** have been updated automatically.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ **Refresh Failed:** Automated login for **{platform}** could not be completed. Check logs.", ephemeral=True)
+
+    @app_commands.command(name="list-sessions", description="[Admin] List all sessions and their current status for a platform.")
+    @app_commands.describe(platform="The platform to list")
+    @app_commands.choices(platform=[
+        app_commands.Choice(name="Piccoma", value="piccoma"),
+        app_commands.Choice(name="Mecha Comic", value="mecha"),
+        app_commands.Choice(name="Jumptoon", value="jumptoon"),
+    ])
+    async def list_sessions(self, interaction: discord.Interaction, platform: str):
+        """Debug helper to view active sessions in Redis."""
+        # Standard Cog interaction_check handles security and deferral automatically.
+        
+        from app.services.redis_manager import RedisManager
+        try:
+            aids = await RedisManager().list_sessions(platform)
+            if not aids:
+                return await interaction.followup.send(f"ℹ️ No sessions found for **{platform}**.", ephemeral=True)
+            
+            embed = discord.Embed(title=f"📋 Sessions: {platform.capitalize()}", color=0x3498db)
+            for aid in sorted(aids):
+                session = await RedisManager().get_session(platform, aid)
+                if not session: continue
+                
+                status = session.get("status", "UNKNOWN")
+                cookies_count = len(session.get("cookies", []))
+                reason = session.get("error_reason", "None")
+                
+                status_emoji = "🟢" if status == "HEALTHY" else "🔴"
+                val = f"**Status:** {status_emoji} `{status}`\n**Cookies:** `{cookies_count}`\n**Reason:** *{reason}*"
+                embed.add_field(name=f"👤 ID: {aid}", value=val, inline=False)
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Security Check for Slash Commands in this cog with automatic deferral."""
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+            
+        if not Settings.ALLOWED_IDS:
+            return True
+        return interaction.user.id in Settings.ALLOWED_IDS or interaction.user.id == 1216284053049704600
 
 async def setup(bot):
     await bot.add_cog(AdminCog(bot))

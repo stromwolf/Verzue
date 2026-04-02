@@ -4,6 +4,7 @@ import json
 import time
 from app.services.redis_manager import RedisManager
 from app.providers.manager import ProviderManager
+from app.services.login_service import LoginService
 
 logger = logging.getLogger("SessionHealer")
 
@@ -12,6 +13,7 @@ class SessionHealer:
         self.redis = RedisManager()
         self.session_service = session_service
         self.provider_manager = ProviderManager()
+        self.login_service = LoginService()
         self._running = False
 
     async def start(self):
@@ -79,8 +81,11 @@ class SessionHealer:
         logger.info(f"💉 Healing session: {platform}:{account_id}")
         
         try:
-            if platform in ["mecha"]:
-                await self._refresh_via_token(platform, account_id)
+            if platform in ["piccoma", "mecha"]:
+                # Headless S-Grade Healing: Attempt automated request-based login
+                success = await self.login_service.auto_login(platform, account_id)
+                if not success:
+                    logger.warning(f"🤷 Automated login failed for {platform}. No further healing strategy.")
             else:
                 logger.warning(f"🤷 No healing strategy for platform: {platform}")
             

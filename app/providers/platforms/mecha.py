@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
-from curl_cffi.requests import AsyncSession, ProxyError
+from curl_cffi.requests import AsyncSession, RequestsError
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError
@@ -132,8 +132,8 @@ class MechaProvider(BaseProvider):
             res = await auth_session.get(f"{base_series_url}?page=1", timeout=30)
             if res.status_code != 200: 
                 raise ScraperError(f"Mecha error: {res.status_code}", code="SC_002")
-        except ProxyError as e:
-            logger.error(f"[Mecha] Proxy Error (403/Forbidden): {e}")
+        except RequestsError as e:
+            logger.error(f"[Mecha] Request Error (Potential Proxy): {e}")
             raise ScraperError("Scraping Proxy Denied Access (403). Check bandwidth or IP Whitelist in Vess Dashboard.", code="PX_403")
         except Exception as e:
             if "ScraperError" in type(e).__name__: raise

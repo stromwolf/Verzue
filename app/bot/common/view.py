@@ -554,8 +554,8 @@ class UniversalDashboard:
                     route = discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{self.interaction.token}/messages/@original')
                     await self.bot.http.request(route, json=payload_data)
                 except discord.HTTPException as e:
-                    # 🟢 Error 50027 (Invalid Token), 10015 (Unknown Webhook), or 10062 (Unknown Interaction)
-                    if e.code in [50027, 10015, 10062] and getattr(self.interaction, 'message', None):
+                    # 🟢 Error 50027 (Invalid Token), 10015 (Unknown Webhook), 10062 (Unknown Interaction), or 10008 (Unknown Message)
+                    if e.code in [50027, 10015, 10062, 10008] and getattr(self.interaction, 'message', None):
                         # Fallback Route: Standard Channel Message Edit (Never expires!)
                         route = discord.http.Route(
                             'PATCH', 

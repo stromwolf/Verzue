@@ -10,7 +10,7 @@ import random
 import base64
 from bs4 import BeautifulSoup
 from curl_cffi import requests as curl_requests
-from curl_cffi.requests import ProxyError
+from curl_cffi.requests import AsyncSession, RequestsError
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError
@@ -96,8 +96,8 @@ class JumptoonProvider(BaseProvider):
                 
             if res.status_code != 200:
                 raise ScraperError(f"Failed to access Jumptoon: HTTP {res.status_code} on {fetch_url}")
-        except ProxyError as e:
-            logger.error(f"[Jumptoon] Proxy Error (403): {e}")
+        except RequestsError as e:
+            logger.error(f"[Jumptoon] Request Error (Potential Proxy): {e}")
             raise ScraperError("Scraping Proxy Denied Access (403). Check bandwidth or IP Whitelist in Vess Dashboard.", code="PX_403")
         except Exception as e:
             if "ScraperError" in type(e).__name__: raise

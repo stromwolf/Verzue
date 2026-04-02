@@ -10,6 +10,7 @@ from app.services.redis_manager import RedisManager
 from app.services.session_service import SessionService
 from app.core.events import EventBus
 from app.services.gdrive.sync_service import sync_group_folder_name
+from app.services.login_service import LoginService
 
 import io
 import json
@@ -28,17 +29,19 @@ class HelperSlashCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot # This is the HelperBot instance
         self.main_bot = bot.main_bot
+        self.login_service = LoginService()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """Global check to ensure only the owner or allowed CDN users can use these."""
+        """Global check for access control with automatic deferral."""
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+            
         is_owner = interaction.user.id == 1216284053049704600
         is_allowed = interaction.user.id in Settings.CDN_ALLOWED_USERS
         if not (is_owner or is_allowed):
             msg = "❌ **Access Denied.** You are not authorized to use admin commands."
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True)
+            # Since we always defer now, we always use followup
+            await interaction.followup.send(msg, ephemeral=True)
             return False
         return True
 
@@ -784,9 +787,7 @@ class HelperSlashCog(commands.Cog):
         cookies_file: discord.Attachment | None = None,
         account_id: str = "primary"
     ):
-        await interaction.response.defer(ephemeral=True)
-        if not await self.interaction_check(interaction):
-            return
+        # Security check and deferral handled automatically by Cog-level interaction_check.
         
         target_account_id = account_id.strip().lower()
         if not target_account_id: target_account_id = "primary"
@@ -824,22 +825,70 @@ class HelperSlashCog(commands.Cog):
             service = SessionService()
             await service.update_session_cookies(platform, target_account_id, cookies)
             
+            # --- ✅ New: Save as file if not exists (for persistence) ---
+            try:
+                # We also save to the local file system as a backup/persistence layer
+                dir_path = os.path.join(os.getcwd(), "data", "secrets", platform)
+                os.makedirs(dir_path, exist_ok=True)
+                with open(os.path.join(dir_path, "cookies.json"), "w") as f:
+                    json.dump(cookies, f, indent=4)
+            except Exception as e:
+                logger.error(f"Failed to sync cookies to disk: {e}")
+
             embed = discord.Embed(
                 title="✅ Cookies Updated",
-                description=(
-                    f"**Platform:** `{platform}`\n"
-                    f"**Account ID:** `{target_account_id}`\n"
-                    f"**Cookies Added:** `{len(cookies)}` count\n\n"
-                    f"The session has been marked as `HEALTHY` and is ready for use."
-                ),
+                description=f"Successfully updated cookies for **{platform}** (Account: `{target_account_id}`).",
                 color=0x2ecc71
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
             logger.info(f"[HelperCogs] Manual cookie update for {platform}:{target_account_id} by {interaction.user}")
             
         except Exception as e:
-            logger.error(f"Failed to update cookies: {e}")
-            await interaction.followup.send(f"❌ Failed to update storage: `{e}`", ephemeral=True)
+            logger.error(f"Manual cookie update failed: {e}")
+            await interaction.followup.send(f"❌ Failed to update cookies: `{e}`", ephemeral=True)
+
+    # --- 12. AUTOMATED ACCOUNT MANAGEMENT ---
+
+    @app_commands.command(name="add-account", description="[Admin] Register account credentials for automated headless login.")
+    @app_commands.describe(
+        platform="The platform (e.g. piccoma, mecha)",
+        email="Account email/username",
+        password="Account password",
+        account_id="Optional: Target account ID (Default: primary)"
+    )
+    @app_commands.choices(platform=[
+        app_commands.Choice(name="Piccoma", value="piccoma"),
+        app_commands.Choice(name="Mecha Comic", value="mecha"),
+    ])
+    async def add_account(self, interaction: discord.Interaction, platform: str, email: str, password: str, account_id: str = "primary"):
+        # Security check and deferral handled automatically by Cog-level interaction_check.
+        
+        success = await self.login_service.save_credentials(platform, email, password, account_id)
+        if success:
+            await interaction.followup.send(f"✅ **Account Registered:** Credentials for **{platform}** ({email}) saved for automated fallback.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ **Error:** Failed to save credentials. Check logs.", ephemeral=True)
+
+    @app_commands.command(name="force-refresh", description="[Admin] Manually trigger the automated headless login to refresh cookies.")
+    @app_commands.describe(
+        platform="The platform to refresh",
+        account_id="Optional: Target account ID (Default: primary)"
+    )
+    @app_commands.choices(platform=[
+        app_commands.Choice(name="Piccoma", value="piccoma"),
+        app_commands.Choice(name="Mecha Comic", value="mecha"),
+    ])
+    async def force_refresh(self, interaction: discord.Interaction, platform: str, account_id: str = "primary"):
+        """Manually trigger the headless login flow."""
+        # Security check and deferral handled automatically by Cog-level interaction_check.
+        
+        await interaction.followup.send(f"🔄 **Refresh Initiated:** Attempting headless login for **{platform}**...", ephemeral=True)
+        
+        success = await self.login_service.auto_login(platform, account_id)
+        if success:
+            await interaction.followup.send(f"✅ **Refresh Successful:** Cookies for **{platform}** have been updated automatically.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ **Refresh Failed:** Automated login for **{platform}** could not be completed. Check logs.", ephemeral=True)
 
 class GroupRemovalConfirmationView(discord.ui.View):
     def __init__(self, group_name, requester):

@@ -3,7 +3,7 @@ import json
 import logging
 import asyncio
 import random
-from curl_cffi.requests import AsyncSession, ProxyError
+from curl_cffi.requests import AsyncSession, RequestsError
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError
@@ -50,11 +50,13 @@ class KuaikanProvider(BaseProvider):
         series_id = match.group(1)
         
         auth_session = await self._get_authenticated_session()
+        api_url = f"https://api.kuaikanmanhua.com/v1/topics/{series_id}"
         try:
             res = await auth_session.get(api_url, timeout=15)
             if res.status_code != 200: raise ScraperError(f"Kuaikan API fail: {res.status_code}")
-        except ProxyError:
-            raise ScraperError("Scraping Proxy Denied Access (403) during Kuaikan fetch.", code="PX_403")
+        except RequestsError as e:
+            logger.error(f"[Kuaikan] Request Error (Potential Proxy): {e}")
+            raise ScraperError("Scraping Proxy Denied Access (403). Check bandwidth or IP Whitelist in Vess Dashboard.", code="PX_403")
         except Exception as e:
             if "ScraperError" in type(e).__name__: raise
             raise ScraperError(f"Request failed: {e}")
