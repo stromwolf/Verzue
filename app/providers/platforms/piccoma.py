@@ -547,14 +547,31 @@ class PiccomaProvider(BaseProvider):
             )
             post_res = await post_task
             
-            # 🟢 S-GRADE: 404 Recovery Heuristic
-            if post_res.status_code == 404 and is_waitfree:
-                alt_url = f"{base_url}/web/viewer/waitfree/use"
-                logger.info(f"[Piccoma] 🔄 Primary wait-free endpoint 404ed. Trying alternative: {alt_url}")
-                post_task = auth_session.post(
-                    alt_url, data=purchase_payload, headers=headers, timeout=15, allow_redirects=True
-                )
-                post_res = await post_task
+            # 🟢 S-GRADE: 404 Recovery & Discovery Heuristic
+            if post_res.status_code == 404:
+                # 🧩 TIER 1: Log diagnostic details for the failure
+                logger.debug(f"[Piccoma] Primary endpoint 404. Body: {post_res.text[:200]}")
+                
+                # 🧩 TIER 2: Automated Retry with known alternative endpoints
+                discovery_endpoints = [
+                    f"{base_url}/web/viewer/waitfree/use",
+                    f"{base_url}/web/episode/use/waitfree",
+                    f"{base_url}/web/viewer/use/waitfree",
+                    f"{base_url}/web/viewer/use_waitfree"
+                ] if is_waitfree else [f"{base_url}/web/episode/use/purchase"]
+                
+                for alt_url in discovery_endpoints:
+                    logger.info(f"[Piccoma] 🔄 Retrying alternative endpoint: {alt_url}")
+                    try:
+                        p_retry = auth_session.post(alt_url, data=purchase_payload, headers=headers, timeout=15)
+                        post_res = await p_retry
+                        if post_res.status_code in [200, 302]:
+                            logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url}")
+                            break
+                        else:
+                            logger.debug(f"[Piccoma] Alternative {alt_url} failed with {post_res.status_code}")
+                    except Exception as alt_e:
+                        logger.debug(f"[Piccoma] Error hitting {alt_url}: {alt_e}")
             
             # 7. Verification Loop
             if post_res.status_code in [200, 302]:
