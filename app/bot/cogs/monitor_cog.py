@@ -84,6 +84,10 @@ class SystemMonitorCog(commands.Cog):
                 try:
                     # Attempt to fetch existing message from Redis ID
                     msg = await channel.fetch_message(int(msg_id))
+                    # 🟢 S-GRADE: Ownership validation (Prevent editing other bots' messages)
+                    if msg.author.id != self.bot.user.id:
+                        logger.warning(f"⚠️ [SystemMonitor] Found message {msg.id} but it belongs to another bot ({msg.author.id}).")
+                        msg = None
                 except (discord.NotFound, discord.HTTPException, ValueError):
                     logger.warning(f"⚠️ [SystemMonitor] Persistent message {msg_id} not found in fetch.")
 

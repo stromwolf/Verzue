@@ -142,7 +142,7 @@ class MechaBot(commands.Bot):
                 admin_embed = embed.copy()
                 admin_embed.title = "🚨 [ADMIN AUDIT] Task Failed"
                 admin_embed.add_field(name="Group", value=f"`{task.scan_group}`", inline=True)
-                admin_embed.add_field(name="User ID", value=f"`{task.user_id}`", inline=True)
+                admin_embed.add_field(name="User ID", value=f"`{task.requester_id}`", inline=True)
                 await admin_channel.send(embed=admin_embed)
 
         except Exception as e:

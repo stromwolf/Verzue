@@ -272,7 +272,7 @@ class PiccomaProvider(BaseProvider):
 
     async def scrape_chapter(self, task, output_dir: str):
         """S+ Refinement: Stateless and Heuristic Extraction."""
-        match = re.search(r'/web/viewer/(\d+)/(\d+)', task.url)
+        match = re.search(r'/web/viewer/(?:s/)?(\d+)/(\d+)', task.url)
         if not match: raise ScraperError("Invalid Piccoma Viewer URL")
         
         series_id, chapter_id = match.groups()
@@ -504,15 +504,18 @@ class PiccomaProvider(BaseProvider):
             headers['X-Hash-Code'] = sec_hash
             
             # 4. Identify Access Type (Wait-Free vs Coins)
-            # We look for the 'Read for 0 yen' button (btn-waitfree) on the episodes page/modal
-            # or check if the specific episode in its list is 'Wait-until-free'
-            is_waitfree = bool(soup.select_one('.btn-waitfree, .PCM-btn-waitfree'))
+            # 🟢 S-GRADE: Precision detection - Check the specific episode instead of global page status
+            is_waitfree = False
+            ep_item = soup.select_one(f'a[data-episode_id="{episode_id}"]')
+            
+            if ep_item:
+                # Check for waitfree indicators in the list item (icon or specific class)
+                waitfree_indicator = ep_item.select_one('.PCM-epList_status_waitfree, .PCM-icon_waitfree, .PCM-icon_clock')
+                is_waitfree = bool(waitfree_indicator) or "待てば¥0" in ep_item.get_text() or "待てば" in ep_item.get_text()
+            
             if not is_waitfree:
-                # Extra check: Look for episode specifically in the list
-                ep_item = soup.select_one(f'a[data-episode_id="{episode_id}"]')
-                if ep_item:
-                    # In some layouts, the waitfree status is an icon or text inside the list item
-                    is_waitfree = "待てば¥0" in ep_item.get_text() or "待てば" in ep_item.get_text()
+                # Fallback: Check for the button globally if it's a single-episode context or modal
+                is_waitfree = bool(soup.select_one('.btn-waitfree, .PCM-btn-waitfree'))
             
             # 5. Build Final Payload and Endpoint
             if is_waitfree:
@@ -543,6 +546,15 @@ class PiccomaProvider(BaseProvider):
                 allow_redirects=True
             )
             post_res = await post_task
+            
+            # 🟢 S-GRADE: 404 Recovery Heuristic
+            if post_res.status_code == 404 and is_waitfree:
+                alt_url = f"{base_url}/web/viewer/waitfree/use"
+                logger.info(f"[Piccoma] 🔄 Primary wait-free endpoint 404ed. Trying alternative: {alt_url}")
+                post_task = auth_session.post(
+                    alt_url, data=purchase_payload, headers=headers, timeout=15, allow_redirects=True
+                )
+                post_res = await post_task
             
             # 7. Verification Loop
             if post_res.status_code in [200, 302]:
