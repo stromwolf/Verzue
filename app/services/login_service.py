@@ -46,25 +46,42 @@ class LoginService:
             return False
 
     async def auto_login(self, platform: str, account_id: str = "primary"):
-        """Attempts to log in and refresh cookies for the given platform."""
-        logger.info(f"🔑 Attempting automated login for {platform}:{account_id}...")
-        
+        """Attempts to log in and refresh cookies with a 3-attempt retry bridge."""
         creds = await self.get_credentials(platform, account_id)
         if not creds:
             logger.warning(f"⚠️ No credentials found for {platform}:{account_id}. Automated login skipped.")
             return False
 
-        try:
-            if platform == "piccoma":
-                return await self._login_piccoma(creds)
-            elif platform == "mecha":
-                return await self._login_mecha(creds)
-            else:
-                logger.warning(f"🤷 No automated login implementation for platform: {platform}")
-                return False
-        except Exception as e:
-            logger.error(f"❌ Automated login failed for {platform}: {e}")
-            return False
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"🔑 Attempting automated login for {platform}:{account_id} (Attempt {attempt}/{max_retries})...")
+                
+                if platform == "piccoma":
+                    success = await self._login_piccoma(creds)
+                elif platform == "mecha":
+                    success = await self._login_mecha(creds)
+                else:
+                    logger.warning(f"🤷 No implementation for platform: {platform}")
+                    return False
+
+                if success:
+                    return True
+                
+                # If we get here, the function returned False (e.g. bad password), don't retry logic errors
+                logger.warning(f"⚠️ Login attempt {attempt} failed (Logic Error). Retrying...")
+
+            except Exception as e:
+                # This catches the (56) CONNECT tunnel failed error
+                logger.error(f"❌ Attempt {attempt} failed with System/Proxy Error: {e}")
+                if attempt < max_retries:
+                    wait_time = attempt * 2 # Exponential backoff
+                    logger.info(f"⏳ Waiting {wait_time}s before next retry...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.critical(f"💀 All {max_retries} attempts failed for {platform}.")
+        
+        return False
 
     async def _login_piccoma(self, creds: dict):
         """Headless Piccoma login using curl_cffi."""
@@ -75,7 +92,9 @@ class LoginService:
         base_url = "https://piccoma.com"
         login_page_url = f"{base_url}/web/acc/email/signin"
         
-        async with AsyncSession(impersonate="chrome120", proxy=Settings.get_proxy()) as session:
+        proxy_url = Settings.get_proxy()
+        proxies = {"http": proxy_url, "https": proxy_url}
+        async with AsyncSession(impersonate="chrome120", proxies=proxies) as session:
             # 🟢 Stability Patch: Tiny warm-up delay for proxy tunnel
             await asyncio.sleep(1.0)
             
@@ -157,7 +176,9 @@ class LoginService:
         base_url = "https://mechacomic.jp"
         login_page_url = f"{base_url}/session/input"
         
-        async with AsyncSession(impersonate="chrome120", proxy=Settings.get_proxy()) as session:
+        proxy_url = Settings.get_proxy()
+        proxies = {"http": proxy_url, "https": proxy_url}
+        async with AsyncSession(impersonate="chrome120", proxies=proxies) as session:
             # 🟢 Stability Patch: Tiny warm-up delay for proxy tunnel
             await asyncio.sleep(1.0)
             
