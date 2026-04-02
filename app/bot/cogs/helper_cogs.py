@@ -1,13 +1,14 @@
 import discord
 import logging
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from discord import app_commands
 from discord.ext import commands
 from config.settings import Settings
 from app.services.group_manager import load_group, add_subscription, rename_group_profile
 from app.services.redis_manager import RedisManager
 from app.services.session_service import SessionService
+from app.core.events import EventBus
 from app.services.gdrive.sync_service import sync_group_folder_name
 
 import io
@@ -597,13 +598,16 @@ class HelperSlashCog(commands.Cog):
                 "channel_id": interaction.channel.id,
                 "last_known_chapter_id": str(chapter_list[-1]['id']) if chapter_list else "0",
                 "release_day": utc_day,
-                "release_time": utc_time
+                "release_time": utc_time,
+                "added_at": datetime.now(timezone.utc).isoformat(),
+                "added_by": interaction.user.id
             }
             
             # 5. Check if update vs new
             is_update = any(s["series_id"] == series_id for s in load_group(group_name)["subscriptions"])
             
             add_subscription(group_name, sub)
+            await EventBus.emit("subscription_added", group_name, sub)
             
             action_str = "Updated" if is_update else "Added"
             embed = discord.Embed(

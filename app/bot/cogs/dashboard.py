@@ -13,6 +13,7 @@ import json
 import random
 from typing import TYPE_CHECKING, List, Dict, Any, Optional
 from app.core.exceptions import MechaException
+from app.core.events import EventBus
 from config.settings import Settings
 from app.models.chapter import TaskStatus
 from app.services.group_manager import load_group, get_group_emoji
@@ -1443,8 +1444,8 @@ class DashboardCog(commands.Cog):
                         "type": 1,
                         "components": [
                             {"type": 2, "style": 3, "label": "Yes", "custom_id": yes_id},
-                            {"type": 2, "style": 2, "label": "Back to Dashboard", "custom_id": "v2Dash_Home"},
-                            {"type": 2, "style": 2, "label": "Cancel", "custom_id": f"v2_btn_sub_cancel_{platform}"}
+                            {"type": 2, "style": 2, "label": "No (Use another channel)", "custom_id": no_id},
+                            {"type": 2, "style": 2, "label": "Back to Dashboard", "custom_id": "v2Dash_Home"}
                         ]
                     }
                 ]
@@ -1853,6 +1854,7 @@ class DashboardCog(commands.Cog):
                 "added_by": interaction.user.id
             }
             add_subscription(group_name, sub)
+            await EventBus.emit("subscription_added", group_name, sub)
 
             # 5. Success UI
             success_payload = {

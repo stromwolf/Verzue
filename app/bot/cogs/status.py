@@ -4,12 +4,16 @@ import asyncio
 import logging
 import time
 import json
-from datetime import datetime
+from datetime import datetime, time as datetime_time, timezone, timedelta
 from app.services.session_service import SessionService
 from app.services.redis_manager import RedisManager
 from app.core.events import EventBus
 
 logger = logging.getLogger("CookieStatus")
+
+# Define IST (UTC+5:30) for the daily 8:00 PM ping
+IST = timezone(timedelta(hours=5, minutes=30))
+DAILY_PING_TIME = datetime_time(hour=20, minute=0, tzinfo=IST)
 
 class CookieStatusCog(commands.Cog):
     def __init__(self, bot):
@@ -24,15 +28,18 @@ class CookieStatusCog(commands.Cog):
         self.GUILD_ID = 1436068940584452109
         self.CHANNEL_ID = 1488185294392922242
         self.REDIS_MSG_KEY = "verzue:status:cookies_msg_id"
+        self.PING_ROLE_ID = 1488447662708625408
         
-        # Start Heartbeat
+        # Start loops
         self.dashboard_loop.start()
+        self.daily_ping_loop.start()
         
         # Subscribe to Reactive Events
         EventBus.subscribe("session_status_changed", self.on_session_change)
 
     def cog_unload(self):
         self.dashboard_loop.cancel()
+        self.daily_ping_loop.cancel()
 
     async def on_session_change(self, platform: str):
         """Reactive trigger when a session is failed or updated."""
@@ -49,6 +56,33 @@ class CookieStatusCog(commands.Cog):
 
     @dashboard_loop.before_loop
     async def before_dashboard_loop(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(time=DAILY_PING_TIME)
+    async def daily_ping_loop(self):
+        """Daily 8:00 PM reminder to check cookie health."""
+        logger.info(f"🔔 [StatusUI] Daily cookie health check ping triggered at 20:00 IST.")
+        try:
+            channel = self.bot.get_channel(self.CHANNEL_ID)
+            if not channel:
+                channel = await self.bot.fetch_channel(self.CHANNEL_ID)
+            
+            if channel:
+                message = f"🔔 <@&{self.PING_ROLE_ID}> — **Daily Cookie Health Check!**\nPlease check the cookies if they're available or not."
+                await channel.send(content=message)
+                logger.info("✅ [StatusUI] Daily ping sent successfully.")
+            else:
+                logger.error(f"❌ [StatusUI] Could not find channel {self.CHANNEL_ID} for daily ping.")
+        except Exception as e:
+            logger.error(f"❌ [StatusUI] Failed to send daily ping: {e}")
+
+    # Re-wrap the loop with the correct time parameter
+    @daily_ping_loop.error
+    async def on_daily_ping_error(self, error):
+        logger.error(f"❌ [StatusUI] Daily ping loop error: {error}")
+
+    @daily_ping_loop.before_loop
+    async def before_daily_ping_loop(self):
         await self.bot.wait_until_ready()
 
     async def update_dashboard(self):

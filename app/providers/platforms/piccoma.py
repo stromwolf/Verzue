@@ -282,8 +282,8 @@ class PiccomaProvider(BaseProvider):
         # 1. Primary Extraction (Next.js Hydration Data)
         res = await auth_session.get(task.url)
         if res.status_code != 200:
-            # Attempt coin purchase for locked chapters
-            logger.info(f"[Piccoma] Chapter locked (HTTP {res.status_code}), attempting coin purchase for {chapter_id}")
+            # Attempt to unlock locked chapters (Coins or Wait-Free)
+            logger.info(f"[Piccoma] Chapter {chapter_id} locked (HTTP {res.status_code}), attempting fast purchase/unlock.")
             if await self.fast_purchase(task):
                 # Re-fetch after successful purchase
                 auth_session = await self._get_authenticated_session(domain)
@@ -462,21 +462,20 @@ class PiccomaProvider(BaseProvider):
         return chk
 
     async def fast_purchase(self, task) -> bool:
-        """Coin purchase via API - mirrors the browser 'BUY AT' button click."""
+        """
+        S+ Enhanced Purchase: Detect and handle both coin purchases and 'Free-to-Wait' triggers.
+        """
         match = re.search(r'/web/viewer/(?:s/)?(\d+)/(\d+)', task.url)
         if not match:
             logger.debug(f"[Piccoma] fast_purchase: Could not parse series/episode from URL: {task.url}")
             return False
         
-        # 🟢 S-GRADE: Slice with explicit cast to appease lint
-        s_base = str(match.group(1))
-        e_base = str(match.group(2))
-        series_id, episode_id = s_base, e_base
+        series_id, episode_id = match.groups()
         base_url, region, domain = self._get_context_from_url(task.url)
         auth_session = await self._get_authenticated_session(domain)
         
         try:
-            # 1. Fetch episode list page to get CSRF tokens & purchase form data
+            # 1. Load episode list page to extract CSRF tokens, identify access type, and get form data
             episode_page_url = f"{base_url}/web/product/{series_id}/episodes?etype=E"
             p_task = auth_session.get(episode_page_url, timeout=15)
             res = await p_task
@@ -486,7 +485,7 @@ class PiccomaProvider(BaseProvider):
             
             soup = BeautifulSoup(res.text, 'html.parser')
             
-            # 2. Extract CSRF token
+            # 2. Extract CSRF token and prepare headers
             headers = {
                 "Referer": episode_page_url,
                 "Origin": base_url,
@@ -497,82 +496,83 @@ class PiccomaProvider(BaseProvider):
             if csrf_meta:
                 headers['X-CSRF-Token'] = csrf_meta['content']
             
-            # 3. Build purchase payload
-            purchase_url = f"{base_url}/web/episode/purchase"
-            purchase_payload = {
-                "episodeId": episode_id,
-                "productId": series_id,
-            }
-            
-            # S-GRADE: Piccoma Security Hash Injection
+            # 3. Security Hash (S-Grade entropy)
             import hashlib
             seed_string = f"{episode_id}fh_SpJ#a4LuNa6t8"
             sec_hash = hashlib.sha256(seed_string.encode('utf-8')).hexdigest()
-            
-            # Additional layer: provide it in Headers just in case
             headers['X-Security-Hash'] = sec_hash
             headers['X-Hash-Code'] = sec_hash
             
-            # Look for purchase form in the page and extract hidden fields
-            purchase_form = soup.select_one('#js_purchaseForm, form[action*="purchase"], form[action*="episode"]')
-            hash_injected = False
+            # 4. Identify Access Type (Wait-Free vs Coins)
+            # We look for the 'Read for 0 yen' button (btn-waitfree) on the episodes page/modal
+            # or check if the specific episode in its list is 'Wait-until-free'
+            is_waitfree = bool(soup.select_one('.btn-waitfree, .PCM-btn-waitfree'))
+            if not is_waitfree:
+                # Extra check: Look for episode specifically in the list
+                ep_item = soup.select_one(f'a[data-episode_id="{episode_id}"]')
+                if ep_item:
+                    # In some layouts, the waitfree status is an icon or text inside the list item
+                    is_waitfree = "待てば¥0" in ep_item.get_text() or "待てば" in ep_item.get_text()
+            
+            # 5. Build Final Payload and Endpoint
+            if is_waitfree:
+                target_url = f"{base_url}/web/episode/waitfree/use"
+                logger.info(f"[Piccoma] ⏳ Detected 'Free to Wait' for episode {episode_id}. Using wait-free ticket.")
+            else:
+                target_url = f"{base_url}/web/episode/purchase"
+                logger.info(f"[Piccoma] 🪙 Detected coin purchase required for episode {episode_id}.")
+                
+            purchase_payload = {
+                "episodeId": episode_id,
+                "productId": series_id,
+                "hash": sec_hash,
+                "hashCode": sec_hash
+            }
+            
+            # Extract additional hidden fields from purchase form if available
+            purchase_form = soup.select_one('#js_purchaseForm, .js_purchaseForm, form[action*="purchase"]')
             if purchase_form:
                 for hidden in purchase_form.find_all('input', type='hidden'):
                     name = hidden.get('name')
-                    if name:
-                        val = hidden.get('value', '')
-                        # If field looks like a hash or is empty and requested by the page, inject our computed hash.
-                        if not val and ('hash' in name.lower() or 'code' in name.lower() or 'sec' in name.lower()):
-                            val = sec_hash
-                            hash_injected = True
-                        purchase_payload[name] = val
-                action = purchase_form.get('action')
-                if action:
-                    purchase_url = action if action.startswith('http') else f"{base_url}{action}"
+                    if name and name not in purchase_payload:
+                        purchase_payload[name] = hidden.get('value', '')
             
-            # Fallback if no specific field triggered it
-            if not hash_injected:
-                purchase_payload["hash"] = sec_hash
-                purchase_payload["hashCode"] = sec_hash
-            
-            # 4. POST purchase request
-            logger.info(f"[Piccoma] Sending coin purchase request for episode {episode_id} (series {series_id})")
+            # 6. POST purchase/usage request
             post_task = auth_session.post(
-                purchase_url, data=purchase_payload, headers=headers, timeout=15,
+                target_url, data=purchase_payload, headers=headers, timeout=15,
                 allow_redirects=True
             )
             post_res = await post_task
             
-            # 5. Verify success - check if we can now access the viewer
+            # 7. Verification Loop
             if post_res.status_code in [200, 302]:
-                # Try the scroll viewer URL format (from act files: /web/viewer/s/{sid}/{eid})
-                for viewer_path in [f"/web/viewer/s/{series_id}/{episode_id}", f"/web/viewer/{series_id}/{episode_id}"]:
-                    viewer_url = f"{base_url}{viewer_path}"
-                    v_task = auth_session.get(viewer_url, timeout=15)
-                    viewer_res = await v_task
-                    if viewer_res.status_code == 200:
-                        pdata = self._extract_pdata_heuristic(viewer_res.text)
+                # Try the viewer URL formats to verify access
+                viewer_paths = [f"/web/viewer/s/{series_id}/{episode_id}", f"/web/viewer/{series_id}/{episode_id}"]
+                for v_path in viewer_paths:
+                    v_url = f"{base_url}{v_path}"
+                    v_res = await auth_session.get(v_url, timeout=10)
+                    if v_res.status_code == 200:
+                        pdata = self._extract_pdata_heuristic(v_res.text)
                         if pdata:
-                            logger.info(f"[Piccoma] ✅ Coin purchase successful for episode {episode_id}")
+                            logger.info(f"[Piccoma] ✅ Access granted for episode {episode_id}")
                             await self.session_service.record_session_success("piccoma")
                             return True
                 
-                # Also check if JSON response indicates success
+                # Check JSON response for explicit success
                 try:
-                    resp_data = post_res.json()
-                    if resp_data.get('result') == 'ok' or resp_data.get('success'):
-                        logger.info(f"[Piccoma] ✅ Coin purchase confirmed via API response for episode {episode_id}")
-                        await self.session_service.record_session_success("piccoma")
+                    resp_json = post_res.json()
+                    if resp_json.get('result') == 'ok' or resp_json.get('success'):
+                        logger.info(f"[Piccoma] ✅ Purchase confirmed via JSON response for {episode_id}")
                         return True
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            
-            logger.warning(f"[Piccoma] Coin purchase failed for episode {episode_id} (HTTP {post_res.status_code})")
+                except: pass
+                
+            logger.warning(f"[Piccoma] Purchase/Usage failed for episode {episode_id} (HTTP {post_res.status_code})")
             return False
             
         except Exception as e:
-            logger.error(f"[Piccoma] Coin purchase error for episode {episode_id}: {e}")
+            logger.error(f"[Piccoma] Error in fast_purchase for episode {episode_id}: {e}")
             return False
+
 
     async def get_new_series_list(self) -> list[dict]:
         """Scrapes the 'New' series via the Theme API for Piccoma (JP)."""

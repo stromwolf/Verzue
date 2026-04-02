@@ -201,6 +201,16 @@ class MechaProvider(BaseProvider):
         genre_label = None
 
         series_id = base_series_url.split('/')[-1]
+        
+        # 🟢 S-GRADE: Ensure series is favorited for alerts (Mar 27 Request Integration)
+        try:
+            is_fav = soup.select_one("input.js-bt_favorite, button.js-bt_favorite")
+            if is_fav and "登録済み" not in is_fav.get_text() and "解除" not in is_fav.get("value", ""):
+                 logger.info(f"❤️ [Mecha] Automatically registering {title} for alerts...")
+                 await self.toggle_alert(series_id, enable=True, soup=soup)
+        except Exception as e:
+            logger.debug(f"[Mecha] Failed to auto-favorite {title}: {e}")
+
         return title, total_reported, all_chapters, image_url, str(series_id), release_day, release_time, status_label, genre_label
 
     async def fetch_more_chapters(self, url: str, total_pages: int, seen_ids: set, skip_pages: list = None):
@@ -477,3 +487,98 @@ class MechaProvider(BaseProvider):
         except Exception as e:
             logger.error(f"[Mecha] Error fetching new series: {e}")
             return []
+
+    async def get_alerts_list(self) -> list[dict]:
+        """
+        🟢 ALERTS INTEGRATION (Apr 2 Request)
+        Fetches the MechaComic alerts page and returns a list of updated series.
+        URL: https://mechacomic.jp/alerts?content=chapter&type=book
+        """
+        try:
+            auth_session = await self._get_authenticated_session()
+            url = f"{self.BASE_URL}/alerts?content=chapter&type=book"
+            res = await auth_session.get(url, timeout=20)
+            
+            if res.status_code != 200:
+                logger.error(f"❌ [Mecha] Failed to fetch alerts: {res.status_code}")
+                return []
+
+            soup = BeautifulSoup(res.text, 'html.parser')
+            updated_series = []
+            
+            items = soup.select('.p-bookList_item')
+            for item in items:
+                title_elem = item.select_one('.p-book_title a')
+                if not title_elem: continue
+                
+                title = title_elem.get_text(strip=True)
+                href = title_elem.get('href', '')
+                sid = href.split('/')[-1]
+                
+                arrival_day = item.select_one('.p-book_arrivalDay')
+                day_text = arrival_day.get_text(strip=True) if arrival_day else None
+                
+                update_info = item.select_one('.p-book_update')
+                notation = update_info.get_text(strip=True).replace("続話：", "") if update_info else None
+                
+                updated_series.append({
+                    "series_id": sid,
+                    "title": title,
+                    "url": urljoin(self.BASE_URL, href),
+                    "notation": notation,
+                    "arrival_day": day_text
+                })
+                
+            return updated_series
+        except Exception as e:
+            logger.error(f"❌ [Mecha] Alerts Fetch Error: {e}")
+            return []
+
+    async def toggle_alert(self, series_id: str, enable: bool = True, soup: BeautifulSoup = None):
+        """
+        Registers or unregisters a series for alerts (Favorites).
+        """
+        try:
+            auth_session = await self._get_authenticated_session()
+            if not soup:
+                res = await auth_session.get(f"{self.BASE_URL}/books/{series_id}")
+                soup = BeautifulSoup(res.text, 'html.parser')
+            
+            # Find the favorite form
+            # Mecha usually has a form with action="/favorites" or similar
+            # Check for authenticity_token
+            token_elem = soup.find("input", {"name": "authenticity_token"})
+            token = token_elem.get("value") if token_elem else None
+            
+            if not token:
+                logger.debug(f"[Mecha] Could not find CSRF token for favoriting {series_id}")
+                return False
+
+            # Selector for favorite toggle
+            # Note: This might vary, but /favorites is the standard RoR endpoint for Mecha
+            payload = {
+                "authenticity_token": token,
+                "book_id": series_id
+            }
+            
+            if enable:
+                action_url = f"{self.BASE_URL}/favorites"
+                method = "POST"
+            else:
+                action_url = f"{self.BASE_URL}/favorites/{series_id}"
+                method = "DELETE"
+                payload["_method"] = "delete"
+
+            headers = {"Referer": f"{self.BASE_URL}/books/{series_id}"}
+            
+            if method == "POST":
+                res = await auth_session.post(action_url, data=payload, headers=headers)
+            else:
+                res = await auth_session.post(action_url, data=payload, headers=headers) # RoR often uses POST with _method=delete
+                
+            success = res.status_code in [200, 302]
+            logger.debug(f"[Mecha] Toggle Favorite for {series_id} (enable={enable}): {res.status_code}")
+            return success
+        except Exception as e:
+            logger.error(f"[Mecha] Toggle alert error: {e}")
+            return False

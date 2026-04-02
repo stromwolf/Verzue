@@ -501,6 +501,8 @@ class UniversalDashboard:
             action_buttons = [{"type": 2, "style": 1, "label": "Select Chapters", "custom_id": f"btn_open_menu_{self.req_id}"}]
             if len(self.selected_indices) > 0:
                 action_buttons.append({"type": 2, "style": 3, "label": "Start", "custom_id": f"btn_start_{self.req_id}"})
+            
+            action_buttons.append({"type": 2, "style": 2, "label": "Cancel", "custom_id": f"btn_cancel_{self.req_id}"})
 
             inner_components.append({"type": 1, "components": action_buttons})
             inner_components.append({ "type": 10, "content": footer_text })

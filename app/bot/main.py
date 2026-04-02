@@ -53,6 +53,9 @@ class MechaBot(commands.Bot):
         # 3. Error Alerts
         EventBus.subscribe("task_failed", self.handle_task_failure)
 
+        # 4. Subscription Alerts
+        EventBus.subscribe("subscription_added", self.handle_subscription_added)
+
         # 4. Start UI Dispatcher
         from app.services.ui_manager import UIManager
         await UIManager().start()
@@ -144,6 +147,45 @@ class MechaBot(commands.Bot):
 
         except Exception as e:
             self.logger.error(f"Failed to send extraction error alert: {e}")
+
+    async def handle_subscription_added(self, group_name: str, sub: dict):
+        """Dispatches a notification to the central logs when a new subscription is added."""
+        try:
+            channel_id = Settings.SUBSCRIPTION_LOG_CHANNEL_ID
+            channel = self.get_channel(channel_id)
+            if not channel:
+                try: channel = await self.fetch_channel(channel_id)
+                except: return self.logger.error(f"Failed to fetch subscription log channel: {channel_id}")
+
+            title = sub.get("series_title", "Unknown")
+            url = sub.get("series_url", "#")
+            platform = sub.get("platform", "Unknown").capitalize()
+            target_channel_id = sub.get("channel_id")
+            user_id = sub.get("added_by")
+
+            embed = discord.Embed(
+                title="<a:done_subscription:1482425914456281108> New Subscription Added!",
+                description=(
+                    f"**Series:** [{title}]({url})\n"
+                    f"**Platform:** `{platform}`\n"
+                    f"**Group:** `{group_name}`\n"
+                    f"**Dashboard Channel:** <#{target_channel_id}>\n"
+                    f"**Added By:** <@{user_id}>"
+                ),
+                color=0x2ecc71,
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_footer(text=f"Series ID: {sub.get('series_id')}")
+            
+            content = ""
+            if "mecha" in sub.get("platform", "").lower():
+                content = "<@&1488447662708625408>" # Ping role for Mecha series
+                
+            await channel.send(content=content, embed=embed)
+            self.logger.info(f"📢 Notification sent: New subscription for '{title}' in {group_name}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to send subscription notification: {e}")
 
         except Exception as e:
             self.logger.error(f"Failed to send extraction error alert: {e}")

@@ -87,25 +87,66 @@ class AutoDownloadPoller:
 
         logger.debug(f"🚀 [AutoPoller] Checking {len(todays_targets)} high-frequency targets...")
         
-        # We process these sequentially but quickly to avoid overlapping loops
-        # and because we only expect a few titles per platform.
-        for group_name, sub in todays_targets:
+        # 🟢 BATCH MECHA CHECK (Apr 2 Integration)
+        # Separate Mecha from regular polling to use the Alerts Page optimization
+        mecha_targets = [t for t in todays_targets if t[1].get("platform", "").lower() == "mecha"]
+        other_targets = [t for t in todays_targets if t[1].get("platform", "").lower() != "mecha"]
+
+        # 1. Process Other Targets (Normal)
+        for group_name, sub in other_targets:
             try:
-                # Check Redis to see if we already found a new chapter for this series today
-                # to avoid hitting the scraper every 10 seconds if it's already done.
                 date_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
                 redis_key = f"verzue:poller:found:{sub['series_id']}:{date_str}"
-                
-                if await self.bot.redis_brain.client.get(redis_key):
-                    continue
+                if await self.bot.redis_brain.client.get(redis_key): continue
 
                 found = await self._check_single_sub(group_name, sub)
                 if found:
                     logger.info(f"✅ [AutoPoller] Found new chapter for {sub.get('series_title')} via high-freq poller.")
-                    # Mark as found for the rest of today
                     await self.bot.redis_brain.client.set(redis_key, "1", ex=86400)
             except Exception as e:
                 logger.error(f"❌ [AutoPoller] High-freq error for {sub.get('series_title')}: {e}")
+
+        # 2. Process Mecha Targets (Optimized via Alerts Page)
+        if mecha_targets:
+            await self._check_mecha_batch(mecha_targets)
+
+    async def _check_mecha_batch(self, targets: list):
+        """
+        🟢 S-GRADE: Mecha Alerts Optimization
+        Uses the alerts page to skip checking series that haven't updated.
+        """
+        try:
+            # Map of series_id -> (group_name, sub)
+            sub_map = {sub["series_id"]: (gn, sub) for gn, sub in targets}
+            
+            # Get the batch list from provider
+            provider = self.bot.task_queue.provider_manager.get_provider_for_url("https://mechacomic.jp")
+            alerts = await provider.get_alerts_list()
+            
+            if not alerts:
+                logger.debug("💤 [AutoPoller] No Mecha updates found in alerts page.")
+                return
+
+            # Check which of our targets are in the alerts list
+            # The alerts page only shows RECENT updates (usually today/yesterday)
+            updated_ids = {a["series_id"] for a in alerts}
+            
+            for sid, (gn, sub) in sub_map.items():
+                if sid in updated_ids:
+                    # Double check if we already processed this today
+                    date_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+                    redis_key = f"verzue:poller:found:{sid}:{date_str}"
+                    if await self.bot.redis_brain.client.get(redis_key): continue
+
+                    logger.info(f"🔔 [AutoPoller] Alert detected for Mecha series: {sub.get('series_title')}")
+                    found = await self._check_single_sub(gn, sub)
+                    if found:
+                        await self.bot.redis_brain.client.set(redis_key, "1", ex=86400)
+                else:
+                    logger.debug(f"🤫 [AutoPoller] Skipping Mecha series (No Alert): {sub.get('series_title')}")
+
+        except Exception as e:
+            logger.error(f"❌ [AutoPoller] Mecha Batch Error: {e}")
 
     @poll_loop.before_loop
     @high_freq_poll_loop.before_loop
@@ -141,6 +182,10 @@ class AutoDownloadPoller:
                 logger.info(f"💤 [AutoPoller] No subscriptions scheduled for {today_name}. Going back to sleep.")
                 return
 
+            # 🟢 BATCH MECHA CHECK (Daily Sweep)
+            mecha_targets = [t for t in todays_subs if t[1].get("platform", "").lower() == "mecha"]
+            other_targets = [t for t in todays_subs if t[1].get("platform", "").lower() != "mecha"]
+
             logger.info(f"🚀 [AutoPoller] {len(todays_subs)} subs scheduled for today. Starting concurrent check...")
 
             semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
@@ -151,10 +196,14 @@ class AutoDownloadPoller:
 
             tasks_list = [
                 check_with_semaphore(group_name, sub)
-                for group_name, sub in todays_subs
+                for group_name, sub in other_targets
             ]
 
             results = await asyncio.gather(*tasks_list, return_exceptions=True)
+            
+            # Process Mecha in batch separately
+            if mecha_targets:
+                await self._check_mecha_batch(mecha_targets)
 
             found_new = sum(1 for r in results if r is True)
             errors = sum(1 for r in results if isinstance(r, Exception))
