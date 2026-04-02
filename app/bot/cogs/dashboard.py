@@ -10,6 +10,7 @@ import math
 import time
 import datetime
 import json
+import random
 from typing import TYPE_CHECKING, List, Dict, Any, Optional
 from app.core.exceptions import MechaException
 from config.settings import Settings
@@ -202,7 +203,6 @@ class DashboardCog(commands.Cog):
 
     async def get_group_subs_list_payload(self, group_name: str, page: int = 0, platform_filter: str | None = None):
         """Generates a paginated, daily-grouped list of subscriptions with premium V2 layout."""
-        import datetime
         from app.services.group_manager import load_group, _clean_url
         group_data = load_group(group_name)
         subs = list(group_data.get("subscriptions", []))
@@ -357,7 +357,6 @@ class DashboardCog(commands.Cog):
 
     async def get_sub_info_payload(self, group_name: str, series_id: str):
         """Generates the metadata-rich 'Subscription Info' panel for a series."""
-        import datetime
         from app.services.group_manager import load_group, _clean_url
         group_data = load_group(group_name)
         subs = group_data.get("subscriptions", [])
@@ -1251,7 +1250,6 @@ class DashboardCog(commands.Cog):
                                     pass # Skip malformed range segments
                             else:
                                 # 🟢 S-GRADE: Match both integers (63) and decimals (63.1)
-                                import re
                                 if re.match(r'^\d+(\.\d+)?$', p):
                                     for idx, ch in enumerate(view.all_chapters):
                                         display_idx = str(ch.get('_display_idx', ''))
@@ -1341,7 +1339,6 @@ class DashboardCog(commands.Cog):
             # Jumptoon: /contents/JT00085 or /series/JT00085
             series_id = None
             if "jumptoon" in url.lower():
-                import re
                 match = re.search(r'/(?:contents|series)/([^/?#]+)', url)
                 if match: series_id = match.group(1)
             
@@ -1740,7 +1737,6 @@ class DashboardCog(commands.Cog):
             except: pass
 
         try:
-            import datetime
             from app.services.group_manager import add_subscription, is_series_subscribed_globally, get_title_override, get_series_by_channel
             
             # 1. Fetch Metadata (Fast Mode)
