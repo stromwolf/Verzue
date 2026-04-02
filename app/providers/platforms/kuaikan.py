@@ -3,7 +3,7 @@ import json
 import logging
 import asyncio
 import random
-from curl_cffi.requests import AsyncSession
+from curl_cffi.requests import AsyncSession, ProxyError
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError
@@ -50,10 +50,15 @@ class KuaikanProvider(BaseProvider):
         series_id = match.group(1)
         
         auth_session = await self._get_authenticated_session()
-        api_url = f"https://api.kuaikanmanhua.com/v1/topics/{series_id}"
-        
-        res = await auth_session.get(api_url, timeout=15)
-        if res.status_code != 200: raise ScraperError(f"Kuaikan API fail: {res.status_code}")
+        try:
+            res = await auth_session.get(api_url, timeout=15)
+            if res.status_code != 200: raise ScraperError(f"Kuaikan API fail: {res.status_code}")
+        except ProxyError:
+            raise ScraperError("Scraping Proxy Denied Access (403) during Kuaikan fetch.", code="PX_403")
+        except Exception as e:
+            if "ScraperError" in type(e).__name__: raise
+            raise ScraperError(f"Request failed: {e}")
+            
         await self.session_service.record_session_success("kuaikan")
         
         data = res.json()

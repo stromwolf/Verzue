@@ -5,7 +5,7 @@ import asyncio
 import random
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-from curl_cffi.requests import AsyncSession
+from curl_cffi.requests import AsyncSession, ProxyError
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError
@@ -61,8 +61,15 @@ class AcqqProvider(BaseProvider):
         auth_session = await self._get_authenticated_session()
         target_url = f"https://m.ac.qq.com/comic/index/id/{series_id}"
         
-        res = await auth_session.get(target_url, timeout=15)
-        if res.status_code != 200: raise ScraperError(f"Tencent metadata fail: {res.status_code}")
+        try:
+            res = await auth_session.get(target_url, timeout=15)
+            if res.status_code != 200: raise ScraperError(f"Tencent metadata fail: {res.status_code}")
+        except ProxyError:
+            raise ScraperError("Scraping Proxy Denied Access (403) during ACQQ fetch.", code="PX_403")
+        except Exception as e:
+            if "ScraperError" in type(e).__name__: raise
+            raise ScraperError(f"Request failed: {e}")
+            
         await self.session_service.record_session_success("acqq")
         
         soup = BeautifulSoup(res.text, 'html.parser')

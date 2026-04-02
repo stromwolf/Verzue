@@ -10,6 +10,7 @@ import random
 import base64
 from bs4 import BeautifulSoup
 from curl_cffi import requests as curl_requests
+from curl_cffi.requests import ProxyError
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError
@@ -87,14 +88,20 @@ class JumptoonProvider(BaseProvider):
         
         # 2. Page Fetch & Auth
         auth_session = await self._get_authenticated_session()
-        res = await auth_session.get(fetch_url, timeout=30, allow_redirects=True)
-        
-        if res.status_code in (301, 302, 303, 307, 308):
-            loc = res.headers.get("Location", "Unknown")
-            raise ScraperError(f"Auth Expired or Age Restricted accessing {fetch_url}. Redirected to {loc}")
-            
-        if res.status_code != 200:
-            raise ScraperError(f"Failed to access Jumptoon: HTTP {res.status_code} on {fetch_url}")
+        try:
+            res = await auth_session.get(fetch_url, timeout=30, allow_redirects=True)
+            if res.status_code in (301, 302, 303, 307, 308):
+                loc = res.headers.get("Location", "Unknown")
+                raise ScraperError(f"Auth Expired or Age Restricted accessing {fetch_url}. Redirected to {loc}")
+                
+            if res.status_code != 200:
+                raise ScraperError(f"Failed to access Jumptoon: HTTP {res.status_code} on {fetch_url}")
+        except ProxyError as e:
+            logger.error(f"[Jumptoon] Proxy Error (403): {e}")
+            raise ScraperError("Scraping Proxy Denied Access (403). Check bandwidth or IP Whitelist in Vess Dashboard.", code="PX_403")
+        except Exception as e:
+            if "ScraperError" in type(e).__name__: raise
+            raise ScraperError(f"Request failed: {e}")
         
         html_content = res.text
         clean_html = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), html_content)

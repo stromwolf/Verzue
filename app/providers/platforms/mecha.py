@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
-from curl_cffi.requests import AsyncSession
+from curl_cffi.requests import AsyncSession, ProxyError
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError
@@ -128,9 +128,17 @@ class MechaProvider(BaseProvider):
     async def get_series_info(self, url: str, fast: bool = False):
         auth_session = await self._get_authenticated_session()
         base_series_url = url.split('?')[0]
-        res = await auth_session.get(f"{base_series_url}?page=1", timeout=30)
-        if res.status_code != 200: 
-            raise ScraperError(f"Mecha error: {res.status_code}", code="SC_002")
+        try:
+            res = await auth_session.get(f"{base_series_url}?page=1", timeout=30)
+            if res.status_code != 200: 
+                raise ScraperError(f"Mecha error: {res.status_code}", code="SC_002")
+        except ProxyError as e:
+            logger.error(f"[Mecha] Proxy Error (403/Forbidden): {e}")
+            raise ScraperError("Scraping Proxy Denied Access (403). Check bandwidth or IP Whitelist in Vess Dashboard.", code="PX_403")
+        except Exception as e:
+            if "ScraperError" in type(e).__name__: raise
+            raise ScraperError(f"Request failed: {e}")
+            
         await self.session_service.record_session_success("mecha")
         
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -246,8 +254,13 @@ class MechaProvider(BaseProvider):
         version = qs.get('ver', [''])[0]
         
         # Manifest
-        manifest_res = await auth_session.get(contents_vertical_url, timeout=15)
-        manifest = manifest_res.json()
+        try:
+            manifest_res = await auth_session.get(contents_vertical_url, timeout=15)
+            manifest = manifest_res.json()
+        except ProxyError as e:
+            raise ScraperError("Proxy Access Denied (403) during manifest fetch.", code="PX_403")
+        except Exception as e:
+            raise ScraperError(f"Failed to fetch manifest: {e}")
         
         # CryptoKey
         key_url = urljoin(self.BASE_URL, qs.get('cryptokey', [f"/viewer_cryptokey/chapter/{real_id}"])[0])
@@ -270,9 +283,14 @@ class MechaProvider(BaseProvider):
         async def fetch_one(t):
             async with self._download_semaphore:
                 img_url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
-                t_get = auth_session.get(img_url, timeout=30)
-                img_res = await t_get
-                enc_data = img_res.content
+                try:
+                    t_get = auth_session.get(img_url, timeout=30)
+                    img_res = await t_get
+                    enc_data = img_res.content
+                except ProxyError:
+                    raise ScraperError("Proxy Access Denied (403) during image download.", code="PX_403")
+                except Exception as e:
+                    raise ScraperError(f"Image download failed: {e}")
                 
                 # Decrypt AES-CBC
                 iv, ciphertext = enc_data[:16], enc_data[16:]

@@ -5,7 +5,7 @@ import math
 import asyncio
 import random
 import time
-from curl_cffi.requests import AsyncSession
+from curl_cffi.requests import AsyncSession, ProxyError
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError
@@ -73,6 +73,8 @@ class KakaoProvider(BaseProvider):
                 if og_t: title = og_t["content"].split(" | ")[0].strip()
                 og_i = soup.find("meta", property="og:image")
                 if og_i: image_url = og_i["content"]
+        except ProxyError:
+             raise ScraperError("Scraping Proxy Denied Access (403) during SEO fetch.", code="PX_403")
         except: pass
 
         all_chapters = []
@@ -115,7 +117,11 @@ class KakaoProvider(BaseProvider):
 
         # Meta
         meta_query = "query contentHomeOverview($seriesId: Long!) { contentHomeOverview(seriesId: $seriesId) { content { title thumbnail } } }"
-        res_meta = await auth_session.post(self.GRAPHQL_URL, json={"query": meta_query, "variables": {"seriesId": int(series_id)}})
+        try:
+            res_meta = await auth_session.post(self.GRAPHQL_URL, json={"query": meta_query, "variables": {"seriesId": int(series_id)}})
+        except ProxyError:
+             raise ScraperError("Scraping Proxy Denied Access (403) during GraphQL Meta fetch.", code="PX_403")
+             
         if res_meta.status_code == 200:
             meta = res_meta.json().get('data', {}).get('contentHomeOverview', {}).get('content', {})
             if meta:
