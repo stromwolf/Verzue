@@ -557,7 +557,12 @@ class PiccomaProvider(BaseProvider):
             if not is_waitfree:
                 is_waitfree = bool(soup.select_one('.btn-waitfree, .PCM-btn-waitfree'))
             
-            # 5. Build Final Payload and Endpoint
+            # 🧩 DIAGNOSTIC: Log all form actions for inspection
+            forms = soup.find_all('form')
+            for f in forms:
+                logger.info(f"[Piccoma Diagnostic] Found Form: Action={f.get('action')}, ID={f.get('id')}")
+            
+            # S-GRADE: Build correctly targeted URL based on primary detection (Smartoon: {is_s})
             # S-GRADE: Sync with 'Working Code' path segment order
             if is_waitfree:
                 target_url = f"{base_url}/web/episode/waitfree/{'s/' if is_s else ''}use"
@@ -611,10 +616,14 @@ class PiccomaProvider(BaseProvider):
                 
                 # S-GRADE: Trial Next.js JSON Data (Working Code Addition)
                 config_script = soup.find('script', string=re.compile(r'__p_config__|next_data'))
+                if config_script:
+                     logger.info(f"[Piccoma Diagnostic] NextData Script found. First 500 chars: {config_script.string[:500] if config_script.string else 'None'}")
+                
                 build_id = None
                 if config_script and config_script.string:
                     bid_m = re.search(r'buildId\s*:\s*["\']([^"\']+)["\']', config_script.string)
                     build_id = bid_m.group(1) if bid_m else None
+                    logger.info(f"[Piccoma Diagnostic] Extracted BuildId: {build_id}")
                 
                 if build_id:
                     ext = ".json"
