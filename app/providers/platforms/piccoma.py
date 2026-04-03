@@ -181,22 +181,15 @@ class PiccomaProvider(BaseProvider):
                     release_day, release_time = en_day, "15:00"
                     break
 
-        # 🟢 SMART-OON detection (Refined: S-Grade Tag Heuristic)
-        # 1. Primary Check: Tag List (The most robust indicator)
+        # 🟢 SMART-OON detection (STRICT: Tag-Based Identification)
+        # As requested: We strictly identify Smaratoon only if it appears in the tag list.
         tags = [a.get('data-gtm-label', '').upper() for a in soup.select('.PCM-productDesc_tagList a')]
-        is_smartoon = "SMARTOON" in tags
+        if not tags:
+            # Fallback to text content if GTM labels are missing
+            tags = [a.get_text(strip=True).upper() for a in soup.select('.PCM-productDesc_tagList a')]
         
-        # 2. Secondary Check: Novel/Manga differentiation for better error messages
+        is_smartoon = "SMARTOON" in tags
         is_novel = "ノベル" in tags or "NOVEL" in tags
-        is_manga = any("マンガ" in t or "MANGA" in t for t in tags)
-
-        # 3. Fallbacks (Legacy Heuristics)
-        if not is_smartoon and not is_novel:
-            is_smartoon = "smartoon" in title.lower() or "/s/" in url or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
-            if not is_smartoon:
-                indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-productStatus_item')
-                it_str = indicator_text.get_text().upper() if indicator_text else ""
-                is_smartoon = "縦読み" in it_str or "SMARTOON" in it_str or "ETYPE" in url.upper()
         
         # 🟢 S-GRADE: Restriction Check
         if not is_smartoon:
