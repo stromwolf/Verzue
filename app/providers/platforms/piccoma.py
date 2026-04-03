@@ -619,11 +619,18 @@ class PiccomaProvider(BaseProvider):
                         purchase_payload[name] = hidden.get('value', '')
             
             # 6. POST purchase/usage request
-            post_task = auth_session.post(
+            post_res = await auth_session.post(
                 target_url, data=purchase_payload, headers=headers, timeout=15,
                 allow_redirects=True
             )
-            post_res = await post_task
+            
+            # 🧩 TIER 1: Immediate Extraction from Primary POST
+            if post_res.status_code in [200, 302]:
+                pdata = self._extract_pdata_heuristic(post_res.text)
+                if pdata:
+                    logger.info(f"[Piccoma] ✅ Access granted for episode {episode_id} (Primary POST)")
+                    await self.session_service.record_session_success("piccoma")
+                    return True
             
             # 🟢 S-GRADE: 404 Recovery & Discovery Heuristic
             if post_res.status_code == 404:
@@ -689,15 +696,32 @@ class PiccomaProvider(BaseProvider):
                             
                             logger.info(f"[Piccoma] 🔄 Retrying: {alt_url} ({'snake' if 'episode_id' in payload else 'camel'}, {'JSON' if is_json else 'Form'})")
                             try:
-                                p_retry = auth_session.post(
+                                p_retry = await auth_session.post(
                                     alt_url, 
                                     json=payload if is_json else None,
                                     data=None if is_json else payload,
                                     headers=headers, timeout=15
                                 )
-                                post_res = await p_retry
+                                post_res = p_retry
                                 if post_res.status_code in [200, 302, 301]:
                                     logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url} ({ct})")
+                                    
+                                    # 🟢 TIER 4: Immediate Extraction from successful retry
+                                    pdata = self._extract_pdata_heuristic(post_res.text)
+                                    if pdata:
+                                        logger.info(f"[Piccoma] ✅ Access granted for episode {episode_id} (Retry POST)")
+                                        await self.session_service.record_session_success("piccoma")
+                                        return True
+                                    
+                                    # Verification via GET if POST didn't have pData but returned 200
+                                    v_url = f"{base_url}/web/viewer{'/s' if is_s else ''}/{series_id}/{episode_id}"
+                                    v_res = await auth_session.get(v_url, timeout=10)
+                                    if v_res.status_code == 200:
+                                        pdata = self._extract_pdata_heuristic(v_res.text)
+                                        if pdata:
+                                            logger.info(f"[Piccoma] ✅ Access granted for episode {episode_id} (Retry Verification)")
+                                            await self.session_service.record_session_success("piccoma")
+                                            return True
                                     break
                                 else:
                                     logger.debug(f"[Piccoma] Alternative {alt_url} failed with {post_res.status_code}")
@@ -706,27 +730,21 @@ class PiccomaProvider(BaseProvider):
                         if post_res.status_code in [200, 302, 301]: break
                     if post_res.status_code in [200, 302, 301]: break
             
-            # 7. Verification Loop
+            # 7. Final Verification & Error Handling
             if post_res.status_code in [200, 302]:
-                # Try the viewer URL formats to verify access
-                viewer_paths = [f"/web/viewer/s/{series_id}/{episode_id}", f"/web/viewer/{series_id}/{episode_id}"]
-                for v_path in viewer_paths:
-                    v_url = f"{base_url}{v_path}"
-                    v_res = await auth_session.get(v_url, timeout=10)
-                    if v_res.status_code == 200:
-                        pdata = self._extract_pdata_heuristic(v_res.text)
-                        if pdata:
-                            logger.info(f"[Piccoma] ✅ Access granted for episode {episode_id}")
-                            await self.session_service.record_session_success("piccoma")
-                            return True
-                
-                # Check JSON response for explicit success
+                # Final check JSON for success
                 try:
                     resp_json = post_res.json()
                     if resp_json.get('result') == 'ok' or resp_json.get('success'):
                         logger.info(f"[Piccoma] ✅ Purchase confirmed via JSON response for {episode_id}")
                         return True
                 except: pass
+                
+                # 🧩 DIAGNOSTIC: If we reached 200 OK but NO manifest was found in any attempt
+                dump_path = os.path.join(os.getcwd(), "tmp", "piccoma_fail_viewer.html")
+                os.makedirs(os.path.dirname(dump_path), exist_ok=True)
+                with open(dump_path, "w", encoding="utf-8") as f: f.write(post_res.text)
+                logger.warning(f"[Piccoma] 🛑 Manifest MISSING on 200 OK. HTML dumped to: {dump_path}")
                 
             logger.warning(f"[Piccoma] Purchase/Usage failed for episode {episode_id} (HTTP {post_res.status_code})")
             return False
