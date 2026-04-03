@@ -29,6 +29,7 @@ class Settings:
     # --- 3. DISCORD ---
     DISCORD_TOKEN = Secrets.DISCORD_TOKEN
     HELPER_TOKEN = Secrets.HELPER_TOKEN
+    STAGING_TOKEN = Secrets.STAGING_TOKEN
     REDIS_URL = Secrets.REDIS_URL
     SCRAPING_PROXY = Secrets.SCRAPING_PROXY
 

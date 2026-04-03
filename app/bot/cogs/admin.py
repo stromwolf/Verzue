@@ -80,14 +80,25 @@ class AdminCog(commands.Cog):
 
     @commands.command(name="restart", aliases=["reboot", "reset"])
     @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
-    async def restart_bot(self, ctx):
-        """Usage: $restart. Reboots the entire bot and services. [Owner/Admin Only]"""
+    async def restart_bot(self, ctx, target: str | None = None):
+        """Usage: $restart [Main|Testing]. Reboots the bot instance. [Owner/Admin Only]"""
+
+        # 🟢 S-GRADE: Identity Check
+        # Identify if this instance is Main or Testing based on the token in use
+        is_testing = self.bot.token_str == Settings.STAGING_TOKEN
+        my_identity = "Testing" if is_testing else "Main"
+
+        if target:
+            if target.lower() != my_identity.lower():
+                # If a target was specified and it's not me, stay silent or do nothing
+                # This prevents both bots from restarting if they are in the same channel.
+                return
 
         # 🟢 S-GRADE: Graceful Check
         await self._wait_for_drain(ctx, "restart")
 
-        await ctx.send("🔄 **Initiating System Reboot...**")
-        logger.info(f"Reboot: Process initiated via $restart by {ctx.author}")
+        await ctx.send(f"🔄 **Initiating {my_identity} System Reboot...**")
+        logger.info(f"Reboot: {my_identity} Process initiated via $restart by {ctx.author}")
 
         import sys
         import subprocess
