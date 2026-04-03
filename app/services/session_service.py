@@ -31,12 +31,9 @@ class SessionService:
             logger.warning(f"⚠️ No sessions found for platform: {platform}")
             return None
 
-        # Filter for healthy sessions (Phase 2 simple check)
-        healthy_sessions = []
-        for aid in account_ids:
-            session = await self.redis.get_session(platform, aid)
-            if session and session.get("status") == "HEALTHY":
-                healthy_sessions.append(session)
+        # S-Grade: Batch retrieval to avoid O(N) database latency
+        sessions = await self.redis.get_sessions_batch(platform, account_ids)
+        healthy_sessions = [s for s in sessions if s and s.get("status") == "HEALTHY"]
 
         if not healthy_sessions:
             logger.error(f"❌ No HEALTHY sessions available for {platform}!")

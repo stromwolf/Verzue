@@ -258,6 +258,13 @@ class RedisManager:
         data = await self.client.get(key)
         return json.loads(data) if data else None
 
+    async def get_sessions_batch(self, platform: str, account_ids: list[str]):
+        """S-Grade: Retrieves multiple sessions in a single MGET call."""
+        if not self.client or not account_ids: return []
+        keys = [f"verzue:session:{platform}:{aid}" for aid in account_ids]
+        raw_data = await self.client.mget(keys)
+        return [json.loads(d) for d in raw_data if d]
+
     async def list_sessions(self, platform: str):
         """Lists all account IDs for a given platform."""
         if not self.client: return []

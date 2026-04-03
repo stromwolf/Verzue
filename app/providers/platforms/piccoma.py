@@ -46,7 +46,8 @@ class PiccomaProvider(BaseProvider):
     def _get_context_from_url(self, url: str):
         """S+ Refinement: Stateless context derivation."""
         if "fr.piccoma" in url or "/fr" in url:
-            return "https://fr.piccoma.com", "fr", ".fr.piccoma.com"
+            # S-Grade Security: Reject .fr domains as requested
+            raise ScraperError("Piccoma France (.fr) is not supported at this time. Please use a Piccoma Japan (.com) link.")
         return "https://piccoma.com", "jp", ".piccoma.com"
 
     def _format_poster_url(self, url: str | None) -> str | None:
@@ -102,235 +103,152 @@ class PiccomaProvider(BaseProvider):
                 raise ScraperError("No healthy sessions available for piccoma after automated login attempt. Please check logs for specific errors.")
         
         if session_obj:
-            logger.info(f"[Piccoma Identity] Session '{session_obj.get('account_id')}' retrieved. Applying {len(session_obj.get('cookies', []))} cookies.")
+            logger.info(f"[Piccoma Identity] Applying session '{session_obj.get('account_id')}' ({len(session_obj.get('cookies', []))} cookies).")
             for c in session_obj.get("cookies", []):
-                # S-GRADE: Handle multiple cookie export formats
-                name = c.get('name')
-                if name is None: name = c.get('key')
+                # S-Grade: Fast attribute extraction
+                name = c.get('name') or c.get('key')
+                value = c.get('value') or c.get('val')
                 
-                value = c.get('value')
-                if value is None: value = c.get('val')
-                
-                # S-GRADE: Brute force audit for empty or miskeyed values
-                if name:
-                    if value is not None:
-                        c_domain = c.get('domain') or region_domain
-                        c_path = c.get('path') or "/"
-                        async_session.cookies.set(str(name), str(value), domain=str(c_domain), path=str(c_path))
-                        logger.info(f"  [Cookie Set Success] {name} (domain={c_domain})")
-                        if name == "pksid" and not value:
-                            logger.warning("  ⚠️ [Auth Health Check] 'pksid' is EMPTY. Bot will be logged out!")
-                    else:
-                        logger.warning(f"  [Cookie Skip] 'value' is None for key: {name}. Raw cookie: {c}")
-                else:
-                    logger.warning(f"  [Cookie Skip] Could not find 'name' or 'key' in: {c}")
+                if name and value is not None:
+                    c_domain = c.get('domain') or region_domain
+                    c_path = c.get('path') or "/"
+                    async_session.cookies.set(str(name), str(value), domain=str(c_domain), path=str(c_path))
+                elif name == "pksid":
+                    logger.warning(f"  ⚠️ [Auth Health Check] 'pksid' is EMPTY in session stash!")
         
         return async_session
 
     async def is_session_valid(self, session) -> bool:
         """Stateless validation: Check if redirected on the current session's base."""
         try:
-            # We use a neutral endpoint. 
-            # Note: In a stateless world, we don't know the base_url yet, 
-            # so we check the session's own cookie domains or use the JP default.
             base_url = "https://piccoma.com" 
             res = await session.get(f"{base_url}/web/product/favorite", timeout=15, allow_redirects=False)
             valid = res.status_code == 200
             if valid:
                 await self.session_service.record_session_success("piccoma")
             return valid
-        except Exception: return False
+        except Exception: 
+            return False
 
     async def get_series_info(self, url: str, fast: bool = False):
-        """S+ Refinement: Pure function, deriving all context from URL."""
+        """S+ Refinement: Parallel Fetching and JSON-First extraction."""
         match = re.search(r'/web/product/(\d+)', url)
         if not match: raise ScraperError("Invalid Piccoma URL")
         
         series_id = match.group(1)
         base_url, region, domain = self._get_context_from_url(url)
-            
         auth_session = await self._get_authenticated_session(domain)
         
-        # 1. Fetch main product page for basic metadata & schedule
-        t_get = auth_session.get(f"{base_url}/web/product/{series_id}")
-        res = await t_get
+        # 1. Parallel Fetching (S-Grade Latency Optimization)
+        product_url = f"{base_url}/web/product/{series_id}"
+        episodes_url = f"{base_url}/web/product/{series_id}/episodes?etype=E"
+        
+        if fast:
+            res = await auth_session.get(product_url)
+            ep_res = None
+        else:
+            # Fire both at once to halve network wait time
+            res_task = auth_session.get(product_url)
+            ep_task = auth_session.get(episodes_url)
+            res, ep_res = await asyncio.gather(res_task, ep_task)
+            
         if res.status_code != 200: raise ScraperError(f"Failed to fetch series: {res.status_code}")
         
-        # Geo-block detection: Piccoma shows a short page when accessed from outside Japan
+        # Geo-block detection
         if len(res.text) < 10000 and ("日本国内でのみ" in res.text or "only be used from Japan" in res.text):
             raise ScraperError("Piccoma geo-blocked: This service can only be accessed from Japan. Use a Japan VPN or proxy.")
         
         await self.session_service.record_session_success("piccoma")
-        soup = BeautifulSoup(res.text, 'html.parser')
+        # Use lxml for 10x faster parsing
+        soup = BeautifulSoup(res.text, 'lxml')
         
         title_elem = soup.select_one('h1.PCM-productTitle')
         title = title_elem.text.strip() if title_elem else f"Piccoma_{series_id}"
         
-        # 🟢 FIX: Define thumb_img for poster extraction (handles new PCM-productThum_img typo)
         thumb_img = soup.select_one('.PCM-productThumb_img, .PCM-productThum_img, .PCM-productThumb img, .PCOM-productCover img')
         image_url = self._format_poster_url(thumb_img['src'] if thumb_img else None)
 
-        # 2. Extract Release Day (V2 Feature)
-        release_day = None
-        release_time = None
-        day_map = {
-            "日曜": "Saturday", "月曜": "Sunday", "火曜": "Monday",
-            "水曜": "Tuesday", "木曜": "Wednesday", "金曜": "Thursday",
-            "土曜": "Friday"
-        }
+        # 2. Extract Metadata & Release Day
+        release_day, release_time = None, None
+        day_map = {"日曜": "Saturday", "月曜": "Sunday", "火曜": "Monday", "水曜": "Tuesday", "木曜": "Wednesday", "金曜": "Thursday", "土曜": "Friday"}
+        status_label = "Completed" if "完結" in res.text else None
 
-        status_label = None
         status_items = soup.select('ul.PCM-productStatus li')
         for li in status_items:
             text = li.get_text(strip=True)
-            # S-GRADE: Status Detection (Mar 25 Request)
-            if "完結" in text:
-                status_label = "Completed"
-            
-            # Release Day Extraction
             for jp_day, en_day in day_map.items():
                 if jp_day in text:
-                    release_day = en_day
-                    release_time = "15:00" # Midnight JST = 15:00 UTC
+                    release_day, release_time = en_day, "15:00"
                     break
 
-        # 🟢 S-GRADE: Smartoon Detection (Precision fix for series like 170586 and 200519)
-        # Search title, standard icons, and also the etype indicator in current URL if known
-        is_smartoon = "smartoon" in title.lower() or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
-        
-        # Fallback: Look for Smartoon-only keywords or vertical scroll indicators in the status list
+        # 🟢 SMART-OON detection
+        is_smartoon = "smartoon" in title.lower() or "/s/" in url or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
         if not is_smartoon:
             indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-productStatus_item')
             it_str = indicator_text.get_text().upper() if indicator_text else ""
-            if "縦読み" in it_str or "SMARTOON" in it_str:
-                is_smartoon = True
-            elif "ETYPE" in url.upper():
-                is_smartoon = True
+            is_smartoon = "縦読み" in it_str or "SMARTOON" in it_str or "ETYPE" in url.upper()
         
-        task_viewer_prefix = f"{base_url}/web/viewer" + ("/s" if is_smartoon else "")
-        logger.info(f"[Piccoma] Series '{title}' (ID: {series_id}) | Format: {'Smartoon' if is_smartoon else 'Manga'}")
+        # 🟢 S-GRADE: Restriction Check
+        if not is_smartoon:
+            raise ScraperError("Standard paged Manga is not supported for Piccoma at this time. Only Smartoon (vertical scroll) series are supported.")
+        
+        task_viewer_prefix = f"{base_url}/web/viewer/s"
+        logger.info(f"[Piccoma] Series '{title}' (ID: {series_id}) | Format: Smartoon")
 
-        # 🟢 S-GRADE: FAST LOADING SUPPORT
-        # If fast=True, we parse whatever episodes are already on the landing page (if any)
-        # Usually Piccoma has a few episodes on the product page, but for deep list we go to /episodes
+        # 3. Chapter Extraction (JSON-First Heuristic)
         all_chapters = []
-        if fast:
-            logger.info(f"[Piccoma] Fast Fetch initiated for: {title}")
-            # Try to find episodes on the landing page itself
-            landing_items = soup.select('ul.PCM-epList li, div.PCM-epList_item')
-            for item in landing_items:
-                link = item.select_one('a')
-                if not link: continue
-                href = link.get('href', '')
-                cid = link.get('data-episode_id')
-                if not cid:
-                    m = re.search(r'/web/viewer/(?:s/)?\d+/(\d+)', href)
-                    cid = m.group(1) if m else None
-                
-                if not cid: continue
-                
-                title_tag = item.select_one('p.PCM-epList_title, .PCM-epList_title')
-                c_title = title_tag.get_text(strip=True) if title_tag else f"Episode {cid}"
-                notation = c_title # For Piccoma, notation is typically the title (e.g. 第1話)
-                
-                # Lock status check for new layout
-                is_locked = bool(item.select_one('span.PCM-epList_lock, .PCM-icon_lock, .PCM-epList_status_waitfree'))
-                if not is_locked:
-                    is_locked = "待てば￥0" not in item.get_text() and "無料" not in item.get_text() and "¥0" not in item.get_text()
-                
-                all_chapters.append({
-                    'id': cid, 'title': c_title, 'notation': notation, 'url': f"{task_viewer_prefix}/{series_id}/{cid}",
-                    'is_locked': is_locked, 'is_new': "NEW" in item.get_text().upper()
-                })
-            
-            # If we found something, return immediately
-            if all_chapters:
-                try: all_chapters.sort(key=lambda x: int(x['id']))
-                except: pass
-                return title, len(all_chapters), all_chapters, image_url, str(series_id), release_day, release_time, status_label, None
-
-        # 3. Fetch episodes page specifically (Full Load)
-        episodes_url = f"{base_url}/web/product/{series_id}/episodes?etype=E"
-        t_ep = auth_session.get(episodes_url)
-        ep_res = await t_ep
         
-        if ep_res.status_code != 200:
-            raise ScraperError(f"Failed to fetch Piccoma episodes: HTTP {ep_res.status_code}. Session might be invalid.")
-            
-        if ep_res.status_code == 200:
-            ep_soup = BeautifulSoup(ep_res.text, 'html.parser')
-            
-            # Heuristic 1: Extract from HTML list
+        # Source 1: If fast=True, check the current soup (landing page)
+        if fast or not ep_res:
+             ep_soup = soup
+        else:
+             ep_soup = BeautifulSoup(ep_res.text, 'lxml')
+
+        # 🟢 HEURISTIC A: Extract from __NEXT_DATA__ (Fastest O(1) Access)
+        next_data_script = ep_soup.select_one('script#__NEXT_DATA__')
+        if next_data_script:
+            try:
+                data = json.loads(next_data_script.string)
+                state = data.get('props', {}).get('pageProps', {}).get('initialState', {})
+                ep_list = state.get('product', {}).get('episodeList', []) or state.get('viewer', {}).get('episodeList', [])
+                
+                for ep in ep_list:
+                    cid = str(ep.get('id'))
+                    c_title = ep.get('title', f"Episode {cid}")
+                    all_chapters.append({
+                        'id': cid, 'title': c_title, 'notation': c_title,
+                        'url': f"{task_viewer_prefix}/{series_id}/{cid}",
+                        'is_locked': not ep.get('is_free', False) and not ep.get('is_wait_free', False),
+                        'is_new': ep.get('is_new', False)
+                    })
+            except: pass
+
+        # 🟢 HEURISTIC B: Fallback to HTML Iteration (Expensive O(N) DOM)
+        if not all_chapters:
             ep_items = ep_soup.select('ul.PCM-epList li, div.PCM-epList_item, li[class*="PCM-epList"]')
-            
             for item in ep_items:
                 link = item.select_one('a')
                 if not link: continue
-                
-                href = link.get('href', '')
-                # Viewer URL format: /web/viewer/s/{series_id}/{chapter_id} or /web/viewer/{series_id}/{chapter_id}
-                cid = link.get('data-episode_id')
+                href, cid = link.get('href', ''), link.get('data-episode_id')
                 if not cid:
                     m = re.search(r'/web/viewer/(?:s/)?\d+/(\d+)', href)
                     cid = m.group(1) if m else None
-                
                 if not cid: continue
                 
-                # 🟢 SMART-OON detection (Crucial for URL construction & payload)
-                # Scroll-based webtoons (Smartoons) often have PCM-epList_item-episode while paged manga has PCM-epList_item-volume
-                is_smartoon_item = bool(item.select_one('.PCM-epList_item-episode')) or "/s/" in href
-                
-                # Title extraction
                 title_tag = item.select_one('p.PCM-epList_title, span.PCM-epList_title, .PCM-epList_title')
-                c_title = title_tag.get_text(strip=True) if title_tag else link.get_text(strip=True).split('\n')[0]
-                notation = c_title # Typically 第1話
-                
-                # 🟢 Lock status & Wait-free indicator
-                waitfree_indicator = item.select_one('.PCM-epList_status_waitfree, .PCM-icon_waitfree, .PCM-icon_clock')
-                is_locked = bool(item.select_one('span.PCM-epList_lock, i.PCM-epList_lock_icon, .PCM-icon_lock')) or bool(waitfree_indicator)
-                
+                c_title = title_tag.get_text(strip=True) if title_tag else f"Episode {cid}"
+                is_locked = bool(item.select_one('.PCM-epList_lock, .PCM-icon_lock, .PCM-icon_waitfree, .PCM-icon_clock'))
                 if not is_locked:
-                    is_locked = "待てば￥0" not in item.get_text() and "無料" not in item.get_text() and "¥0" not in item.get_text()
-                
-                # Use /s/ prefix for Smartoons
-                # S-GRADE: Inherit is_smartoon from series-level if item-level detection is ambiguous
-                item_viewer_prefix = f"{base_url}/web/viewer/s" if (is_smartoon_item or is_smartoon) else f"{base_url}/web/viewer"
+                    is_locked = any(kw in item.get_text() for kw in ["待てば￥0", "¥0"]) is False and "無料" not in item.get_text()
                 
                 all_chapters.append({
-                    'id': cid,
-                    'title': c_title,
-                    'notation': notation,
-                    'url': f"{item_viewer_prefix}/{series_id}/{cid}",
-                    'is_locked': is_locked,
-                    'is_new': "NEW" in item.get_text().upper()
+                    'id': cid, 'title': c_title, 'notation': c_title, 'url': f"{task_viewer_prefix}/{series_id}/{cid}",
+                    'is_locked': is_locked, 'is_new': "NEW" in item.get_text().upper()
                 })
-            
-            # Heuristic 2: If HTML parsing failed, try __NEXT_DATA__
-            if not all_chapters:
-                next_data_script = ep_soup.select_one('script#__NEXT_DATA__')
-                if next_data_script:
-                    try:
-                        data = json.loads(next_data_script.string)
-                        # Structure varies, but usually under props.pageProps.initialState.product.episodeList
-                        ep_list = data.get('props', {}).get('pageProps', {}).get('initialState', {}).get('product', {}).get('episodeList', [])
-                        for ep in ep_list:
-                            cid = str(ep.get('id'))
-                            title = ep.get('title', f"Episode {cid}")
-                            all_chapters.append({
-                                'id': cid,
-                                'title': title,
-                                'notation': title,
-                                'url': f"{task_viewer_prefix}/{series_id}/{cid}",
-                                'is_locked': not ep.get('is_free', False),
-                                'is_new': ep.get('is_new', False)
-                            })
-                    except: pass
 
-        # Sort chapters by ID (usually ascending)
-        try:
-            all_chapters.sort(key=lambda x: int(x['id']))
+        # Sort and return
+        try: all_chapters.sort(key=lambda x: int(x['id']))
         except: pass
-
         return title, len(all_chapters), all_chapters, image_url, str(series_id), release_day, release_time, status_label, None
 
     async def scrape_chapter(self, task, output_dir: str):
@@ -679,104 +597,6 @@ class PiccomaProvider(BaseProvider):
             if post_res.status_code != 200:
                 logger.info(f"[DEV-TRACE] Primary Response Body (Snippet): {post_res.text[:300]}")
             
-            # 🟢 S-GRADE: 404 Recovery & Discovery Heuristic
-            if post_res.status_code == 404:
-                logger.error(f"[Piccoma] Primary endpoint ({target_url}) 404. Initiating discovery loop (Smartoon: {is_s}).")
-                
-                discovery_endpoints = [
-                    f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/push",
-                    f"{base_url}/web/episode/waitfree/{'s/' if is_s else ''}use",
-                    f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/push",
-                    f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree",
-                    f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/use",
-                    f"{base_url}/web/viewer/waitfree/push",
-                    f"{base_url}/web/episode/use/waitfree"
-                ] if is_waitfree else [
-                    f"{base_url}/web/viewer/purchase/{'s/' if is_s else ''}push",
-                    f"{base_url}/web/episode/purchase/{'s' if is_s else ''}",
-                    f"{base_url}/web/viewer{'/s' if is_s else ''}/purchase/push",
-                    f"{base_url}/web/episode{'/s' if is_s else ''}/purchase",
-                    f"{base_url}/web/episode{'/s' if is_s else ''}/purchase/push",
-                    f"{base_url}/web/episode/use/purchase"
-                ]
-                
-                # 1. Trial Next.js JSON Data (Working Code Addition - Robust buildId extraction)
-                build_id = None
-                config_script = soup.select_one('script#__NEXT_DATA__')
-                if config_script and config_script.string:
-                    try:
-                        next_json = json.loads(config_script.string)
-                        build_id = next_json.get('buildId')
-                        logger.info(f"[Piccoma Diagnostic] Found BuildId in __NEXT_DATA__: {build_id}")
-                    except Exception: pass
-                
-                # Fallback buildId extraction
-                if not build_id:
-                    bid_match = re.search(r'["\']buildId["\']\s*:\s*["\']([^"\']+)["\']', str(soup))
-                    build_id = bid_match.group(1) if bid_match else None
-                    if build_id: logger.info(f"[Piccoma Diagnostic] Found BuildId via regex: {build_id}")
-                
-                if build_id:
-                    ext = ".json"
-                    # Include the direct viewer JSON endpoint which often handles purchase/usage state
-                    discovery_endpoints.append(f"{base_url}/_next/data/{build_id}/web/viewer/{'s/' if is_s else ''}{series_id}/{episode_id}{ext}")
-                    
-                    for bp in ["/web/episode/waitfree/use", "/web/viewer/waitfree/push", "/web/episode/purchase"]:
-                        discovery_endpoints.append(f"{base_url}/_next/data/{build_id}{bp}{ext}")
-                        discovery_endpoints.append(f"{base_url}/_next/data/{build_id}{bp.replace('/waitfree/', '/waitfree/s/')}{ext}")
-
-                # Cleanup and unique
-                discovery_endpoints = list(dict.fromkeys(discovery_endpoints))
-                
-                # High-Entropy Payload Variants
-                payload_variants = []
-                for cid in ["episodeId", "episode_id"]:
-                    for pid in ["productId", "product_id"]:
-                        for conf in ["false", "true"]:
-                            p = {
-                                cid: episode_id,
-                                pid: series_id,
-                                "confirm": conf,
-                                "hasWaitFree": "true" if is_waitfree else ("true" if conf == "true" else "false")
-                            }
-                            if is_waitfree: p["ticketType"] = "WAITFREE"
-                            if p not in payload_variants: payload_variants.append(p)
-                
-                found = False
-                endpoint_skip = set()
-                for alt_url in discovery_endpoints:
-                    if found or alt_url in endpoint_skip: continue
-                    for payload in payload_variants:
-                        if found: break
-                        for is_json in [False, True]:
-                            ct = "application/json" if is_json else "application/x-www-form-urlencoded"
-                            headers["Content-Type"] = ct
-                            try:
-                                p_retry = auth_session.post(
-                                    alt_url, json=payload if is_json else None,
-                                    data=None if is_json else payload, headers=headers, timeout=12
-                                )
-                                post_res = await p_retry
-                                if post_res.status_code in [200, 302, 301]:
-                                    logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url}")
-                                    found = True
-                                    break
-                                elif post_res.status_code == 404:
-                                    logger.info(f"[Piccoma Discovery] Endpoint 404 (Skipping): {alt_url}")
-                                    endpoint_skip.add(alt_url)
-                                    break # Skip other variants for this 404 endpoint
-                                else:
-                                    logger.info(f"[Piccoma Discovery] Trial failed: {alt_url} ({post_res.status_code})")
-                            except Exception as trial_e:
-                                logger.info(f"[Piccoma Discovery] Trial exception: {alt_url} ({trial_e})")
-                            
-                            # Critical: Break JSON loop if found
-                            if found: break
-                        # Critical: Break Payload loop if found
-                        if found: break
-                    # Critical: Break Endpoint loop if found
-                    if found: break
-            
             # 7. Verification Loop
             if post_res.status_code in [200, 302]:
                 viewer_paths = [f"/web/viewer/s/{series_id}/{episode_id}", f"/web/viewer/{series_id}/{episode_id}"]
@@ -802,7 +622,6 @@ class PiccomaProvider(BaseProvider):
         except Exception as e:
             logger.error(f"[Piccoma] Error in fast_purchase: {e}")
             return False
-
 
     async def get_new_series_list(self) -> list[dict]:
         """Scrapes the 'New' series via the Theme API for Piccoma (JP)."""
@@ -869,7 +688,6 @@ class PiccomaProvider(BaseProvider):
                                     if not sid: continue
                                     title = item.get('title', item.get('product_name', 'Unknown'))
                                     poster = self._format_poster_url(item.get('img', item.get('image', item.get('cover_x1'))))
-                                    
                                     if any(s['series_id'] == sid for s in new_series): continue
                                     new_series.append({
                                         "series_id": sid, "title": title, "poster_url": poster, "url": f"{base_url}/web/product/{sid}"
