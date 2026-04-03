@@ -191,20 +191,17 @@ class AdminCog(commands.Cog):
         try:
             msg = await ctx.send(f"🧹 **Cleaning sessions for: {platform.capitalize()}...**")
             
-            # Access redis via task_queue if it exists, otherwise import
-            import redis.asyncio as aioredis
             from app.services.redis_manager import RedisManager
             redis_manager = RedisManager()
-            account_ids = await redis_manager.list_sessions(platform.lower())
+            platform_key = platform.lower()
+            account_ids = await redis_manager.list_sessions(platform_key)
             
             if not account_ids:
                 return await msg.edit(content=f"ℹ️ No active sessions found for **{platform}**.")
             
-            r = redis_manager.redis
             count = 0
             for aid in account_ids:
-                key = f"verzue:sessions:{platform.lower()}:{aid}"
-                await r.delete(key)
+                await redis_manager.delete_session(platform_key, aid)
                 count += 1
             
             await msg.edit(content=f"✅ Successfully purged **{count}** sessions for `{platform}`. Bot will now require fresh cookies.")

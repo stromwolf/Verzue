@@ -24,13 +24,9 @@ class PiccomaCog(commands.Cog):
             if not account_ids:
                 return await interaction.followup.send("ℹ️ No Piccoma sessions found in Redis.", ephemeral=True)
             
-            import redis.asyncio as aioredis
-            r = redis_manager.redis
             count = 0
             for aid in account_ids:
-                # Use the internal redis key pattern
-                key = f"verzue:sessions:piccoma:{aid}"
-                await r.delete(key)
+                await redis_manager.delete_session("piccoma", aid)
                 count += 1
             
             await interaction.followup.send(f"✅ Successfully cleared {count} Piccoma sessions. You can now use `/add-cookies` for a fresh start.", ephemeral=True)
