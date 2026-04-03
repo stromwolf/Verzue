@@ -229,27 +229,30 @@ class PiccomaProvider(BaseProvider):
                 
                 if not cid: continue
                 
+                # 🟢 SMART-OON detection (Crucial for URL construction & payload)
+                # Scroll-based webtoons (Smartoons) often have PCM-epList_item-episode while paged manga has PCM-epList_item-volume
+                is_smartoon_item = bool(item.select_one('.PCM-epList_item-episode')) or "/s/" in href
+                
                 # Title extraction
                 title_tag = item.select_one('p.PCM-epList_title, span.PCM-epList_title, .PCM-epList_title')
-                if title_tag:
-                    c_title = title_tag.get_text(strip=True)
-                else:
-                    # Fallback to link text or serial number
-                    c_title = link.get_text(strip=True).split('\n')[0]
-                
+                c_title = title_tag.get_text(strip=True) if title_tag else link.get_text(strip=True).split('\n')[0]
                 notation = c_title # Typically 第1話
                 
-                # Lock status
-                is_locked = bool(item.select_one('span.PCM-epList_lock, i.PCM-epList_lock_icon, .PCM-icon_lock, .PCM-epList_status_waitfree'))
-                # Piccoma often uses a "Wait for free" (Wait-until-free) icon too
+                # 🟢 Lock status & Wait-free indicator
+                waitfree_indicator = item.select_one('.PCM-epList_status_waitfree, .PCM-icon_waitfree, .PCM-icon_clock')
+                is_locked = bool(item.select_one('span.PCM-epList_lock, i.PCM-epList_lock_icon, .PCM-icon_lock')) or bool(waitfree_indicator)
+                
                 if not is_locked:
                     is_locked = "待てば￥0" not in item.get_text() and "無料" not in item.get_text() and "¥0" not in item.get_text()
+                
+                # Use /s/ prefix for Smartoons
+                item_viewer_prefix = f"{base_url}/web/viewer/s" if is_smartoon_item else f"{base_url}/web/viewer"
                 
                 all_chapters.append({
                     'id': cid,
                     'title': c_title,
                     'notation': notation,
-                    'url': f"{task_viewer_prefix}/{series_id}/{cid}",
+                    'url': f"{item_viewer_prefix}/{series_id}/{cid}",
                     'is_locked': is_locked,
                     'is_new': "NEW" in item.get_text().upper()
                 })
@@ -497,16 +500,49 @@ class PiccomaProvider(BaseProvider):
             
             soup = BeautifulSoup(res.text, 'html.parser')
             
-            # 2. Extract CSRF token and prepare headers
+            # 2. Robust CSRF Extraction (Multi-Tier Fallback)
+            csrf_token = None
+            
+            # Tier 1: Standard Meta Tag
+            csrf_meta = soup.find('meta', {'name': 'csrf-token'})
+            if csrf_meta:
+                csrf_token = csrf_meta.get('content')
+                logger.info("[Piccoma] Found CSRF via meta-tag.")
+            
+            # Tier 2: window.__p_config__ (Newer layout)
+            if not csrf_token:
+                config_match = re.search(r'__p_config__\s*=\s*({.*?});', res.text, re.DOTALL)
+                if config_match:
+                    config_json = config_match.group(1)
+                    token_m = re.search(r'csrfToken\s*:\s*["\']([^"\']+)["\']', config_json)
+                    if token_m:
+                        csrf_token = token_m.group(1)
+                        logger.info("[Piccoma] Found CSRF via __p_config__.")
+            
+            # Tier 3: Hidden form input (Legacy/Standard Manga)
+            if not csrf_token:
+                hidden_csrf = soup.select_one('input[name="csrf_token"], input[name="_token"]')
+                if hidden_csrf:
+                    csrf_token = hidden_csrf.get('value')
+                    logger.info("[Piccoma] Found CSRF via hidden form input.")
+            
+            # Tier 4: Global regex search
+            if not csrf_token:
+                generic_m = re.search(r'csrfToken":"([^"]+)"', res.text)
+                if generic_m:
+                    csrf_token = generic_m.group(1)
+                    logger.info("[Piccoma] Found CSRF via global serial-regex.")
+            
             headers = {
                 "Referer": episode_page_url,
                 "Origin": base_url,
                 "X-Requested-With": "XMLHttpRequest",
                 "Content-Type": "application/x-www-form-urlencoded",
             }
-            csrf_meta = soup.find('meta', {'name': 'csrf-token'})
-            if csrf_meta:
-                headers['X-CSRF-Token'] = csrf_meta['content']
+            if csrf_token:
+                headers['X-CSRF-Token'] = csrf_token
+            else:
+                logger.warning(f"[Piccoma] Could not find CSRF token for episode {episode_id}. Request might fail.")
             
             # 3. Security Hash (S-Grade entropy)
             import hashlib
