@@ -99,7 +99,7 @@ class PiccomaProvider(BaseProvider):
                         
             if not session_obj:
                 # S-GRADE: Explicitly fail if no session is available after fallback attempt
-                raise ScraperError("No healthy sessions available for piccoma. Use /add-cookies or /add-account to fix.")
+                raise ScraperError("No healthy sessions available for piccoma after automated login attempt. Please check logs for specific errors.")
         
         if session_obj:
             logger.info(f"[Piccoma Identity] Session '{session_obj.get('account_id')}' retrieved. Applying {len(session_obj.get('cookies', []))} cookies.")
