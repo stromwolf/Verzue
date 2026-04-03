@@ -133,7 +133,6 @@ class LoginService:
             await asyncio.sleep(2.0)
 
             # S+ Aggression: Post-Login Activation
-            # Visiting the base URL often triggers final cookie rotations/pksid assignment
             await session.get(f"{base_url}/web", headers=headers)
 
             # Piccoma login usually returns JSON 
@@ -144,18 +143,20 @@ class LoginService:
             except:
                 is_success = post_res.status_code in [200, 302]
 
-            # --- 🛠️ DEV-MODE: Cookie Audit ---
+            # --- 🛠️ DEV-MODE: Deep Cookie Audit ---
             found_cookies = []
             for c in session.cookies:
                 c_name = getattr(c, 'name', str(c))
-                c_domain = getattr(c, 'domain', "unknown")
-                found_cookies.append(f"{c_name} ({c_domain})")
-            logger.info(f"🔎 [DEV-MODE Cookie Audit] Current Jar: {', '.join(found_cookies)}")
+                c_val = getattr(c, 'value', "")
+                c_domain = getattr(c, 'domain', "")
+                found_cookies.append(f"{c_name} | ValLen: {len(c_val) if c_val else 0} | Domain: {c_domain}")
+            logger.info(f"🔎 [DEV-MODE Cookie Audit] Current Jar:\n - " + "\n - ".join(found_cookies))
 
             if is_success:
                 cookies = []
                 has_pksid = False
                 
+                # S+ Safety: Primary Jar Extraction
                 try:
                     for cookie in session.cookies:
                         name = getattr(cookie, 'name', None) or str(cookie)
@@ -177,12 +178,27 @@ class LoginService:
                             has_pksid = True
                         cookies.append({"name": name, "value": value, "domain": ".piccoma.com"})
                 
+                # --- 🟢 S+ GRADE: Header Fallback ---
+                # If pksid is still missing from the jar, attempt to extract directly from Set-Cookie headers
+                if not has_pksid:
+                    logger.info("🔎 [DEV-MODE] pksid missing from jar. Attempting Header Extraction Fallback...")
+                    header_cookies = post_res.headers.get_list('Set-Cookie') if hasattr(post_res.headers, 'get_list') else post_res.headers.get('Set-Cookie', "").split(",")
+                    for cookie_str in header_cookies:
+                        if "pksid=" in cookie_str:
+                            p_match = re.search(r'pksid=([^; ]+)', cookie_str)
+                            if p_match:
+                                p_val = p_match.group(1)
+                                logger.info(f"✅ [Header Fallback] FOUND pksid in headers! Length: {len(p_val)}")
+                                has_pksid = True
+                                cookies.append({"name": "pksid", "value": p_val, "domain": ".piccoma.com", "path": "/"})
+                
                 if cookies and has_pksid:
                     await self.session_service.update_session_cookies("piccoma", account_id, cookies)
                     logger.info(f"✅ Automated login successful for Piccoma ({email}) with pksid.")
                     return True
                 else:
                     logger.error(f"[Piccoma] Login returned success but {'pksid was MISSING' if not has_pksid else 'no cookies found'}.")
+                    logger.info(f"🔎 [DEV-MODE Response Trace] Body (first 500 characters): {post_res.text[:500]}")
                     return False
             else:
                 logger.error(f"[Piccoma] Login failed: HTTP {post_res.status_code}")
