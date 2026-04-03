@@ -350,8 +350,12 @@ class AutoDownloadPoller:
             admin = get_admin_settings(group_name)
             role_id = admin.get("role_id")
 
-            # Get custom title override
+            # Get custom title override (Vault)
             custom_title = get_title_override(group_name, sub["series_url"])
+            
+            # 🟢 S-GRADE: Default to Chapter Name (e.g. Chapter 45) if no override
+            if not custom_title:
+                custom_title = last_ch.get("title")
 
             # Get next N-ID
             notification_id = get_next_notification_id(group_name)

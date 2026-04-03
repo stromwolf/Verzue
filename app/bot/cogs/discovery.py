@@ -91,7 +91,7 @@ class Discovery(commands.Cog):
                 
                 mock_data = {
                     "title": title,
-                    "custom_title": latest_ch.get("notation", "New Chapter"),
+                    "custom_title": latest_ch.get("title", "New Chapter"),
                     "series_id": s_id or final_url.split("/")[-1],
                     "url": final_url,
                     "poster_url": image_url,
@@ -158,10 +158,19 @@ class Discovery(commands.Cog):
             if mock_data.get("poster_url"):
                 try:
                     # Download the poster to bypass Discord's proxy blocking
-                    res = curl_requests.get(mock_data["poster_url"], timeout=10, impersonate="chrome")
+                    if Settings.DEVELOPER_MODE:
+                        logger.debug(f"🧪 [Developer] Attempting poster download: {mock_data['poster_url']}")
+                    
+                    res = curl_requests.get(mock_data["poster_url"], timeout=10, impersonate="chrome", proxy=Settings.get_proxy())
+                    
                     if res.status_code == 200:
                         files.append(discord.File(io.BytesIO(res.content), filename="poster.png"))
                         use_attachment_proxy = True
+                        if Settings.DEVELOPER_MODE:
+                            logger.info(f"🧪 [Developer] 🖼️  Poster downloaded successfully (Size: {len(res.content)} bytes)")
+                    else:
+                        if Settings.DEVELOPER_MODE:
+                            logger.warning(f"🧪 [Developer] ❌ Poster download failed with status: {res.status_code}")
                 except Exception as e:
                     logger.error(f"Failed to download poster for attachment: {e}")
 
@@ -179,9 +188,28 @@ class Discovery(commands.Cog):
                 use_attachment_proxy=use_attachment_proxy
             )
 
+            from aiohttp import FormData
+            
+            # --- Multipart Construction ---
+            # To send V2 Components (flags: 32768) with files via raw HTTP, 
+            # we must use a 'payload_json' field in a multipart/form-data request.
+            data = FormData()
+            data.add_field('payload_json', json.dumps(payload))
+            
+            for i, f in enumerate(files):
+                # Ensure the file pointer is at the start
+                f.fp.seek(0)
+                data.add_field(f'files[{i}]', f.fp, filename=f.filename, content_type='image/png' if f.filename.endswith('.png') else 'application/octet-stream')
+
             route = discord.http.Route('POST', '/channels/{channel_id}/messages', channel_id=ctx.channel.id)
-            await self.bot.http.request(route, json=payload, files=files)
+            
+            if Settings.DEVELOPER_MODE:
+                logger.info(f"🧪 [Developer] Dispatching V2 Component via Multipart (Files: {len(files)})")
+
+            # We use 'data' instead of 'json' to trigger multipart encoding in the internal HTTP client
+            await self.bot.http.request(route, data=data)
         except Exception as e:
+            logger.error(f"❌ Failed to render V2 Component: {e}")
             await ctx.send(f"❌ Failed to render V2 Component: `{e}`")
 
     @commands.Cog.listener()

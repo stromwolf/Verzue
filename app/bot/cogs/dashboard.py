@@ -1148,6 +1148,7 @@ class DashboardCog(commands.Cog):
             
             # 🔴 NEW: Error Report Submission
             if custom_id.startswith("modal_report_error_"):
+                from app.bot.common.view import UniversalDashboard
                 req_id = custom_id.split("_")[-1]
                 view: UniversalDashboard | None = UniversalDashboard.active_views.get(req_id)
                 if not view: return

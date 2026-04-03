@@ -58,7 +58,7 @@ def build_notification_payload(
     role_mention = f"<@&{role_id}>" if role_id else "@Updates"
     platform_emoji = PLATFORM_EMOJIS.get(platform_key, "📖")
     
-    # 🟢 New Layout: High-level text (no -#), role after "New Chapter"
+    # 🟢 New Layout: Corrected link format per user request
     header_text = f"New Chapter {role_mention} of **[ {platform_emoji} [{platform_display}]({series_url}) ]**"
 
     # --- Poster Logic ---
@@ -67,7 +67,6 @@ def build_notification_payload(
         final_poster_url = "attachment://poster.png"
 
     # --- Title block ---
-    # 🟢 New Layout: Subtitle is bolded Chapter Number, Original Title and Date removed.
     subtitle = f"-# **{chapter_number}**" if chapter_number else ""
     if custom_title:
         title_text = f"## {custom_title}\n{subtitle}"
@@ -82,19 +81,19 @@ def build_notification_payload(
 
     # 1. Header
     inner.append({"type": 10, "content": header_text})
-    inner.append({"type": 14, "divider": True, "spacing": 1})
+    inner.append({"type": 14, "divider": True, "spacing": 1}) # Separator
 
-    # 3. Poster (Media Gallery for big centered image)
+    # 3. Poster (Media Gallery)
     if final_poster_url:
         inner.append({
             "type": 12,
             "items": [{"media": {"url": final_poster_url}}]
         })
-        inner.append({"type": 14, "divider": True, "spacing": 1})
+        inner.append({"type": 14, "divider": True, "spacing": 1}) # Separator
 
-    # 4. Title(s)
+    # 4. Title block
     inner.append({"type": 10, "content": title_text})
-    inner.append({"type": 14, "divider": True, "spacing": 1})
+    inner.append({"type": 14, "divider": True, "spacing": 1}) # Separator
 
     # 5. Buttons (Series Link + Direct Download)
     action_buttons = [
@@ -111,7 +110,7 @@ def build_notification_payload(
             "type": 2,
             "style": 3, # Success (Green)
             "label": "Download",
-            "emoji": {"id": "1486828932425846994", "name": "download"},
+            "emoji": {"id": "1486828932425846994", "name": "download_all"}, # Updated Name
             "custom_id": f"discovery:download_chapter:{platform_key}:{series_id}:{chapter_id}",
         })
 
@@ -119,7 +118,7 @@ def build_notification_payload(
         "type": 1,  # Action Row
         "components": action_buttons
     })
-    inner.append({"type": 14, "divider": True, "spacing": 1})
+    inner.append({"type": 14, "divider": True, "spacing": 1}) # Separator
 
     # 6. Footer
     inner.append({"type": 10, "content": footer_text})
