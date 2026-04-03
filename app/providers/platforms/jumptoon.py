@@ -168,11 +168,10 @@ class JumptoonProvider(BaseProvider):
                 image_url = img_match.group(1)
         
         if image_url:
-            # 🟢 S-GRADE: Performance Optimization (WebP/MidRes)
-            # WebP is more universally supported in Discord than AVIF.
-            # width=1280 is the sweet spot for Discord's proxy without bloating payload.
+            # 🟢 S-GRADE: Performance Optimization
+            # Query strings can sometimes interfere with Discord's proxying of specific CDNs.
+            # Using the raw URL for maximum compatibility.
             if "?" in image_url: image_url = image_url.split("?")[0]
-            image_url += "?auto=webp&width=1280"
 
         # 4. Status Label Extraction (Oneshot / Completed)
         # 🟢 S-GRADE: Subscription Block Rule (Mar 25 Request)
