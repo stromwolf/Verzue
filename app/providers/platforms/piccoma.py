@@ -580,10 +580,16 @@ class PiccomaProvider(BaseProvider):
             )
             post_res = await post_task
             
+            # 🟢 S-GRADE: Force Smartoon detection via HTML for correct endpoint sync
+            is_s = "smartoon" in str(soup).lower() or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
+            if not is_s:
+                indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-productStatus_item')
+                it_str = indicator_text.get_text().upper() if indicator_text else ""
+                is_s = "縦読み" in it_str or "SMARTOON" in it_str or "ETYPE" in task.url.upper()
+            
             # 🟢 S-GRADE: 404 Recovery & Discovery Heuristic
             if post_res.status_code == 404:
-                logger.error(f"[Piccoma] Primary endpoint ({target_url}) 404. Initiating discovery loop.")
-                is_s = "s/" in task.url
+                logger.error(f"[Piccoma] Primary endpoint ({target_url}) 404. Initiating discovery loop (Smartoon: {is_s}).")
                 discovery_endpoints = [
                     f"{base_url}/web/viewer/waitfree/s/push",
                     f"{base_url}/web/episode/waitfree/s/use",
