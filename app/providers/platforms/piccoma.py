@@ -70,15 +70,14 @@ class PiccomaProvider(BaseProvider):
         async_session.headers.update(self.default_headers)
         
         if session_obj:
-            logger.debug(f"[Piccoma] Applying {len(session_obj['cookies'])} cookies for domain {region_domain}")
-            for c in session_obj["cookies"]:
+            logger.info(f"[Piccoma Identity] Session '{session_obj.get('account_id')}' retrieved. Applying {len(session_obj.get('cookies', []))} cookies.")
+            for c in session_obj.get("cookies", []):
                 name, value = c.get('name'), c.get('value')
                 if name and value: 
-                    # S+ Refinement: Use original metadata (domain/path) if available for cross-subdomain compatibility.
-                    # This is critical for authentication handshakes on Piccoma subdomains.
                     c_domain = c.get('domain') or region_domain
                     c_path = c.get('path') or "/"
                     async_session.cookies.set(name, value, domain=c_domain, path=c_path)
+                    logger.info(f"  [Cookie Set] {name}={value[:4]}... | Domain={c_domain} | Path={c_path}")
         else:
             # S-GRADE: Explicitly fail if no session is available
             raise ScraperError("No healthy sessions available for piccoma. Use /add-cookies to fix.")
@@ -494,11 +493,12 @@ class PiccomaProvider(BaseProvider):
         series_id, episode_id = match.groups()
         base_url, region, domain = self._get_context_from_url(task.url)
         
-        logger.info(f"[DEV-TRACE] [Step 1] Loading session for domain: {domain}")
+        logger.info(f"[DEV-TRACE] [Step 1] Initializing authenticated session for domain: {domain}")
         auth_session = await self._get_authenticated_session(domain)
         # Log session cookies audit
-        cookies_info = [f"{c.name}={c.value[:3]}... (domain={c.domain})" for c in auth_session.cookies]
-        logger.info(f"[DEV-TRACE] Session Cookie Audit: {len(auth_session.cookies)} total cookies. Domains: {set([c.domain for c in auth_session.cookies])}")
+        logger.info(f"[DEV-TRACE] Session Identity Audit: {len(auth_session.cookies)} cookies loaded into AsyncSession.")
+        if len(auth_session.cookies) == 0:
+            logger.warning("[DEV-TRACE] ⚠️ CRITICAL: Session has 0 cookies! Authentication will fail.")
         
         try:
             # 1. Load episode list page to extract CSRF tokens, identify access type, and get form data
@@ -546,7 +546,9 @@ class PiccomaProvider(BaseProvider):
             }
             if csrf_token:
                 headers['X-CSRF-Token'] = csrf_token
-            logger.info(f"[DEV-TRACE] [Step 3] CSRF extraction: {csrf_token[:10]}... if found.")
+                logger.info(f"[DEV-TRACE] [Step 3] CSRF extraction: {csrf_token[:10]}...")
+            else:
+                logger.warning("[DEV-TRACE] [Step 3] CSRF extraction FAILED. Page might be logged out or blocked.")
             
             # 3. Security Hash (S-Grade entropy)
             import hashlib
