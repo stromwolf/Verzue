@@ -147,6 +147,8 @@ class PiccomaProvider(BaseProvider):
                 elif name == "pksid":
                     logger.warning(f"  ⚠️ [Auth Health Check] 'pksid' is EMPTY in session stash!")
         
+        # 🕵️ [DEV-TRACE]: Final session audit
+        logger.info(f"[DEV-TRACE] Session Identity Audit: {len(async_session.cookies)} cookies loaded into AsyncSession.")
         return async_session
 
     async def is_session_valid(self, session) -> bool:
@@ -537,6 +539,13 @@ class PiccomaProvider(BaseProvider):
 
             logger.info(f"[Piccoma Identity] 🧪 Diagnostic: is_s={is_s} (URL: {task.url})")
             
+            # 1. Session Health Guard: Verify if we are actually logged in
+            # Piccoma shows a "Login" button (PCM-headerLogin) if not authenticated
+            is_guest = bool(soup.select_one('.PCM-headerLogin, a[href*="/acc/signin"]'))
+            if is_guest:
+                logger.error("🛑 [Piccoma Identity] Browser shows LOGIN button. Session is guest or expired!")
+                raise ScraperError("Your Piccoma session has expired or is invalid. Please re-login on the dashboard.")
+
             # 2. Robust CSRF Extraction (Multi-Tier Fallback)
             csrf_token = None
             csrf_form = soup.find('form', id='js_purchaseForm')
@@ -608,10 +617,12 @@ class PiccomaProvider(BaseProvider):
             # S-GRADE: Build correctly targeted URL based on primary detection (Smartoon: {is_s})
             # S-GRADE: Sync with 'Working Code' path segment order
             if is_waitfree:
-                target_url = f"{base_url}/web/episode/waitfree/{'s/' if is_s else ''}use"
+                # 🛠️ Fix: Smartoon WaitFree uses the same endpoint as Manga but with Smartoon headers/context
+                target_url = f"{base_url}/web/episode/waitfree/use"
                 logger.info(f"[Piccoma] ⏳ Detected 'Free to Wait' for episode {episode_id}... (Smartoon: {is_s})")
             else:
-                target_url = f"{base_url}/web/episode/purchase/{'s' if is_s else ''}"
+                # 🛠️ Fix: Standardize purchase endpoint
+                target_url = f"{base_url}/web/episode/purchase"
                 logger.info(f"[Piccoma] 🪙 Detected coin purchase required for episode {episode_id}... (Smartoon: {is_s})")
                 
             purchase_payload = {
