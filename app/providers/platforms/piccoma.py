@@ -70,7 +70,14 @@ class PiccomaProvider(BaseProvider):
         
         async_session = AsyncSession(impersonate=impersonation, proxy=Settings.get_proxy())
         async_session.headers.update(self.default_headers)
-        
+
+        if session_obj:
+            # Audit session health: Ensure pksid exists and is not empty
+            has_pksid = any(c.get('name') == 'pksid' and c.get('value') for c in session_obj.get("cookies", []))
+            if not has_pksid:
+                logger.warning("  ⚠️ [Auth Health Audit] Session 'primary' found but 'pksid' is MISSING or EMPTY. Treating as no session.")
+                session_obj = None
+
         if not session_obj:
             # S+ GRADE: Automated Login Fallback
             # If no healthy sessions are in the vault, we attempt to refresh using LoginService
@@ -603,6 +610,13 @@ class PiccomaProvider(BaseProvider):
                 "Content-Type": "application/x-www-form-urlencoded",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
+            csrf_token = csrf_input['value'] if csrf_input else None
+            
+            # CSRF Recovery: Try finding in hidden inputs if primary fails
+            if not csrf_token:
+                csrf_hidden = soup.find('input', type='hidden', attrs={'name': 'csrfmiddlewaretoken'})
+                csrf_token = csrf_hidden['value'] if csrf_hidden else None
+
             if csrf_token:
                 headers['X-CSRF-Token'] = csrf_token
                 logger.info(f"[DEV-TRACE] [Step 3] CSRF extraction: {csrf_token[:10]}...")
@@ -674,18 +688,16 @@ class PiccomaProvider(BaseProvider):
                 logger.error(f"[Piccoma] Primary endpoint ({target_url}) 404. Initiating discovery loop (Smartoon: {is_s}).")
                 
                 discovery_endpoints = [
-                    f"{base_url}/web/viewer/waitfree/s/push",
-                    f"{base_url}/web/episode/waitfree/s/use",
-                    f"{base_url}/web/viewer/waitfree/push",
                     f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/push",
-                    f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/use",
+                    f"{base_url}/web/episode/waitfree/{'s/' if is_s else ''}use",
                     f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/push",
                     f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree",
                     f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/use",
+                    f"{base_url}/web/viewer/waitfree/push",
                     f"{base_url}/web/episode/use/waitfree"
                 ] if is_waitfree else [
-                    f"{base_url}/web/viewer/purchase/s/push",
-                    f"{base_url}/web/episode/purchase/s",
+                    f"{base_url}/web/viewer/purchase/{'s/' if is_s else ''}push",
+                    f"{base_url}/web/episode/purchase/{'s' if is_s else ''}",
                     f"{base_url}/web/viewer{'/s' if is_s else ''}/purchase/push",
                     f"{base_url}/web/episode{'/s' if is_s else ''}/purchase",
                     f"{base_url}/web/episode{'/s' if is_s else ''}/purchase/push",

@@ -2,6 +2,7 @@ import logging
 import json
 import os
 import asyncio
+import time
 from urllib.parse import urljoin
 from curl_cffi.requests import AsyncSession
 from app.services.session_service import SessionService
@@ -129,6 +130,11 @@ class LoginService:
             # but curl_cffi handles cookies on redirect by default.
             post_res = await session.post(login_page_url, data=payload, headers=headers, allow_redirects=False)
             
+            # --- 🟢 Stability Patch: Cookie Settle Delay ---
+            # Piccoma often performs background cookie rotations on first-redirect. 
+            # We wait 2s to ensure the session jar captures the final pksid.
+            await asyncio.sleep(2.0)
+
             # Piccoma login usually returns JSON on XMLHttpRequest
             is_success = False
             try:
@@ -140,13 +146,18 @@ class LoginService:
             if is_success:
                 # 3. Extract and Save Cookies with Metadata (Expiry, etc.)
                 cookies = []
-                # In curl_cffi/requests, iterating over the jar gives Cookie objects
-                # If it fails, we fallback to items() but will lose expiry.
+                has_pksid = False
+                
                 try:
                     for cookie in session.cookies:
+                        name = getattr(cookie, 'name', None) or str(cookie)
+                        value = getattr(cookie, 'value', "")
+                        if name == "pksid" and value:
+                            has_pksid = True
+                            
                         cookies.append({
-                            "name": getattr(cookie, 'name', None) or str(cookie),
-                            "value": getattr(cookie, 'value', ""),
+                            "name": name,
+                            "value": value,
                             "domain": getattr(cookie, 'domain', ".piccoma.com"),
                             "path": getattr(cookie, 'path', "/"),
                             "expires": getattr(cookie, 'expires', None)
@@ -154,14 +165,16 @@ class LoginService:
                 except Exception as e:
                     logger.warning(f"Metadata extraction failed, falling back: {e}")
                     for name, value in session.cookies.items():
+                        if name == "pksid" and value:
+                            has_pksid = True
                         cookies.append({"name": name, "value": value, "domain": ".piccoma.com"})
                 
-                if cookies:
+                if cookies and has_pksid:
                     await self.session_service.update_session_cookies("piccoma", account_id, cookies)
-                    logger.info(f"✅ Automated login successful for Piccoma ({email})")
+                    logger.info(f"✅ Automated login successful for Piccoma ({email}) with pksid.")
                     return True
                 else:
-                    logger.error("[Piccoma] Login successful but no cookies extracted.")
+                    logger.error(f"[Piccoma] Login returned success but {'pksid was MISSING' if not has_pksid else 'no cookies found'}.")
                     return False
             else:
                 logger.error(f"[Piccoma] Login failed: HTTP {post_res.status_code}")
@@ -222,27 +235,33 @@ class LoginService:
             }
             
             logger.info(f"[Mecha] Sending login request for {email}...")
-            post_res = await session.post(action_url, data=payload, headers=headers, allow_redirects=False)
+            # Mecha usually redirects (302) on success. We MUST allow redirects to ensure 
+            # all session initialization cookies are set and handled.
+            post_res = await session.post(action_url, data=payload, headers=headers, allow_redirects=True)
             
-            # Mecha usually redirects (302) on success
             if post_res.status_code in [200, 302]:
                 # 3. Extract and Save Cookies with Metadata (Expiry, etc.)
                 cookies = []
                 try:
-                    for cookie in session.cookies:
+                    # curl_cffi's jar is a RequestsCookieJar, iterating it yields Cookie objects in newer versions
+                    # but we use list_cookies() to be absolutely sure we get standard Cookie metadata.
+                    # Or we use get_dict() and supplement.
+                    for name, value in session.cookies.get_dict().items():
                         cookies.append({
-                            "name": getattr(cookie, 'name', None) or str(cookie),
-                            "value": getattr(cookie, 'value', ""),
-                            "domain": getattr(cookie, 'domain', ".mechacomic.jp"),
-                            "path": getattr(cookie, 'path', "/"),
-                            "expires": getattr(cookie, 'expires', None)
+                            "name": name,
+                            "value": value,
+                            "domain": ".mechacomic.jp",
+                            "path": "/",
+                            # We set a default expiry if missing to ensure they aren't treated as session-only
+                            "expires": int(time.time() + 86400 * 30) 
                         })
                 except Exception as e:
-                    logger.warning(f"Metadata extraction failed, falling back: {e}")
+                    logger.warning(f"Metadata extraction failed for Mecha: {e}")
                     for name, value in session.cookies.items():
                         cookies.append({"name": name, "value": value, "domain": ".mechacomic.jp"})
                 
                 if cookies:
+                    logger.info(f"[Mecha] Extracted {len(cookies)} cookies: {', '.join([c['name'] for c in cookies])}")
                     await self.session_service.update_session_cookies("mecha", account_id, cookies)
                     logger.info(f"✅ Automated login successful for Mecha Comic ({email})")
                     return True
