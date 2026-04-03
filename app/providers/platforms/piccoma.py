@@ -193,10 +193,8 @@ class PiccomaProvider(BaseProvider):
         
         # 🟢 S-GRADE: Restriction Check
         if not is_smartoon:
-            if is_novel:
-                raise ScraperError(f"Series '{title}' is a Novel. Novels are not supported for extraction at this time.")
-            else:
-                raise ScraperError(f"Series '{title}' (Manga) is not supported for Piccoma at this time. Only Smartoon (vertical scroll) series are supported.")
+            # S-Grade: Professional Apple-style messaging
+            raise ScraperError("Currently, Piccoma Manga and Novels are not supported. Only Smartoon series are available.")
         
         task_viewer_prefix = f"{base_url}/web/viewer/s"
         logger.info(f"[Piccoma] Series '{title}' (ID: {series_id}) | Format: Smartoon")
