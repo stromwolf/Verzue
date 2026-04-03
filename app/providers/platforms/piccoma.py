@@ -9,7 +9,7 @@ import random
 import threading
 import struct
 from bs4 import BeautifulSoup
-from curl_cffi.requests import AsyncSession, RequestsError
+from curl_cffi.requests import AsyncSession
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError, MechaException
@@ -109,21 +109,13 @@ class PiccomaProvider(BaseProvider):
         auth_session = await self._get_authenticated_session(domain)
         
         # 1. Fetch main product page for basic metadata & schedule
-        try:
-            t_get = auth_session.get(f"{base_url}/web/product/{series_id}")
-            res = await t_get
-            if res.status_code != 200: 
-                raise ScraperError(f"Failed to fetch series: {res.status_code}")
-                
-            # Geo-block detection: Piccoma shows a short page when accessed from outside Japan
-            if len(res.text) < 10000 and ("日本国内でのみ" in res.text or "only be used from Japan" in res.text):
-                raise ScraperError("Piccoma geo-blocked: This service can only be accessed from Japan. Use a Japan VPN or proxy.")
-        except RequestsError as e:
-            logger.error(f"[Piccoma] Proxy Error (403/Forbidden): {e}")
-            raise ScraperError("Scraping Proxy Denied Access (403). Check bandwidth or IP Whitelist in Vess Dashboard.", code="PX_403")
-        except Exception as e:
-            if "ScraperError" in type(e).__name__: raise
-            raise ScraperError(f"Request failed: {e}")
+        t_get = auth_session.get(f"{base_url}/web/product/{series_id}")
+        res = await t_get
+        if res.status_code != 200: raise ScraperError(f"Failed to fetch series: {res.status_code}")
+        
+        # Geo-block detection: Piccoma shows a short page when accessed from outside Japan
+        if len(res.text) < 10000 and ("日本国内でのみ" in res.text or "only be used from Japan" in res.text):
+            raise ScraperError("Piccoma geo-blocked: This service can only be accessed from Japan. Use a Japan VPN or proxy.")
         
         await self.session_service.record_session_success("piccoma")
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -211,13 +203,10 @@ class PiccomaProvider(BaseProvider):
                 return title, len(all_chapters), all_chapters, image_url, str(series_id), release_day, release_time, status_label, None
 
         # 3. Fetch episodes page specifically (Full Load)
-        try:
-            episodes_url = f"{base_url}/web/product/{series_id}/episodes?etype=E"
-            t_ep = auth_session.get(episodes_url)
-            ep_res = await t_ep
-        except RequestsError as e:
-            raise ScraperError("Scraping Proxy Denied Access (403) during list fetch.", code="PX_403")
-            
+        episodes_url = f"{base_url}/web/product/{series_id}/episodes?etype=E"
+        t_ep = auth_session.get(episodes_url)
+        ep_res = await t_ep
+        
         if ep_res.status_code != 200:
             raise ScraperError(f"Failed to fetch Piccoma episodes: HTTP {ep_res.status_code}. Session might be invalid.")
             
@@ -354,49 +343,9 @@ class PiccomaProvider(BaseProvider):
         if next_data:
             try:
                 data = json.loads(next_data.string)
-                
-                # 🧩 TIER 1.1: Direct known paths
-                paths = [
-                    ['props', 'pageProps', 'initialState', 'viewer', 'pData'],
-                    ['props', 'pageProps', 'data', 'viewer', 'pData'],
-                    ['props', 'pageProps', 'episode', 'pData'],
-                    ['props', 'pageProps', 'initialState', 'episode', 'pData']
-                ]
-                for p in paths:
-                    curr = data
-                    for key in p:
-                        if isinstance(curr, dict): curr = curr.get(key, {})
-                        else: break
-                    if isinstance(curr, dict) and 'img' in curr:
-                        logger.info(f"[Piccoma] Manifest recovered via path: {' -> '.join(p)}")
-                        return curr
-
-                # 🧩 TIER 1.2: Deep Recursive Search (Aggressive)
-                def find_key_recursive(obj, target):
-                    if isinstance(obj, dict):
-                        if target in obj and isinstance(obj[target], dict) and 'img' in obj[target]:
-                            return obj[target]
-                        for v in obj.values():
-                            res = find_key_recursive(v, target)
-                            if res: return res
-                    elif isinstance(obj, list):
-                        for item in obj:
-                            res = find_key_recursive(item, target)
-                            if res: return res
-                    return None
-
-                pdata = find_key_recursive(data, 'pData')
-                if pdata:
-                    logger.info("[Piccoma] Manifest recovered via recursive deep search.")
-                    return pdata
-                
-                # Diagnostic log for developers
-                pp = data.get('props', {}).get('pageProps', {})
-                logger.debug(f"[Piccoma] Manifest MISSING. NextJS PageProps Keys: {list(pp.keys())}")
-                if 'initialState' in pp:
-                    logger.debug(f"[Piccoma] InitialState Keys: {list(pp['initialState'].keys())}")
-            except Exception as e:
-                logger.debug(f"[Piccoma] NextJS parse error: {e}")
+                pdata = data.get('props', {}).get('pageProps', {}).get('initialState', {}).get('viewer', {}).get('pData')
+                if pdata: return pdata
+            except: pass
 
         # Heuristic 2: Legacy _pdata_ global (Now handles JS objects)
         # We look for the entire block and use regex to pull paths, which is safer for JS object literals
@@ -423,14 +372,9 @@ class PiccomaProvider(BaseProvider):
         # S+ Per-image seed calculation for V30 compatibility
         seed = self._calculate_seed(url, region)
         
-        try:
-            d_task = session.get(url, timeout=30)
-            res = await d_task
-            res.raise_for_status()
-        except ProxyError:
-            raise ScraperError("Proxy Access Denied (403) during image download.", code="PX_403")
-        except Exception as e:
-            raise ScraperError(f"Image download failed: {e}")
+        d_task = session.get(url, timeout=30)
+        res = await d_task
+        res.raise_for_status()
         out_path = f"{out_dir}/page_{idx:03d}.png"
         
         # 🟢 V30.0 FIX: Relaxing isupper() check to handle alphanumeric/numeric seeds.
@@ -564,16 +508,6 @@ class PiccomaProvider(BaseProvider):
             if csrf_meta:
                 headers['X-CSRF-Token'] = csrf_meta['content']
             
-            # 2.1 Next.js Build ID Discovery (Modern Piccoma)
-            build_id = None
-            next_data_script = soup.select_one('script#__NEXT_DATA__')
-            if next_data_script:
-                try:
-                    next_json = json.loads(next_data_script.string or '{}')
-                    build_id = next_json.get('buildId')
-                    logger.debug(f"[Piccoma] Discovered Next.js BuildId: {build_id}")
-                except: pass
-            
             # 3. Security Hash (S-Grade entropy)
             import hashlib
             seed_string = f"{episode_id}fh_SpJ#a4LuNa6t8"
@@ -598,6 +532,7 @@ class PiccomaProvider(BaseProvider):
             # 5. Build Final Payload and Endpoint
             if is_waitfree:
                 target_url = f"{base_url}/web/episode/waitfree/use"
+                purchase_payload["ticketType"] = "WAITFREE"
                 logger.info(f"[Piccoma] ⏳ Detected 'Free to Wait' for episode {episode_id}. Using wait-free ticket.")
             else:
                 target_url = f"{base_url}/web/episode/purchase"
@@ -619,18 +554,11 @@ class PiccomaProvider(BaseProvider):
                         purchase_payload[name] = hidden.get('value', '')
             
             # 6. POST purchase/usage request
-            post_res = await auth_session.post(
+            post_task = auth_session.post(
                 target_url, data=purchase_payload, headers=headers, timeout=15,
                 allow_redirects=True
             )
-            
-            # 🧩 TIER 1: Immediate Extraction from Primary POST
-            if post_res.status_code in [200, 302]:
-                pdata = self._extract_pdata_heuristic(post_res.text)
-                if pdata:
-                    logger.info(f"[Piccoma] ✅ Access granted for episode {episode_id} (Primary POST)")
-                    await self.session_service.record_session_success("piccoma")
-                    return True
+            post_res = await post_task
             
             # 🟢 S-GRADE: 404 Recovery & Discovery Heuristic
             if post_res.status_code == 404:
@@ -657,94 +585,64 @@ class PiccomaProvider(BaseProvider):
                     f"{base_url}/web/episode{'/s' if is_s else ''}/purchase/push",
                     f"{base_url}/web/episode/use/purchase"
                 ]
-
-                # 🧩 TIER 2.5: Inject Modern Next.js Data Endpoints (IF build_id found)
-                if build_id:
-                    ext = ".json"
-                    for base_path in ["/web/episode/waitfree/use", "/web/viewer/waitfree/push"]:
-                        if is_waitfree:
-                            discovery_endpoints.insert(0, f"{base_url}/_next/data/{build_id}{base_path}{ext}")
-                        else:
-                            discovery_endpoints.insert(0, f"{base_url}/_next/data/{build_id}/web/episode/purchase{ext}")
-                
-                # 🧩 TIER 2.6: Direct Viewer Usage Fallback (As seen in Act Files)
-                discovery_endpoints.append(f"{base_url}/web/viewer{'/s' if is_s else ''}/{series_id}/{episode_id}")
                 
                 # 🧩 TIER 3: Multi-Format Payload Retry logic
-                # Now testing: [Camel/Snake] x [Form/JSON] x [Confirm True/False]
-                payload_variants = []
-                for cid in ["episodeId", "episode_id"]:
-                    for pid in ["productId", "product_id"]:
-                        for conf in ["false", "true"]:
-                            p = {
-                                cid: episode_id,
-                                pid: series_id,
-                                "confirm": conf,
-                                "hasWaitFree": "true" if is_waitfree else ("true" if conf == "true" else "false")
-                            }
-                            if p not in payload_variants:
-                                payload_variants.append(p)
+                # Now testing: [Camel/Snake] x [Form/JSON] x [Dual Referer]
+                payload_variants = [
+                    purchase_payload,
+                    {**purchase_payload, "episode_id": episode_id, "product_id": series_id, "ticket_type": "WAITFREE"}
+                ]
+                
+                referer_options = [episode_page_url, task.url] if is_waitfree else [episode_page_url]
                 
                 for alt_url in discovery_endpoints:
-                    for payload in payload_variants:
-                        for is_json in [False, True]:
-                            ct = "application/json" if is_json else "application/x-www-form-urlencoded"
-                            headers["Content-Type"] = ct
-                            # Add Next.js data header if hitting a .json endpoint
-                            if ".json" in alt_url:
-                                headers["x-nextjs-data"] = "1"
-                            
-                            logger.info(f"[Piccoma] 🔄 Retrying: {alt_url} ({'snake' if 'episode_id' in payload else 'camel'}, {'JSON' if is_json else 'Form'})")
-                            try:
-                                p_retry = await auth_session.post(
-                                    alt_url, 
-                                    json=payload if is_json else None,
-                                    data=None if is_json else payload,
-                                    headers=headers, timeout=15
-                                )
-                                post_res = p_retry
-                                if post_res.status_code in [200, 302, 301]:
-                                    logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url} ({ct})")
-                                    
-                                    # 🟢 TIER 4: Immediate Extraction from successful retry
-                                    pdata = self._extract_pdata_heuristic(post_res.text)
-                                    if pdata:
-                                        logger.info(f"[Piccoma] ✅ Access granted for episode {episode_id} (Retry POST)")
-                                        await self.session_service.record_session_success("piccoma")
-                                        return True
-                                    
-                                    # Verification via GET if POST didn't have pData but returned 200
-                                    v_url = f"{base_url}/web/viewer{'/s' if is_s else ''}/{series_id}/{episode_id}"
-                                    v_res = await auth_session.get(v_url, timeout=10)
-                                    if v_res.status_code == 200:
-                                        pdata = self._extract_pdata_heuristic(v_res.text)
-                                        if pdata:
-                                            logger.info(f"[Piccoma] ✅ Access granted for episode {episode_id} (Retry Verification)")
-                                            await self.session_service.record_session_success("piccoma")
-                                            return True
-                                    break
-                                else:
-                                    logger.debug(f"[Piccoma] Alternative {alt_url} failed with {post_res.status_code}")
-                            except Exception as alt_e:
-                                logger.debug(f"[Piccoma] Error hitting {alt_url}: {alt_e}")
+                    for referer in referer_options:
+                        headers["Referer"] = referer
+                        for payload in payload_variants:
+                            for is_json in [False, True]:
+                                ct = "application/json" if is_json else "application/x-www-form-urlencoded"
+                                headers["Content-Type"] = ct
+                                logger.info(f"[Piccoma] 🔄 Retrying: {alt_url} ({'snake' if 'episode_id' in payload else 'camel'}, {'JSON' if is_json else 'Form'}, Ref: {'Viewer' if 'viewer' in referer else 'Ep'})")
+                                try:
+                                    p_retry = auth_session.post(
+                                        alt_url, 
+                                        json=payload if is_json else None,
+                                        data=None if is_json else payload,
+                                        headers=headers, timeout=15
+                                    )
+                                    post_res = await p_retry
+                                    if post_res.status_code in [200, 302, 301]:
+                                        logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url} ({ct})")
+                                        break
+                                    else:
+                                        logger.debug(f"[Piccoma] Alternative {alt_url} failed with {post_res.status_code}")
+                                except Exception as alt_e:
+                                    logger.debug(f"[Piccoma] Error hitting {alt_url}: {alt_e}")
+                            if post_res.status_code in [200, 302, 301]: break
                         if post_res.status_code in [200, 302, 301]: break
                     if post_res.status_code in [200, 302, 301]: break
             
-            # 7. Final Verification & Error Handling
+            # 7. Verification Loop
             if post_res.status_code in [200, 302]:
-                # Final check JSON for success
+                # Try the viewer URL formats to verify access
+                viewer_paths = [f"/web/viewer/s/{series_id}/{episode_id}", f"/web/viewer/{series_id}/{episode_id}"]
+                for v_path in viewer_paths:
+                    v_url = f"{base_url}{v_path}"
+                    v_res = await auth_session.get(v_url, timeout=10)
+                    if v_res.status_code == 200:
+                        pdata = self._extract_pdata_heuristic(v_res.text)
+                        if pdata:
+                            logger.info(f"[Piccoma] ✅ Access granted for episode {episode_id}")
+                            await self.session_service.record_session_success("piccoma")
+                            return True
+                
+                # Check JSON response for explicit success
                 try:
                     resp_json = post_res.json()
                     if resp_json.get('result') == 'ok' or resp_json.get('success'):
                         logger.info(f"[Piccoma] ✅ Purchase confirmed via JSON response for {episode_id}")
                         return True
                 except: pass
-                
-                # 🧩 DIAGNOSTIC: If we reached 200 OK but NO manifest was found in any attempt
-                dump_path = os.path.join(os.getcwd(), "tmp", "piccoma_fail_viewer.html")
-                os.makedirs(os.path.dirname(dump_path), exist_ok=True)
-                with open(dump_path, "w", encoding="utf-8") as f: f.write(post_res.text)
-                logger.warning(f"[Piccoma] 🛑 Manifest MISSING on 200 OK. HTML dumped to: {dump_path}")
                 
             logger.warning(f"[Piccoma] Purchase/Usage failed for episode {episode_id} (HTTP {post_res.status_code})")
             return False
