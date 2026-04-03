@@ -530,6 +530,15 @@ class PiccomaProvider(BaseProvider):
                 is_waitfree = bool(soup.select_one('.btn-waitfree, .PCM-btn-waitfree'))
             
             # 5. Build Final Payload and Endpoint
+            purchase_payload = {
+                "episodeId": episode_id,
+                "productId": series_id,
+                "hash": sec_hash,
+                "hashCode": sec_hash,
+                "confirm": "false",
+                "hasWaitFree": "true" if is_waitfree else "false"
+            }
+            
             if is_waitfree:
                 target_url = f"{base_url}/web/episode/waitfree/use"
                 purchase_payload["ticketType"] = "WAITFREE"
@@ -537,13 +546,6 @@ class PiccomaProvider(BaseProvider):
             else:
                 target_url = f"{base_url}/web/episode/purchase"
                 logger.info(f"[Piccoma] 🪙 Detected coin purchase required for episode {episode_id}.")
-                
-            purchase_payload = {
-                "episodeId": episode_id,
-                "productId": series_id,
-                "hash": sec_hash,
-                "hashCode": sec_hash
-            }
             
             # Extract additional hidden fields from purchase form if available
             purchase_form = soup.select_one('#js_purchaseForm, .js_purchaseForm, form[action*="purchase"]')
