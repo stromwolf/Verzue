@@ -72,12 +72,17 @@ class PiccomaProvider(BaseProvider):
         if session_obj:
             logger.info(f"[Piccoma Identity] Session '{session_obj.get('account_id')}' retrieved. Applying {len(session_obj.get('cookies', []))} cookies.")
             for c in session_obj.get("cookies", []):
-                name, value = c.get('name'), c.get('value')
+                # S-GRADE: Handle multiple cookie export formats (name/value vs key/value)
+                name = c.get('name') or c.get('key')
+                value = c.get('value') or c.get('val')
+                
                 if name and value: 
                     c_domain = c.get('domain') or region_domain
                     c_path = c.get('path') or "/"
                     async_session.cookies.set(name, value, domain=c_domain, path=c_path)
-                    logger.info(f"  [Cookie Set] {name}={value[:4]}... | Domain={c_domain} | Path={c_path}")
+                    logger.info(f"  [Cookie Set Success] {name} (domain={c_domain})")
+                else:
+                    logger.warning(f"  [Cookie Skip] Missing name/value keys. Content: {c.keys()}")
         else:
             # S-GRADE: Explicitly fail if no session is available
             raise ScraperError("No healthy sessions available for piccoma. Use /add-cookies to fix.")
