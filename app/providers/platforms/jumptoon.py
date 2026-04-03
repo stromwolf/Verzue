@@ -154,8 +154,11 @@ class JumptoonProvider(BaseProvider):
 
         # 3. Poster Extraction
         image_url = None
-        # Meta tag search (Reliable for most series)
-        og_match = re.search(r'property="og:image"\s*content="(https:[^"]+)"', html_content)
+        # Meta tag search (Flexible regex for og:image)
+        og_match = re.search(r'<meta[^>]+(?:property|name)="og:image"[^>]+content="(https:[^"]+)"', html_content, re.I)
+        if not og_match:
+            og_match = re.search(r'<meta[^>]+content="(https:[^"]+)"[^>]+(?:property|name)="og:image"', html_content, re.I)
+            
         if og_match:
             image_url = og_match.group(1)
         else:
@@ -165,9 +168,11 @@ class JumptoonProvider(BaseProvider):
                 image_url = img_match.group(1)
         
         if image_url:
-            # 🟢 S-GRADE: Performance Optimization (WebP/HighRes)
+            # 🟢 S-GRADE: Performance Optimization (WebP/MidRes)
+            # WebP is more universally supported in Discord than AVIF.
+            # width=1280 is the sweet spot for Discord's proxy without bloating payload.
             if "?" in image_url: image_url = image_url.split("?")[0]
-            image_url += "?auto=avif-webp&width=3840"
+            image_url += "?auto=webp&width=1280"
 
         # 4. Status Label Extraction (Oneshot / Completed)
         # 🟢 S-GRADE: Subscription Block Rule (Mar 25 Request)
