@@ -524,6 +524,16 @@ class PiccomaProvider(BaseProvider):
             if csrf_meta:
                 headers['X-CSRF-Token'] = csrf_meta['content']
             
+            # 2.1 Next.js Build ID Discovery (Modern Piccoma)
+            build_id = None
+            next_data_script = soup.select_one('script#__NEXT_DATA__')
+            if next_data_script:
+                try:
+                    next_json = json.loads(next_data_script.string or '{}')
+                    build_id = next_json.get('buildId')
+                    logger.debug(f"[Piccoma] Discovered Next.js BuildId: {build_id}")
+                except: pass
+            
             # 3. Security Hash (S-Grade entropy)
             import hashlib
             seed_string = f"{episode_id}fh_SpJ#a4LuNa6t8"
@@ -600,6 +610,18 @@ class PiccomaProvider(BaseProvider):
                     f"{base_url}/web/episode{'/s' if is_s else ''}/purchase/push",
                     f"{base_url}/web/episode/use/purchase"
                 ]
+
+                # 🧩 TIER 2.5: Inject Modern Next.js Data Endpoints (IF build_id found)
+                if build_id:
+                    ext = ".json"
+                    for base_path in ["/web/episode/waitfree/use", "/web/viewer/waitfree/push"]:
+                        if is_waitfree:
+                            discovery_endpoints.insert(0, f"{base_url}/_next/data/{build_id}{base_path}{ext}")
+                        else:
+                            discovery_endpoints.insert(0, f"{base_url}/_next/data/{build_id}/web/episode/purchase{ext}")
+                
+                # 🧩 TIER 2.6: Direct Viewer Usage Fallback (As seen in Act Files)
+                discovery_endpoints.append(f"{base_url}/web/viewer{'/s' if is_s else ''}/{series_id}/{episode_id}")
                 
                 # 🧩 TIER 3: Multi-Format Payload Retry logic
                 # Now testing: [Camel/Snake] x [Form/JSON] x [Confirm True/False]
@@ -621,6 +643,10 @@ class PiccomaProvider(BaseProvider):
                         for is_json in [False, True]:
                             ct = "application/json" if is_json else "application/x-www-form-urlencoded"
                             headers["Content-Type"] = ct
+                            # Add Next.js data header if hitting a .json endpoint
+                            if ".json" in alt_url:
+                                headers["x-nextjs-data"] = "1"
+                            
                             logger.info(f"[Piccoma] 🔄 Retrying: {alt_url} ({'snake' if 'episode_id' in payload else 'camel'}, {'JSON' if is_json else 'Form'})")
                             try:
                                 p_retry = auth_session.post(
