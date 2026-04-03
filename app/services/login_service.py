@@ -3,6 +3,7 @@ import json
 import os
 import asyncio
 import time
+import re
 from urllib.parse import urljoin
 from curl_cffi.requests import AsyncSession
 from app.services.session_service import SessionService
@@ -95,7 +96,13 @@ class LoginService:
         
         proxy_url = Settings.get_proxy()
         proxies = {"http": proxy_url, "https": proxy_url}
+        # Use Chrome 130 or higher to match modern browser behavior
         async with AsyncSession(impersonate="chrome120", proxies=proxies) as session:
+            # 🟢 S+ USER-AGENT MATCH
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+            })
+            
             # 🟢 Stability Patch: Tiny warm-up delay for proxy tunnel
             await asyncio.sleep(1.0)
             
@@ -104,25 +111,32 @@ class LoginService:
             if res.status_code != 200:
                 raise ScraperError(f"Failed to load login page: {res.status_code}")
             
+            # --- 🛠️ DEV-MODE: GET Audit ---
+            get_cookies = [f"{c.name}={len(c.value) if c.value else 0}" for c in session.cookies]
+            logger.info(f"🔎 [DEV-MODE GET Headers] Status: {res.status_code} | Cookies: {', '.join(get_cookies)}")
+            
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(res.text, 'html.parser')
             csrf_input = soup.find('input', {'name': 'csrfmiddlewaretoken'})
             csrf_token = csrf_input['value'] if csrf_input else None
             
             if not csrf_token:
+                logger.info(f"🔎 [DEV-MODE Failure Trace] HTML Snippet: {res.text[:500]}")
                 raise ScraperError("Could not find csrfmiddlewaretoken on Piccoma login page.")
             
             # 2. Perform Login POST (Form-encoded)
             payload = {
                 "csrfmiddlewaretoken": csrf_token,
                 "email": email,
-                "password": password
+                "password": password,
+                "next_url": "/web"
             }
             
             headers = {
                 "Referer": login_page_url,
                 "Origin": base_url,
-                "Content-Type": "application/x-www-form-urlencoded"
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-Requested-With": "XMLHttpRequest"
             }
             
             logger.info(f"[Piccoma] Sending login request for {email}...")
@@ -135,13 +149,17 @@ class LoginService:
             # S+ Aggression: Post-Login Activation
             await session.get(f"{base_url}/web", headers=headers)
 
-            # Piccoma login usually returns JSON 
+            # Piccoma login success detection
             is_success = False
-            try:
-                data = post_res.json()
-                is_success = data.get('result') == 'ok' or data.get('status') == 'success'
-            except:
-                is_success = post_res.status_code in [200, 302]
+            rerendered = "ログイン｜ピッコマ" in post_res.text
+            
+            if not rerendered:
+                # If not rerendered, check JSON or status
+                try:
+                    data = post_res.json()
+                    is_success = data.get('result') == 'ok' or data.get('status') == 'success'
+                except:
+                    is_success = post_res.status_code in [200, 302]
 
             # --- 🛠️ DEV-MODE: Deep Cookie Audit ---
             found_cookies = []
@@ -152,7 +170,7 @@ class LoginService:
                 found_cookies.append(f"{c_name} | ValLen: {len(c_val) if c_val else 0} | Domain: {c_domain}")
             logger.info(f"🔎 [DEV-MODE Cookie Audit] Current Jar:\n - " + "\n - ".join(found_cookies))
 
-            if is_success:
+            if is_success and not rerendered:
                 cookies = []
                 has_pksid = False
                 
@@ -198,10 +216,12 @@ class LoginService:
                     return True
                 else:
                     logger.error(f"[Piccoma] Login returned success but {'pksid was MISSING' if not has_pksid else 'no cookies found'}.")
-                    logger.info(f"🔎 [DEV-MODE Response Trace] Body (first 500 characters): {post_res.text[:500]}")
+                    logger.info(f"🔎 [DEV-MODE Response Trace] Body (first 1000 chars):\n{post_res.text[:1000]}")
                     return False
             else:
-                logger.error(f"[Piccoma] Login failed: HTTP {post_res.status_code}")
+                reason = "Rerendered login page" if rerendered else f"HTTP {post_res.status_code}"
+                logger.error(f"[Piccoma] Login failed: {reason}")
+                logger.info(f"🔎 [DEV-MODE Failure Trace] Body (first 1000 chars):\n{post_res.text[:1000]}")
                 return False
 
     async def _login_mecha(self, creds: dict):
