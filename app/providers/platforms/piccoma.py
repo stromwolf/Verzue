@@ -354,9 +354,49 @@ class PiccomaProvider(BaseProvider):
         if next_data:
             try:
                 data = json.loads(next_data.string)
-                pdata = data.get('props', {}).get('pageProps', {}).get('initialState', {}).get('viewer', {}).get('pData')
-                if pdata: return pdata
-            except: pass
+                
+                # 🧩 TIER 1.1: Direct known paths
+                paths = [
+                    ['props', 'pageProps', 'initialState', 'viewer', 'pData'],
+                    ['props', 'pageProps', 'data', 'viewer', 'pData'],
+                    ['props', 'pageProps', 'episode', 'pData'],
+                    ['props', 'pageProps', 'initialState', 'episode', 'pData']
+                ]
+                for p in paths:
+                    curr = data
+                    for key in p:
+                        if isinstance(curr, dict): curr = curr.get(key, {})
+                        else: break
+                    if isinstance(curr, dict) and 'img' in curr:
+                        logger.info(f"[Piccoma] Manifest recovered via path: {' -> '.join(p)}")
+                        return curr
+
+                # 🧩 TIER 1.2: Deep Recursive Search (Aggressive)
+                def find_key_recursive(obj, target):
+                    if isinstance(obj, dict):
+                        if target in obj and isinstance(obj[target], dict) and 'img' in obj[target]:
+                            return obj[target]
+                        for v in obj.values():
+                            res = find_key_recursive(v, target)
+                            if res: return res
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            res = find_key_recursive(item, target)
+                            if res: return res
+                    return None
+
+                pdata = find_key_recursive(data, 'pData')
+                if pdata:
+                    logger.info("[Piccoma] Manifest recovered via recursive deep search.")
+                    return pdata
+                
+                # Diagnostic log for developers
+                pp = data.get('props', {}).get('pageProps', {})
+                logger.debug(f"[Piccoma] Manifest MISSING. NextJS PageProps Keys: {list(pp.keys())}")
+                if 'initialState' in pp:
+                    logger.debug(f"[Piccoma] InitialState Keys: {list(pp['initialState'].keys())}")
+            except Exception as e:
+                logger.debug(f"[Piccoma] NextJS parse error: {e}")
 
         # Heuristic 2: Legacy _pdata_ global (Now handles JS objects)
         # We look for the entire block and use regex to pull paths, which is safer for JS object literals
