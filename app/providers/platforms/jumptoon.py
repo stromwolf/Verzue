@@ -154,10 +154,21 @@ class JumptoonProvider(BaseProvider):
 
         # 3. Poster Extraction
         image_url = None
-        img_match = re.search(r'"(?:seriesHeroImageUrl|seriesThumbnailV2ImageUrl)"\s*:\s*"(https:[^"]+)"', clean_html)
-        if img_match:
-            image_url = img_match.group(1) + '?auto=avif-webp&width=3840'
+        # Meta tag search (Reliable for most series)
+        og_match = re.search(r'property="og:image"\s*content="(https:[^"]+)"', html_content)
+        if og_match:
+            image_url = og_match.group(1)
+        else:
+            # Fallback to JSON-Heuristic
+            img_match = re.search(r'"(?:seriesHeroImageUrl|seriesThumbnailV2ImageUrl)"\s*:\s*"(https:[^"]+)"', clean_html)
+            if img_match:
+                image_url = img_match.group(1)
         
+        if image_url:
+            # 🟢 S-GRADE: Performance Optimization (WebP/HighRes)
+            if "?" in image_url: image_url = image_url.split("?")[0]
+            image_url += "?auto=avif-webp&width=3840"
+
         # 4. Status Label Extraction (Oneshot / Completed)
         # 🟢 S-GRADE: Subscription Block Rule (Mar 25 Request)
         status_label = None
