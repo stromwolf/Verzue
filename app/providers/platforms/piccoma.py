@@ -181,16 +181,29 @@ class PiccomaProvider(BaseProvider):
                     release_day, release_time = en_day, "15:00"
                     break
 
-        # 🟢 SMART-OON detection
-        is_smartoon = "smartoon" in title.lower() or "/s/" in url or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
-        if not is_smartoon:
-            indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-productStatus_item')
-            it_str = indicator_text.get_text().upper() if indicator_text else ""
-            is_smartoon = "縦読み" in it_str or "SMARTOON" in it_str or "ETYPE" in url.upper()
+        # 🟢 SMART-OON detection (Refined: S-Grade Tag Heuristic)
+        # 1. Primary Check: Tag List (The most robust indicator)
+        tags = [a.get('data-gtm-label', '').upper() for a in soup.select('.PCM-productDesc_tagList a')]
+        is_smartoon = "SMARTOON" in tags
+        
+        # 2. Secondary Check: Novel/Manga differentiation for better error messages
+        is_novel = "ノベル" in tags or "NOVEL" in tags
+        is_manga = any("マンガ" in t or "MANGA" in t for t in tags)
+
+        # 3. Fallbacks (Legacy Heuristics)
+        if not is_smartoon and not is_novel:
+            is_smartoon = "smartoon" in title.lower() or "/s/" in url or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
+            if not is_smartoon:
+                indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-productStatus_item')
+                it_str = indicator_text.get_text().upper() if indicator_text else ""
+                is_smartoon = "縦読み" in it_str or "SMARTOON" in it_str or "ETYPE" in url.upper()
         
         # 🟢 S-GRADE: Restriction Check
         if not is_smartoon:
-            raise ScraperError("Standard paged Manga is not supported for Piccoma at this time. Only Smartoon (vertical scroll) series are supported.")
+            if is_novel:
+                raise ScraperError(f"Series '{title}' is a Novel. Novels are not supported for extraction at this time.")
+            else:
+                raise ScraperError(f"Series '{title}' (Manga) is not supported for Piccoma at this time. Only Smartoon (vertical scroll) series are supported.")
         
         task_viewer_prefix = f"{base_url}/web/viewer/s"
         logger.info(f"[Piccoma] Series '{title}' (ID: {series_id}) | Format: Smartoon")
