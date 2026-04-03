@@ -581,31 +581,49 @@ class PiccomaProvider(BaseProvider):
             )
             post_res = await post_task
             
-            # 🟢 S-GRADE: Force Smartoon detection via HTML for correct endpoint sync
-            is_s = "smartoon" in str(soup).lower() or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
+            # 🟢 S-GRADE: Force Smartoon detection via HTML/URL for correct endpoint sync
+            is_s = "/s/" in task.url.lower() or "smartoon" in str(soup).lower() or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
             if not is_s:
                 indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-productStatus_item')
                 it_str = indicator_text.get_text().upper() if indicator_text else ""
-                is_s = "縦読み" in it_str or "SMARTOON" in it_str or "ETYPE" in task.url.upper()
+                is_s = "縦読み" in it_str or "SMARTOON" in it_str or "ETYPE" in task.url.upper() or "/S/" in task.url.upper()
             
             # 🟢 S-GRADE: 404 Recovery & Discovery Heuristic
             if post_res.status_code == 404:
                 logger.error(f"[Piccoma] Primary endpoint ({target_url}) 404. Initiating discovery loop (Smartoon: {is_s}).")
-                discovery_endpoints = [
-                    f"{base_url}/web/viewer/waitfree/s/push",
-                    f"{base_url}/web/episode/waitfree/s/use",
-                    f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/push",
-                    f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/use",
-                    f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/push",
-                    f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/use",
-                    f"{base_url}/web/episode/use/waitfree"
-                ] if is_waitfree else [
-                    f"{base_url}/web/viewer/purchase/s/push",
-                    f"{base_url}/web/episode/purchase/s",
-                    f"{base_url}/web/viewer{'/s' if is_s else ''}/purchase/push",
-                    f"{base_url}/web/episode{'/s' if is_s else ''}/purchase",
-                    f"{base_url}/web/episode/use/purchase"
-                ]
+                
+                # S-GRADE: Trialing multiple endpoint signatures in priority order
+                discovery_endpoints = []
+                
+                # 1. Trial Next.js JSON Data (Highest success rate)
+                config_script = soup.find('script', string=re.compile(r'__p_config__|next_data'))
+                build_id = None
+                if config_script and config_script.string:
+                    bid_m = re.search(r'buildId\s*:\s*["\']([^"\']+)["\']', config_script.string)
+                    build_id = bid_m.group(1) if bid_m else None
+                
+                if build_id:
+                    ext = ".json"
+                    base_ps = ["/web/episode/waitfree/use", "/web/viewer/waitfree/push", "/web/episode/purchase"]
+                    for bp in base_ps:
+                        discovery_endpoints.append(f"{base_url}/_next/data/{build_id}{bp}{ext}")
+                        discovery_endpoints.append(f"{base_url}/_next/data/{build_id}{bp.replace('/waitfree/', '/waitfree/s/')}{ext}")
+
+                # 2. Traditional Endpoints (Unified List)
+                prefixes = ["/web/viewer", "/web/episode"]
+                middle_segments = ["/waitfree", "/purchase"]
+                postfixes = ["/use", "/push", ""]
+                
+                for pref in prefixes:
+                    for mid in middle_segments:
+                        for post in postfixes:
+                            # Try both standard and Smartoon (/s/) variants
+                            discovery_endpoints.append(f"{base_url}{pref}{mid}{post}")
+                            discovery_endpoints.append(f"{base_url}{pref}{mid}/s{post}")
+                            discovery_endpoints.append(f"{base_url}{pref}/s{mid}{post}")
+                
+                # Cleanup and unique
+                discovery_endpoints = list(dict.fromkeys(discovery_endpoints))
                 
                 # High-Entropy Payload Variants
                 payload_variants = []
