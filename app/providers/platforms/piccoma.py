@@ -72,9 +72,12 @@ class PiccomaProvider(BaseProvider):
         if session_obj:
             logger.info(f"[Piccoma Identity] Session '{session_obj.get('account_id')}' retrieved. Applying {len(session_obj.get('cookies', []))} cookies.")
             for c in session_obj.get("cookies", []):
-                # S-GRADE: Handle multiple cookie export formats (name/value vs key/value)
-                name = c.get('name') or c.get('key')
-                value = c.get('value') or c.get('val')
+                # S-GRADE: Handle multiple cookie export formats
+                name = c.get('name')
+                if name is None: name = c.get('key')
+                
+                value = c.get('value')
+                if value is None: value = c.get('val')
                 
                 # S-GRADE: Brute force audit for empty or miskeyed values
                 if name:
@@ -529,26 +532,34 @@ class PiccomaProvider(BaseProvider):
             
             soup = BeautifulSoup(res.text, 'html.parser')
             
-            # 🟢 S-GRADE: Smartoon Detection (Sync with get_series_info)
+            # 🟢 S-GRADE: Smartoon Detection (Improved)
             # Re-implementing detection to avoid hardcoded overrides
-            is_s = "smartoon" in (soup.select_one('h1.PCM-productTitle').text.lower() if soup.select_one('h1.PCM-productTitle') else "") or \
+            title_text = soup.select_one('h1.PCM-productTitle').text.lower() if soup.select_one('h1.PCM-productTitle') else ""
+            is_s = "smartoon" in title_text or \
                    bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
             
             # Additional detection heuristics
             if not is_s:
-                if "ETYPE" in task.url.upper() or "/s/" in task.url:
+                # If the viewer URL was passed in (common for scrape_chapter tasks)
+                if "/web/viewer/s/" in task.url or "smartoon" in task.url.lower():
                     is_s = True
                 else:
-                    indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status')
+                    indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-epList_item-episode')
                     it_str = indicator_text.get_text().upper() if indicator_text else ""
                     if "縦読み" in it_str or "SMARTOON" in it_str:
                         is_s = True
             
             # 2. Robust CSRF Extraction (Multi-Tier Fallback)
             csrf_token = None
-            csrf_meta = soup.find('meta', {'name': 'csrf-token'})
-            if csrf_meta:
-                csrf_token = csrf_meta.get('content')
+            csrf_form = soup.find('form', id='js_purchaseForm')
+            if csrf_form:
+                csrf_token = csrf_form.find('input', {'name': 'csrfToken'})
+                if csrf_token: csrf_token = csrf_token.get('value')
+            
+            if not csrf_token:
+                csrf_meta = soup.find('meta', {'name': 'csrf-token'})
+                if csrf_meta:
+                    csrf_token = csrf_meta.get('content')
             
             if not csrf_token:
                 config_script = soup.find('script', string=re.compile(r'__p_config__'))
@@ -716,6 +727,13 @@ class PiccomaProvider(BaseProvider):
                                     logger.info(f"[Piccoma Discovery] Trial failed: {alt_url} ({post_res.status_code}) Body: {post_res.text[:200]}")
                             except Exception as trial_e:
                                 logger.info(f"[Piccoma Discovery] Trial exception: {alt_url} ({trial_e})")
+                            
+                            # Critical: Break JSON loop if found
+                            if found: break
+                        # Critical: Break Payload loop if found
+                        if found: break
+                    # Critical: Break Endpoint loop if found
+                    if found: break
             
             # 7. Verification Loop
             if post_res.status_code in [200, 302]:
