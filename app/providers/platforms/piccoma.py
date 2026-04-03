@@ -86,6 +86,8 @@ class PiccomaProvider(BaseProvider):
                         c_path = c.get('path') or "/"
                         async_session.cookies.set(str(name), str(value), domain=str(c_domain), path=str(c_path))
                         logger.info(f"  [Cookie Set Success] {name} (domain={c_domain})")
+                        if name == "pksid" and not value:
+                            logger.warning("  ⚠️ [Auth Health Check] 'pksid' is EMPTY. Bot will be logged out!")
                     else:
                         logger.warning(f"  [Cookie Skip] 'value' is None for key: {name}. Raw cookie: {c}")
                 else:
@@ -544,10 +546,12 @@ class PiccomaProvider(BaseProvider):
                 if "/web/viewer/s/" in task.url or "smartoon" in task.url.lower():
                     is_s = True
                 else:
-                    indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-epList_item-episode')
+                    indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-epList_item-episode, .PCM-icon_smartoon')
                     it_str = indicator_text.get_text().upper() if indicator_text else ""
-                    if "縦読み" in it_str or "SMARTOON" in it_str:
+                    if "縦読み" in it_str or "SMARTOON" in it_str or soup.select_one('.PCM-icon_smartoon'):
                         is_s = True
+            
+            logger.info(f"[Piccoma Identity] 🧪 Diagnostic: is_s={is_s} (URL: {task.url})")
             
             # 2. Robust CSRF Extraction (Multi-Tier Fallback)
             csrf_token = None
@@ -706,8 +710,9 @@ class PiccomaProvider(BaseProvider):
                             if p not in payload_variants: payload_variants.append(p)
                 
                 found = False
+                endpoint_skip = set()
                 for alt_url in discovery_endpoints:
-                    if found: break
+                    if found or alt_url in endpoint_skip: continue
                     for payload in payload_variants:
                         if found: break
                         for is_json in [False, True]:
@@ -716,15 +721,19 @@ class PiccomaProvider(BaseProvider):
                             try:
                                 p_retry = auth_session.post(
                                     alt_url, json=payload if is_json else None,
-                                    data=None if is_json else payload, headers=headers, timeout=15
+                                    data=None if is_json else payload, headers=headers, timeout=12
                                 )
                                 post_res = await p_retry
                                 if post_res.status_code in [200, 302, 301]:
                                     logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url}")
                                     found = True
                                     break
+                                elif post_res.status_code == 404:
+                                    logger.info(f"[Piccoma Discovery] Endpoint 404 (Skipping): {alt_url}")
+                                    endpoint_skip.add(alt_url)
+                                    break # Skip other variants for this 404 endpoint
                                 else:
-                                    logger.info(f"[Piccoma Discovery] Trial failed: {alt_url} ({post_res.status_code}) Body: {post_res.text[:200]}")
+                                    logger.info(f"[Piccoma Discovery] Trial failed: {alt_url} ({post_res.status_code})")
                             except Exception as trial_e:
                                 logger.info(f"[Piccoma Discovery] Trial exception: {alt_url} ({trial_e})")
                             

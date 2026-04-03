@@ -13,6 +13,32 @@ class PiccomaCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    @app_commands.command(name="piccoma_clear", description="Clear all Piccoma sessions from Redis (Force Logout)")
+    async def piccoma_clear(self, interaction: discord.Interaction):
+        """Purges all sessions for piccoma from Redis."""
+        try:
+            await interaction.response.defer(ephemeral=True)
+            redis_manager = self.bot.task_queue.redis
+            account_ids = await redis_manager.list_sessions("piccoma")
+            
+            if not account_ids:
+                return await interaction.followup.send("ℹ️ No Piccoma sessions found in Redis.", ephemeral=True)
+            
+            import redis.asyncio as aioredis
+            r = redis_manager.redis
+            count = 0
+            for aid in account_ids:
+                # Use the internal redis key pattern
+                key = f"verzue:sessions:piccoma:{aid}"
+                await r.delete(key)
+                count += 1
+            
+            await interaction.followup.send(f"✅ Successfully cleared {count} Piccoma sessions. You can now use `/add-cookies` for a fresh start.", ephemeral=True)
+            logger.info(f"🧹 Sessions cleared for Piccoma by {interaction.user}")
+        except Exception as e:
+            logger.error(f"Failed to clear sessions: {e}")
+            await interaction.followup.send(f"❌ Error clearing sessions: `{e}`", ephemeral=True)
+
     @app_commands.command(name="piccoma", description="Extract chapters from Piccoma")
     async def piccoma(self, interaction: discord.Interaction, url: str):
         """
