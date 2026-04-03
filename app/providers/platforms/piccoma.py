@@ -529,10 +529,20 @@ class PiccomaProvider(BaseProvider):
             
             soup = BeautifulSoup(res.text, 'html.parser')
             
-            # 🟢 S-GRADE: Smartoon-First Strategy (User Override)
-            # Defaulting to True to ensure immediate success for Smartoons (ID: 200519, etc.)
-            # Standard manga will 404 on the primary attempt and recover via the Discovery Loop.
-            is_s = True
+            # 🟢 S-GRADE: Smartoon Detection (Sync with get_series_info)
+            # Re-implementing detection to avoid hardcoded overrides
+            is_s = "smartoon" in (soup.select_one('h1.PCM-productTitle').text.lower() if soup.select_one('h1.PCM-productTitle') else "") or \
+                   bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
+            
+            # Additional detection heuristics
+            if not is_s:
+                if "ETYPE" in task.url.upper() or "/s/" in task.url:
+                    is_s = True
+                else:
+                    indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status')
+                    it_str = indicator_text.get_text().upper() if indicator_text else ""
+                    if "縦読み" in it_str or "SMARTOON" in it_str:
+                        is_s = True
             
             # 2. Robust CSRF Extraction (Multi-Tier Fallback)
             csrf_token = None
@@ -684,8 +694,11 @@ class PiccomaProvider(BaseProvider):
                             if is_waitfree: p["ticketType"] = "WAITFREE"
                             if p not in payload_variants: payload_variants.append(p)
                 
+                found = False
                 for alt_url in discovery_endpoints:
+                    if found: break
                     for payload in payload_variants:
+                        if found: break
                         for is_json in [False, True]:
                             ct = "application/json" if is_json else "application/x-www-form-urlencoded"
                             headers["Content-Type"] = ct
@@ -697,14 +710,12 @@ class PiccomaProvider(BaseProvider):
                                 post_res = await p_retry
                                 if post_res.status_code in [200, 302, 301]:
                                     logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url}")
+                                    found = True
                                     break
                                 else:
-                                    logger.info(f"[Piccoma Discovery] Trial failed: {alt_url} (Result: {post_res.status_code}) Body: {post_res.text[:200]}")
+                                    logger.info(f"[Piccoma Discovery] Trial failed: {alt_url} ({post_res.status_code}) Body: {post_res.text[:200]}")
                             except Exception as trial_e:
                                 logger.info(f"[Piccoma Discovery] Trial exception: {alt_url} ({trial_e})")
-                            continue
-                        if post_res.status_code in [200, 302, 301]: break
-                    if post_res.status_code in [200, 302, 301]: break
             
             # 7. Verification Loop
             if post_res.status_code in [200, 302]:
@@ -835,9 +846,6 @@ class PiccomaProvider(BaseProvider):
             return new_series
         except Exception as e:
             logger.error(f"[Piccoma] Fatal error in new series discovery: {e}")
-            return []
-        except Exception as e:
-            logger.error(f"[Piccoma] Error fetching new series: {e}")
             return []
 
     async def run_ritual(self, session):
