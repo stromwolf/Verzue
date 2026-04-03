@@ -208,7 +208,7 @@ class PiccomaProvider(BaseProvider):
                 is_smartoon = True
         
         task_viewer_prefix = f"{base_url}/web/viewer" + ("/s" if is_smartoon else "")
-        logger.info(f"[Piccoma] Series '{title}' (ID: {series_id}) - Smartoon: {is_smartoon}")
+        logger.info(f"[Piccoma] Series '{title}' (ID: {series_id}) | Format: {'Smartoon' if is_smartoon else 'Manga'}")
 
         # 🟢 S-GRADE: FAST LOADING SUPPORT
         # If fast=True, we parse whatever episodes are already on the landing page (if any)
@@ -497,17 +497,11 @@ class PiccomaProvider(BaseProvider):
             else:
                 chk_raw = segments[-1] if segments else ""
 
-        # 🟢 FIX: Exactly match pyccoma's img_url rotation.
         chk = str(chk_raw)
         
         parsed = urllib.parse.urlparse(url)
         qs = urllib.parse.parse_qs(parsed.query)
         expires = qs.get('expires', [''])[0]
-        
-        # 🟢 COMMUNICATION LOGS: Log the raw data flow for verification
-        logger.info(f"[Piccoma V30 Debug] Segment Source: {path_only}")
-        logger.info(f"[Piccoma V30 Debug] Raw Checksum Segment: {chk_raw}")
-        logger.info(f"[Piccoma V30 Debug] Expiry Key: {expires}")
         
         if expires and chk:
             # S+ Mirrors pyccoma's iterative rotation logic
@@ -516,11 +510,6 @@ class PiccomaProvider(BaseProvider):
                     shift = int(num)
                     # Rotate right
                     chk = chk[-shift:] + chk[:-shift]
-                    
-            logger.info(f"[Piccoma V30 Debug] Rotated Seed Result: {chk}")
-            logger.info(f"[Piccoma V30 Debug] Transformed Seed (Ready): {self._dd_transform(chk)}")
-        else:
-            logger.warning(f"[Piccoma V30 Debug] Missing parameters for unscramble. Chk: {bool(chk)}, Expires: {bool(expires)}")
         
         return chk
 

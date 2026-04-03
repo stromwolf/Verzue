@@ -111,9 +111,7 @@ class LoginService:
             if res.status_code != 200:
                 raise ScraperError(f"Failed to load login page: {res.status_code}")
             
-            # --- 🛠️ DEV-MODE: GET Audit ---
-            get_cookies = [f"{n}={len(v) if v else 0}" for n, v in session.cookies.items()]
-            logger.info(f"🔎 [DEV-MODE GET Headers] Status: {res.status_code} | Cookies: {', '.join(get_cookies)}")
+            # --- Login Page Load ---
             
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -161,14 +159,6 @@ class LoginService:
                 except:
                     is_success = post_res.status_code in [200, 302]
 
-            # --- 🛠️ DEV-MODE: Deep Cookie Audit ---
-            found_cookies = []
-            # session.cookies.items() is safe and returns (name, value)
-            for c_name, c_val in session.cookies.items():
-                # We try to get domain if it's a jar with internal Cookie objects, 
-                # but fallback to just name/value for the audit.
-                found_cookies.append(f"{c_name} | ValLen: {len(c_val) if c_val else 0}")
-            logger.info(f"🔎 [DEV-MODE Cookie Audit] Current Jar:\n - " + "\n - ".join(found_cookies))
 
             if is_success and not rerendered:
                 cookies = []
@@ -209,11 +199,18 @@ class LoginService:
                     return True
                 else:
                     logger.error(f"[Piccoma] Login returned success but {'pksid was MISSING' if not has_pksid else 'no cookies found'}.")
+                    # --- 🛠️ Diagnostic Fallback on Failure ---
+                    found_cookies = [f"{n} | {len(v)}" for n, v in session.cookies.items()]
+                    logger.info(f"🔎 [DEV-MODE Cookie Audit] Current Jar: {', '.join(found_cookies)}")
                     logger.info(f"🔎 [DEV-MODE Response Trace] Body (first 1000 chars):\n{post_res.text[:1000]}")
                     return False
             else:
                 reason = "Rerendered login page" if rerendered else f"HTTP {post_res.status_code}"
                 logger.error(f"[Piccoma] Login failed: {reason}")
+                
+                # --- 🛠️ Diagnostic Fallback on Failure ---
+                found_cookies = [f"{n} | {len(v)}" for n, v in session.cookies.items()]
+                logger.info(f"🔎 [DEV-MODE Cookie Audit] Current Jar: {', '.join(found_cookies)}")
                 logger.info(f"🔎 [DEV-MODE Failure Trace] Body (first 1000 chars):\n{post_res.text[:1000]}")
                 return False
 
