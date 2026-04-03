@@ -513,12 +513,10 @@ class PiccomaProvider(BaseProvider):
             
             soup = BeautifulSoup(res.text, 'html.parser')
             
-            # 🟢 S-GRADE: Early Smartoon detection via HTML/URL for correct endpoint sync
-            is_s = "/s/" in task.url.lower() or "smartoon" in str(soup).lower() or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
-            if not is_s:
-                indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-productStatus_item')
-                it_str = indicator_text.get_text().upper() if indicator_text else ""
-                is_s = "縦読み" in it_str or "SMARTOON" in it_str or "ETYPE" in task.url.upper() or "/S/" in task.url.upper()
+            # 🟢 S-GRADE: Smartoon-First Strategy (User Override)
+            # Defaulting to True to ensure immediate success for Smartoons (ID: 200519, etc.)
+            # Standard manga will 404 on the primary attempt and recover via the Discovery Loop.
+            is_s = True
             
             # 2. Robust CSRF Extraction (Multi-Tier Fallback)
             csrf_token = None
