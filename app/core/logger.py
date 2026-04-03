@@ -80,7 +80,11 @@ def setup_logging(name: str = "MechaBot"):
     if not logger.hasHandlers():
         # 1. Console (Professional & Clean)
         sh = logging.StreamHandler(sys.stdout)
-        sh.setLevel(logging.INFO)
+        
+        # 🟢 Developer Mode: Elevate console to DEBUG if enabled
+        console_level = logging.DEBUG if Settings.DEVELOPER_MODE else logging.INFO
+        sh.setLevel(console_level)
+        
         sh.setFormatter(CustomFormatter())
         sh.addFilter(ctx_filter)
         logger.addHandler(sh)
