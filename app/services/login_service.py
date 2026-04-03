@@ -112,7 +112,7 @@ class LoginService:
                 raise ScraperError(f"Failed to load login page: {res.status_code}")
             
             # --- 🛠️ DEV-MODE: GET Audit ---
-            get_cookies = [f"{c.name}={len(c.value) if c.value else 0}" for c in session.cookies]
+            get_cookies = [f"{n}={len(v) if v else 0}" for n, v in session.cookies.items()]
             logger.info(f"🔎 [DEV-MODE GET Headers] Status: {res.status_code} | Cookies: {', '.join(get_cookies)}")
             
             from bs4 import BeautifulSoup
@@ -163,11 +163,11 @@ class LoginService:
 
             # --- 🛠️ DEV-MODE: Deep Cookie Audit ---
             found_cookies = []
-            for c in session.cookies:
-                c_name = getattr(c, 'name', str(c))
-                c_val = getattr(c, 'value', "")
-                c_domain = getattr(c, 'domain', "")
-                found_cookies.append(f"{c_name} | ValLen: {len(c_val) if c_val else 0} | Domain: {c_domain}")
+            # session.cookies.items() is safe and returns (name, value)
+            for c_name, c_val in session.cookies.items():
+                # We try to get domain if it's a jar with internal Cookie objects, 
+                # but fallback to just name/value for the audit.
+                found_cookies.append(f"{c_name} | ValLen: {len(c_val) if c_val else 0}")
             logger.info(f"🔎 [DEV-MODE Cookie Audit] Current Jar:\n - " + "\n - ".join(found_cookies))
 
             if is_success and not rerendered:
@@ -175,26 +175,19 @@ class LoginService:
                 has_pksid = False
                 
                 # S+ Safety: Primary Jar Extraction
-                try:
-                    for cookie in session.cookies:
-                        name = getattr(cookie, 'name', None) or str(cookie)
-                        value = getattr(cookie, 'value', "")
-                        if name == "pksid" and value:
-                            has_pksid = True
-                            
-                        cookies.append({
-                            "name": name,
-                            "value": value,
-                            "domain": getattr(cookie, 'domain', ".piccoma.com"),
-                            "path": getattr(cookie, 'path', "/"),
-                            "expires": getattr(cookie, 'expires', None)
-                        })
-                except Exception as e:
-                    logger.warning(f"Metadata extraction failed, falling back: {e}")
-                    for name, value in session.cookies.items():
-                        if name == "pksid" and value:
-                            has_pksid = True
-                        cookies.append({"name": name, "value": value, "domain": ".piccoma.com"})
+                # Iterating session.cookies directly yields strings in some environments.
+                # We use items() to get name/value pairs reliably.
+                for name, value in session.cookies.items():
+                    if name == "pksid" and value:
+                        has_pksid = True
+                    
+                    cookies.append({
+                        "name": name,
+                        "value": value,
+                        "domain": ".piccoma.com", # Fallback domain
+                        "path": "/",
+                        "expires": None
+                    })
                 
                 # --- 🟢 S+ GRADE: Header Fallback ---
                 # If pksid is still missing from the jar, attempt to extract directly from Set-Cookie headers
