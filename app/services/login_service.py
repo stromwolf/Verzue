@@ -126,16 +126,17 @@ class LoginService:
             }
             
             logger.info(f"[Piccoma] Sending login request for {email}...")
-            # We use allow_redirects=False to catch the 302 redirect manually if needed, 
-            # but curl_cffi handles cookies on redirect by default.
-            post_res = await session.post(login_page_url, data=payload, headers=headers, allow_redirects=False)
+            # S+ Aggression: Enable redirects to follow auth-callback chain
+            post_res = await session.post(login_page_url, data=payload, headers=headers, allow_redirects=True)
             
             # --- 🟢 Stability Patch: Cookie Settle Delay ---
-            # Piccoma often performs background cookie rotations on first-redirect. 
-            # We wait 2s to ensure the session jar captures the final pksid.
             await asyncio.sleep(2.0)
 
-            # Piccoma login usually returns JSON on XMLHttpRequest
+            # S+ Aggression: Post-Login Activation
+            # Visiting the base URL often triggers final cookie rotations/pksid assignment
+            await session.get(f"{base_url}/web", headers=headers)
+
+            # Piccoma login usually returns JSON 
             is_success = False
             try:
                 data = post_res.json()
@@ -143,8 +144,15 @@ class LoginService:
             except:
                 is_success = post_res.status_code in [200, 302]
 
+            # --- 🛠️ DEV-MODE: Cookie Audit ---
+            found_cookies = []
+            for c in session.cookies:
+                c_name = getattr(c, 'name', str(c))
+                c_domain = getattr(c, 'domain', "unknown")
+                found_cookies.append(f"{c_name} ({c_domain})")
+            logger.info(f"🔎 [DEV-MODE Cookie Audit] Current Jar: {', '.join(found_cookies)}")
+
             if is_success:
-                # 3. Extract and Save Cookies with Metadata (Expiry, etc.)
                 cookies = []
                 has_pksid = False
                 
