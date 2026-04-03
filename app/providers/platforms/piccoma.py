@@ -599,6 +599,7 @@ class PiccomaProvider(BaseProvider):
                 discovery_endpoints = [
                     f"{base_url}/web/viewer/waitfree/s/push",
                     f"{base_url}/web/episode/waitfree/s/use",
+                    f"{base_url}/web/viewer/waitfree/push",
                     f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/push",
                     f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/use",
                     f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/push",
@@ -614,19 +615,27 @@ class PiccomaProvider(BaseProvider):
                     f"{base_url}/web/episode/use/purchase"
                 ]
                 
-                # S-GRADE: Trial Next.js JSON Data (Working Code Addition)
-                config_script = soup.find('script', string=re.compile(r'__p_config__|next_data'))
-                if config_script:
-                     logger.info(f"[Piccoma Diagnostic] NextData Script found. First 500 chars: {config_script.string[:500] if config_script.string else 'None'}")
-                
+                # 1. Trial Next.js JSON Data (Working Code Addition - Robust buildId extraction)
                 build_id = None
+                config_script = soup.select_one('script#__NEXT_DATA__')
                 if config_script and config_script.string:
-                    bid_m = re.search(r'buildId\s*:\s*["\']([^"\']+)["\']', config_script.string)
-                    build_id = bid_m.group(1) if bid_m else None
-                    logger.info(f"[Piccoma Diagnostic] Extracted BuildId: {build_id}")
+                    try:
+                        next_json = json.loads(config_script.string)
+                        build_id = next_json.get('buildId')
+                        logger.info(f"[Piccoma Diagnostic] Found BuildId in __NEXT_DATA__: {build_id}")
+                    except Exception: pass
+                
+                # Fallback buildId extraction
+                if not build_id:
+                    bid_match = re.search(r'["\']buildId["\']\s*:\s*["\']([^"\']+)["\']', str(soup))
+                    build_id = bid_match.group(1) if bid_match else None
+                    if build_id: logger.info(f"[Piccoma Diagnostic] Found BuildId via regex: {build_id}")
                 
                 if build_id:
                     ext = ".json"
+                    # Include the direct viewer JSON endpoint which often handles purchase/usage state
+                    discovery_endpoints.append(f"{base_url}/_next/data/{build_id}/web/viewer/{'s/' if is_s else ''}{series_id}/{episode_id}{ext}")
+                    
                     for bp in ["/web/episode/waitfree/use", "/web/viewer/waitfree/push", "/web/episode/purchase"]:
                         discovery_endpoints.append(f"{base_url}/_next/data/{build_id}{bp}{ext}")
                         discovery_endpoints.append(f"{base_url}/_next/data/{build_id}{bp.replace('/waitfree/', '/waitfree/s/')}{ext}")
@@ -662,7 +671,11 @@ class PiccomaProvider(BaseProvider):
                                 if post_res.status_code in [200, 302, 301]:
                                     logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url}")
                                     break
-                            except: continue
+                                else:
+                                    logger.info(f"[Piccoma Discovery] Trial failed: {alt_url} (Result: {post_res.status_code})")
+                            except Exception as trial_e:
+                                logger.info(f"[Piccoma Discovery] Trial exception: {alt_url} ({trial_e})")
+                            continue
                         if post_res.status_code in [200, 302, 301]: break
                     if post_res.status_code in [200, 302, 301]: break
             
