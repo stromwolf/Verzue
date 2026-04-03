@@ -558,12 +558,12 @@ class PiccomaProvider(BaseProvider):
                 is_waitfree = bool(soup.select_one('.btn-waitfree, .PCM-btn-waitfree'))
             
             # 5. Build Final Payload and Endpoint
-            # S-GRADE: Build correctly targeted URL based on primary detection (Smartoon: {is_s})
+            # S-GRADE: Sync with 'Working Code' path segment order
             if is_waitfree:
-                target_url = f"{base_url}/web/episode/{'s/' if is_s else ''}waitfree/use"
+                target_url = f"{base_url}/web/episode/waitfree/{'s/' if is_s else ''}use"
                 logger.info(f"[Piccoma] ⏳ Detected 'Free to Wait' for episode {episode_id}... (Smartoon: {is_s})")
             else:
-                target_url = f"{base_url}/web/episode/{'s/' if is_s else ''}purchase"
+                target_url = f"{base_url}/web/episode/purchase/{'s' if is_s else ''}"
                 logger.info(f"[Piccoma] 🪙 Detected coin purchase required for episode {episode_id}... (Smartoon: {is_s})")
                 
             purchase_payload = {
@@ -591,10 +591,25 @@ class PiccomaProvider(BaseProvider):
             if post_res.status_code == 404:
                 logger.error(f"[Piccoma] Primary endpoint ({target_url}) 404. Initiating discovery loop (Smartoon: {is_s}).")
                 
-                # S-GRADE: Trialing multiple endpoint signatures in priority order
-                discovery_endpoints = []
+                discovery_endpoints = [
+                    f"{base_url}/web/viewer/waitfree/s/push",
+                    f"{base_url}/web/episode/waitfree/s/use",
+                    f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/push",
+                    f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/use",
+                    f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/push",
+                    f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree",
+                    f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/use",
+                    f"{base_url}/web/episode/use/waitfree"
+                ] if is_waitfree else [
+                    f"{base_url}/web/viewer/purchase/s/push",
+                    f"{base_url}/web/episode/purchase/s",
+                    f"{base_url}/web/viewer{'/s' if is_s else ''}/purchase/push",
+                    f"{base_url}/web/episode{'/s' if is_s else ''}/purchase",
+                    f"{base_url}/web/episode{'/s' if is_s else ''}/purchase/push",
+                    f"{base_url}/web/episode/use/purchase"
+                ]
                 
-                # 1. Trial Next.js JSON Data (Highest success rate)
+                # S-GRADE: Trial Next.js JSON Data (Working Code Addition)
                 config_script = soup.find('script', string=re.compile(r'__p_config__|next_data'))
                 build_id = None
                 if config_script and config_script.string:
@@ -603,24 +618,10 @@ class PiccomaProvider(BaseProvider):
                 
                 if build_id:
                     ext = ".json"
-                    base_ps = ["/web/episode/waitfree/use", "/web/viewer/waitfree/push", "/web/episode/purchase"]
-                    for bp in base_ps:
+                    for bp in ["/web/episode/waitfree/use", "/web/viewer/waitfree/push", "/web/episode/purchase"]:
                         discovery_endpoints.append(f"{base_url}/_next/data/{build_id}{bp}{ext}")
                         discovery_endpoints.append(f"{base_url}/_next/data/{build_id}{bp.replace('/waitfree/', '/waitfree/s/')}{ext}")
 
-                # 2. Traditional Endpoints (Unified List)
-                prefixes = ["/web/viewer", "/web/episode"]
-                middle_segments = ["/waitfree", "/purchase"]
-                postfixes = ["/use", "/push", ""]
-                
-                for pref in prefixes:
-                    for mid in middle_segments:
-                        for post in postfixes:
-                            # Try both standard and Smartoon (/s/) variants
-                            discovery_endpoints.append(f"{base_url}{pref}{mid}{post}")
-                            discovery_endpoints.append(f"{base_url}{pref}{mid}/s{post}")
-                            discovery_endpoints.append(f"{base_url}{pref}/s{mid}{post}")
-                
                 # Cleanup and unique
                 discovery_endpoints = list(dict.fromkeys(discovery_endpoints))
                 
