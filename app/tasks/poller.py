@@ -291,6 +291,7 @@ class AutoDownloadPoller:
                     series_id=series_id,
                     image_url=image_url,
                     chapter_id=current_id,
+                    chapter_number=latest_chapter.get('notation') # 🟢 NEW
                 )
                 return True
 
@@ -310,6 +311,7 @@ class AutoDownloadPoller:
         series_id: str,
         image_url: str | None = None,
         chapter_id: str | None = None,
+        chapter_number: str | None = None, # 🟢 NEW
     ):
         """Sends a V2 Component notification to the target channel."""
         from app.core.logger import req_id_context, group_name_context, log_category_context
@@ -347,6 +349,7 @@ class AutoDownloadPoller:
                 series_id=series_id,
                 notification_id=notification_id,
                 chapter_id=chapter_id,
+                chapter_number=chapter_number, # 🟢 NEW
             )
 
             try:
@@ -425,6 +428,7 @@ class AutoDownloadPoller:
                     series_id=series_id,
                     image_url=image_url,
                     chapter_id=current_id,
+                    chapter_number=latest_chapter.get('notation') # 🟢 NEW
                 )
                 return True
 

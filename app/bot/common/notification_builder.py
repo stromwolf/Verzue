@@ -41,6 +41,7 @@ def build_notification_payload(
     series_id: str,
     notification_id: int,
     chapter_id: str | None = None,
+    chapter_number: str | None = None, # 🟢 NEW: Actual notation (e.g. 第38話)
 ) -> dict:
     """
     Builds the full Discord message payload (flags + components) for a new chapter notification.
@@ -51,20 +52,21 @@ def build_notification_payload(
     accent_color = PLATFORM_COLORS.get(platform_key, 0x2b2d31)
     platform_display = PLATFORM_NAMES.get(platform_key, platform.upper())
 
-    now = datetime.now(timezone.utc)
-    release_date = now.strftime("%d %b, %Y")
-    release_time = now.strftime("%H:%M UTC")
-
     # --- Header: role ping + platform ---
-    role_mention = f" <@&{role_id}>" if role_id else ""
+    # Role ID provided by user example: 1419398048152551514
+    role_mention = f"<@&{role_id}>" if role_id else "@Updates"
     platform_emoji = PLATFORM_EMOJIS.get(platform_key, "📖")
-    header_text = f"-# New Chapter @Updates of **[ {platform_emoji} [{platform_display}]({series_url}) ]**{role_mention}"
+    
+    # 🟢 New Layout: High-level text (no -#), role after "New Chapter"
+    header_text = f"New Chapter {role_mention} of **[ {platform_emoji} [{platform_display}]({series_url}) ]**"
 
     # --- Title block ---
+    # 🟢 New Layout: Subtitle is bolded Chapter Number, Original Title and Date removed.
+    subtitle = f"-# **{chapter_number}**" if chapter_number else ""
     if custom_title:
-        title_text = f"## {custom_title}\n{series_title}\n-# {release_date}"
+        title_text = f"## {custom_title}\n{subtitle}"
     else:
-        title_text = f"## {series_title}\n-# {release_date}"
+        title_text = f"## {series_title}\n{subtitle}"
 
     # --- Footer IDs ---
     footer_text = f"-# N-ID: {notification_id} | S-ID: {series_id}"

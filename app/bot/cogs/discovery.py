@@ -105,7 +105,8 @@ class Discovery(commands.Cog):
                     "series_id": s_id or target.split("/")[-1],
                     "url": target,
                     "poster_url": image_url,
-                    "chapter_id": latest_ch.get("id") # Added
+                    "chapter_id": latest_ch.get("id"),
+                    "chapter_number": latest_ch.get("notation", "第1話") # 🟢 NEW
                 }
                 await msg.delete()
             except Exception as e:
@@ -137,10 +138,14 @@ class Discovery(commands.Cog):
                     "series_id": "123456",
                     "url": "https://mechacomic.jp/books/123456",
                     "poster_url": "https://mechacomic.jp/books/123456",
-                    "chapter_id": "250"
+                    "chapter_id": "250",
+                    "chapter_number": "第250話" # 🟢 NEW
                 }
             }
             mock_data = mocks.get(platform, mocks["jumptoon"])
+            # Ensure mock_data has chapter_number for static mocks too
+            if "chapter_number" not in mock_data:
+                 mock_data["chapter_number"] = mock_data.get("custom_title", "第1話")
             platform = platform if platform in mocks else "jumptoon"
 
         payload = build_notification_payload(
@@ -152,7 +157,8 @@ class Discovery(commands.Cog):
             series_url=mock_data["url"],
             series_id=mock_data["series_id"],
             notification_id=9999,
-            chapter_id=mock_data.get("chapter_id")
+            chapter_id=mock_data.get("chapter_id"),
+            chapter_number=mock_data.get("chapter_number") # 🟢 NEW
         )
         
         try:
