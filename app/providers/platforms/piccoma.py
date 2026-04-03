@@ -264,7 +264,8 @@ class PiccomaProvider(BaseProvider):
                     is_locked = "待てば￥0" not in item.get_text() and "無料" not in item.get_text() and "¥0" not in item.get_text()
                 
                 # Use /s/ prefix for Smartoons
-                item_viewer_prefix = f"{base_url}/web/viewer/s" if is_smartoon_item else f"{base_url}/web/viewer"
+                # S-GRADE: Inherit is_smartoon from series-level if item-level detection is ambiguous
+                item_viewer_prefix = f"{base_url}/web/viewer/s" if (is_smartoon_item or is_smartoon) else f"{base_url}/web/viewer"
                 
                 all_chapters.append({
                     'id': cid,
@@ -542,7 +543,7 @@ class PiccomaProvider(BaseProvider):
             
             # Additional detection heuristics
             if not is_s:
-                # If the viewer URL was passed in (common for scrape_chapter tasks)
+                # 1. If the viewer URL was passed in (common for scrape_chapter tasks)
                 if "/web/viewer/s/" in task.url or "smartoon" in task.url.lower():
                     is_s = True
                 else:
@@ -551,6 +552,13 @@ class PiccomaProvider(BaseProvider):
                     if "縦読み" in it_str or "SMARTOON" in it_str or soup.select_one('.PCM-icon_smartoon'):
                         is_s = True
             
+            # S-GRADE: Smartoon URL Self-Correction Logic
+            # If we know it's a Smartoon (is_s=True) but the URL is missing the /s/ prefix, Fix It.
+            if is_s and "/web/viewer/" in task.url and "/web/viewer/s/" not in task.url:
+                fixed_url = task.url.replace("/web/viewer/", "/web/viewer/s/")
+                logger.info(f"[Piccoma Identity] 🛠️ Self-Corrected URL: {task.url} -> {fixed_url}")
+                task.url = fixed_url
+
             logger.info(f"[Piccoma Identity] 🧪 Diagnostic: is_s={is_s} (URL: {task.url})")
             
             # 2. Robust CSRF Extraction (Multi-Tier Fallback)
