@@ -151,14 +151,16 @@ class PiccomaProvider(BaseProvider):
                     release_time = "15:00" # Midnight JST = 15:00 UTC
                     break
 
-        # 🟢 S-GRADE: Smartoon Detection
-        # Piccoma uses different viewer URL structures for 'Smartoon' (Webtoons) and standard manga.
-        # Smartoons: /web/viewer/s/{series_id}/{chapter_id}
-        # Standard:  /web/viewer/{series_id}/{chapter_id}
-        is_smartoon = "smartoon" in title.lower() or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon'))
+        # 🟢 S-GRADE: Smartoon Detection (Precision fix for series like 170586)
+        # Search title, standard icons, and also the etype indicator in current URL if known
+        is_smartoon = "smartoon" in title.lower() or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
+        
+        # Fallback: Look for Smartoon-only keywords or vertical scroll indicators in the status list
         if not is_smartoon:
-             # Check for common smartoon patterns if indicators are missing
-             is_smartoon = any(kw in title for kw in ["【SMARTOON】", "[SMARTOON]"])
+            indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-productStatus_item')
+            it_str = indicator_text.get_text().upper() if indicator_text else ""
+            if "縦読み" in it_str or "SMARTOON" in it_str:
+                is_smartoon = True
         
         task_viewer_prefix = f"{base_url}/web/viewer" + ("/s" if is_smartoon else "")
         logger.info(f"[Piccoma] Series '{title}' (ID: {series_id}) - Smartoon: {is_smartoon}")
@@ -509,19 +511,28 @@ class PiccomaProvider(BaseProvider):
                 csrf_token = csrf_meta.get('content')
                 logger.info("[Piccoma] Found CSRF via meta-tag.")
             
-            # Tier 2: window.__p_config__ (Newer layout)
+            # Tier 2: window.__p_config__ (Newer layout used on 170586)
             if not csrf_token:
-                config_match = re.search(r'__p_config__\s*=\s*({.*?});', res.text, re.DOTALL)
-                if config_match:
-                    config_json = config_match.group(1)
-                    token_m = re.search(r'csrfToken\s*:\s*["\']([^"\']+)["\']', config_json)
+                # Find script tag containing __p_config__
+                config_script = soup.find('script', string=re.compile(r'__p_config__'))
+                if config_script and config_script.string:
+                    token_m = re.search(r'csrfToken\s*:\s*["\']([^"\']+)["\']', config_script.string)
                     if token_m:
                         csrf_token = token_m.group(1)
-                        logger.info("[Piccoma] Found CSRF via __p_config__.")
+                        logger.info("[Piccoma] Found CSRF via __p_config__ script segment.")
+                
+                # Global text fallback for __p_config__
+                if not csrf_token:
+                    config_match = re.search(r'__p_config__\s*=\s*({.*?});', res.text, re.DOTALL)
+                    if config_match:
+                        token_m = re.search(r'csrfToken\s*:\s*["\']([^"\']+)["\']', config_match.group(1))
+                        if token_m:
+                            csrf_token = token_m.group(1)
+                            logger.info("[Piccoma] Found CSRF via __p_config__ raw-regex.")
             
             # Tier 3: Hidden form input (Legacy/Standard Manga)
             if not csrf_token:
-                hidden_csrf = soup.select_one('input[name="csrf_token"], input[name="_token"]')
+                hidden_csrf = soup.select_one('input[name="csrf_token"], input[name="_token"], #js_purchaseForm input[name*="token"]')
                 if hidden_csrf:
                     csrf_token = hidden_csrf.get('value')
                     logger.info("[Piccoma] Found CSRF via hidden form input.")
@@ -538,11 +549,12 @@ class PiccomaProvider(BaseProvider):
                 "Origin": base_url,
                 "X-Requested-With": "XMLHttpRequest",
                 "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
             if csrf_token:
                 headers['X-CSRF-Token'] = csrf_token
             else:
-                logger.warning(f"[Piccoma] Could not find CSRF token for episode {episode_id}. Request might fail.")
+                logger.warning(f"[Piccoma] Could not find CSRF token for episode {episode_id}. Request will likely fail.")
             
             # 3. Security Hash (S-Grade entropy)
             import hashlib
