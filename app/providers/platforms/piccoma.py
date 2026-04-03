@@ -27,6 +27,10 @@ class PiccomaProvider(BaseProvider):
     BASE_URL = "https://piccoma.com"
     SERIES_PATH = "/web/product/"
     
+    # 🕵️ DEVELOPER MODE: Set to True to dump HTML on extraction/purchase failures
+    DEVELOPER_MODE = True
+    
+    
     # S-GRADE: Thread-safe lock to prevent pycasso's global state race condition
     _unscramble_lock = threading.Lock()
 
@@ -42,6 +46,33 @@ class PiccomaProvider(BaseProvider):
         }
         # S-Grade Backpressure
         self._download_semaphore = asyncio.Semaphore(10)
+
+    def _dump_diagnostic_data(self, label: str, content: str, metadata: dict = None):
+        """S-Grade Diagnostic: Dumps HTML/State to local files for expert analysis."""
+        if not self.DEVELOPER_MODE: return
+        
+        try:
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%H%M%S")
+            # Root: tmp/piccoma_dev/
+            dump_dir = os.path.join(os.getcwd(), "tmp", "piccoma_dev")
+            os.makedirs(dump_dir, exist_ok=True)
+            
+            # 1. Save Content (HTML/JSON)
+            filename = f"{timestamp}_{label}.html"
+            filepath = os.path.join(dump_dir, filename)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
+            
+            # 2. Save Metadata (Headers/Payload)
+            if metadata:
+                meta_path = os.path.join(dump_dir, f"{timestamp}_{label}_meta.json")
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=4)
+            
+            logger.info(f"📁 [DEV-TRACE] Diagnostic dump created: tmp/piccoma_dev/{filename}")
+        except Exception as e:
+            logger.error(f"Failed to dump diagnostic data: {e}")
 
     def _get_context_from_url(self, url: str):
         """S+ Refinement: Stateless context derivation."""
@@ -280,7 +311,12 @@ class PiccomaProvider(BaseProvider):
 
         # S+ DRM Heuristic: Multi-stage manifest discovery
         pdata = self._extract_pdata_heuristic(res.text)
-        if not pdata: raise ScraperError("Could not extract chapter manifest via any heuristic.")
+        if not pdata:
+            # 🕵️ [DEV-MODE]: Capture viewer HTML on manifest failure
+            self._dump_diagnostic_data(f"manifest_fail_{chapter_id}", res.text, {
+                "url": task.url, "status": res.status_code, "headers": dict(res.headers)
+            })
+            raise ScraperError("Could not extract chapter manifest via any heuristic.")
 
         # Capture V30 metadata for debugging
         p_category = pdata.get('category')
@@ -540,6 +576,10 @@ class PiccomaProvider(BaseProvider):
                 logger.info(f"[DEV-TRACE] [Step 3] CSRF extraction: {csrf_token[:10]}...")
             else:
                 logger.warning("[DEV-TRACE] [Step 3] CSRF extraction FAILED. Page might be logged out or blocked.")
+                # 🕵️ [DEV-MODE]: Capture episode list HTML on CSRF failure
+                self._dump_diagnostic_data(f"csrf_fail_{episode_id}", res.text, {
+                    "url": episode_page_url, "status": res.status_code, "headers": dict(res.headers)
+                })
             
             # 3. Security Hash (S-Grade entropy)
             import hashlib
@@ -600,6 +640,10 @@ class PiccomaProvider(BaseProvider):
             logger.info(f"[DEV-TRACE] Primary Result: Status={post_res.status_code}")
             if post_res.status_code != 200:
                 logger.info(f"[DEV-TRACE] Primary Response Body (Snippet): {post_res.text[:300]}")
+                # 🕵️ [DEV-MODE]: Capture purchase failure body
+                self._dump_diagnostic_data(f"purchase_fail_{episode_id}", post_res.text, {
+                    "url": target_url, "payload": purchase_payload, "status": post_res.status_code, "headers": dict(post_res.headers)
+                })
             
             # 7. Verification Loop
             if post_res.status_code in [200, 302]:
