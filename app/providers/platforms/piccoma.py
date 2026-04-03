@@ -151,7 +151,7 @@ class PiccomaProvider(BaseProvider):
                     release_time = "15:00" # Midnight JST = 15:00 UTC
                     break
 
-        # 🟢 S-GRADE: Smartoon Detection (Precision fix for series like 170586)
+        # 🟢 S-GRADE: Smartoon Detection (Precision fix for series like 170586 and 200519)
         # Search title, standard icons, and also the etype indicator in current URL if known
         is_smartoon = "smartoon" in title.lower() or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
         
@@ -160,6 +160,8 @@ class PiccomaProvider(BaseProvider):
             indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-productStatus_item')
             it_str = indicator_text.get_text().upper() if indicator_text else ""
             if "縦読み" in it_str or "SMARTOON" in it_str:
+                is_smartoon = True
+            elif "ETYPE" in url.upper():
                 is_smartoon = True
         
         task_viewer_prefix = f"{base_url}/web/viewer" + ("/s" if is_smartoon else "")
@@ -481,6 +483,7 @@ class PiccomaProvider(BaseProvider):
     async def fast_purchase(self, task) -> bool:
         """
         S+ Enhanced Purchase: Detect and handle both coin purchases and 'Free-to-Wait' triggers.
+        Mirrored from verified working source with robust CSRF fallback.
         """
         match = re.search(r'/web/viewer/(?:s/)?(\d+)/(\d+)', task.url)
         if not match:
@@ -493,9 +496,16 @@ class PiccomaProvider(BaseProvider):
         
         try:
             # 1. Load episode list page to extract CSRF tokens, identify access type, and get form data
+            # Use etype=E to ensure we see the list properly
             episode_page_url = f"{base_url}/web/product/{series_id}/episodes?etype=E"
             p_task = auth_session.get(episode_page_url, timeout=15)
             res = await p_task
+            
+            # Robust Error Detection: Identifying blocked/redirected 404 pages early
+            if res.status_code == 200 and len(res.text) < 10000 and "ご利用いただけません" in res.text:
+                logger.warning(f"[Piccoma] Block page detected on metadata fetch. Session/Proxy likely rejected.")
+                return False
+
             if res.status_code != 200:
                 logger.warning(f"[Piccoma] Could not load episode page: {res.status_code}")
                 return False
@@ -504,45 +514,15 @@ class PiccomaProvider(BaseProvider):
             
             # 2. Robust CSRF Extraction (Multi-Tier Fallback)
             csrf_token = None
-            
-            # Tier 1: Standard Meta Tag
             csrf_meta = soup.find('meta', {'name': 'csrf-token'})
             if csrf_meta:
                 csrf_token = csrf_meta.get('content')
-                logger.info("[Piccoma] Found CSRF via meta-tag.")
             
-            # Tier 2: window.__p_config__ (Newer layout used on 170586)
             if not csrf_token:
-                # Find script tag containing __p_config__
                 config_script = soup.find('script', string=re.compile(r'__p_config__'))
                 if config_script and config_script.string:
                     token_m = re.search(r'csrfToken\s*:\s*["\']([^"\']+)["\']', config_script.string)
-                    if token_m:
-                        csrf_token = token_m.group(1)
-                        logger.info("[Piccoma] Found CSRF via __p_config__ script segment.")
-                
-                # Global text fallback for __p_config__
-                if not csrf_token:
-                    config_match = re.search(r'__p_config__\s*=\s*({.*?});', res.text, re.DOTALL)
-                    if config_match:
-                        token_m = re.search(r'csrfToken\s*:\s*["\']([^"\']+)["\']', config_match.group(1))
-                        if token_m:
-                            csrf_token = token_m.group(1)
-                            logger.info("[Piccoma] Found CSRF via __p_config__ raw-regex.")
-            
-            # Tier 3: Hidden form input (Legacy/Standard Manga)
-            if not csrf_token:
-                hidden_csrf = soup.select_one('input[name="csrf_token"], input[name="_token"], #js_purchaseForm input[name*="token"]')
-                if hidden_csrf:
-                    csrf_token = hidden_csrf.get('value')
-                    logger.info("[Piccoma] Found CSRF via hidden form input.")
-            
-            # Tier 4: Global regex search
-            if not csrf_token:
-                generic_m = re.search(r'csrfToken":"([^"]+)"', res.text)
-                if generic_m:
-                    csrf_token = generic_m.group(1)
-                    logger.info("[Piccoma] Found CSRF via global serial-regex.")
+                    csrf_token = token_m.group(1) if token_m else None
             
             headers = {
                 "Referer": episode_page_url,
@@ -553,8 +533,6 @@ class PiccomaProvider(BaseProvider):
             }
             if csrf_token:
                 headers['X-CSRF-Token'] = csrf_token
-            else:
-                logger.warning(f"[Piccoma] Could not find CSRF token for episode {episode_id}. Request will likely fail.")
             
             # 3. Security Hash (S-Grade entropy)
             import hashlib
@@ -564,36 +542,29 @@ class PiccomaProvider(BaseProvider):
             headers['X-Hash-Code'] = sec_hash
             
             # 4. Identify Access Type (Wait-Free vs Coins)
-            # 🟢 S-GRADE: Precision detection - Check the specific episode instead of global page status
             is_waitfree = False
             ep_item = soup.select_one(f'a[data-episode_id="{episode_id}"]')
-            
             if ep_item:
-                # Check for waitfree indicators in the list item (icon or specific class)
                 waitfree_indicator = ep_item.select_one('.PCM-epList_status_waitfree, .PCM-icon_waitfree, .PCM-icon_clock')
                 is_waitfree = bool(waitfree_indicator) or "待てば¥0" in ep_item.get_text() or "待てば" in ep_item.get_text()
             
             if not is_waitfree:
-                # Fallback: Check for the button globally if it's a single-episode context or modal
                 is_waitfree = bool(soup.select_one('.btn-waitfree, .PCM-btn-waitfree'))
             
             # 5. Build Final Payload and Endpoint
-            purchase_payload = {
-                "episodeId": episode_id,
-                "productId": series_id,
-                "hash": sec_hash,
-                "hashCode": sec_hash,
-                "confirm": "false",
-                "hasWaitFree": "true" if is_waitfree else "false"
-            }
-            
             if is_waitfree:
                 target_url = f"{base_url}/web/episode/waitfree/use"
-                purchase_payload["ticketType"] = "WAITFREE"
                 logger.info(f"[Piccoma] ⏳ Detected 'Free to Wait' for episode {episode_id}. Using wait-free ticket.")
             else:
                 target_url = f"{base_url}/web/episode/purchase"
                 logger.info(f"[Piccoma] 🪙 Detected coin purchase required for episode {episode_id}.")
+                
+            purchase_payload = {
+                "episodeId": episode_id,
+                "productId": series_id,
+                "hash": sec_hash,
+                "hashCode": sec_hash
+            }
             
             # Extract additional hidden fields from purchase form if available
             purchase_form = soup.select_one('#js_purchaseForm, .js_purchaseForm, form[action*="purchase"]')
@@ -605,18 +576,13 @@ class PiccomaProvider(BaseProvider):
             
             # 6. POST purchase/usage request
             post_task = auth_session.post(
-                target_url, data=purchase_payload, headers=headers, timeout=15,
-                allow_redirects=True
+                target_url, data=purchase_payload, headers=headers, timeout=15, allow_redirects=True
             )
             post_res = await post_task
             
             # 🟢 S-GRADE: 404 Recovery & Discovery Heuristic
             if post_res.status_code == 404:
-                # 🧩 TIER 1: Log diagnostic details for the failure
-                logger.error(f"[Piccoma] Primary endpoint ({target_url}) 404. Body: {post_res.text[:800]}")
-                
-                # 🧩 TIER 2: Automated Retry with known alternative endpoints
-                # 🧩 TIER 2: Smartoon-Aware Endpoint discovery
+                logger.error(f"[Piccoma] Primary endpoint ({target_url}) 404. Initiating discovery loop.")
                 is_s = "s/" in task.url
                 discovery_endpoints = [
                     f"{base_url}/web/viewer/waitfree/s/push",
@@ -624,7 +590,6 @@ class PiccomaProvider(BaseProvider):
                     f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/push",
                     f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/use",
                     f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree/push",
-                    f"{base_url}/web/episode{'/s' if is_s else ''}/waitfree",
                     f"{base_url}/web/viewer{'/s' if is_s else ''}/waitfree/use",
                     f"{base_url}/web/episode/use/waitfree"
                 ] if is_waitfree else [
@@ -632,65 +597,57 @@ class PiccomaProvider(BaseProvider):
                     f"{base_url}/web/episode/purchase/s",
                     f"{base_url}/web/viewer{'/s' if is_s else ''}/purchase/push",
                     f"{base_url}/web/episode{'/s' if is_s else ''}/purchase",
-                    f"{base_url}/web/episode{'/s' if is_s else ''}/purchase/push",
                     f"{base_url}/web/episode/use/purchase"
                 ]
                 
-                # 🧩 TIER 3: Multi-Format Payload Retry logic
-                # Now testing: [Camel/Snake] x [Form/JSON] x [Dual Referer]
-                payload_variants = [
-                    purchase_payload,
-                    {**purchase_payload, "episode_id": episode_id, "product_id": series_id, "ticket_type": "WAITFREE"}
-                ]
-                
-                referer_options = [episode_page_url, task.url] if is_waitfree else [episode_page_url]
+                # High-Entropy Payload Variants
+                payload_variants = []
+                for cid in ["episodeId", "episode_id"]:
+                    for pid in ["productId", "product_id"]:
+                        for conf in ["false", "true"]:
+                            p = {
+                                cid: episode_id,
+                                pid: series_id,
+                                "confirm": conf,
+                                "hasWaitFree": "true" if is_waitfree else ("true" if conf == "true" else "false")
+                            }
+                            if is_waitfree: p["ticketType"] = "WAITFREE"
+                            if p not in payload_variants: payload_variants.append(p)
                 
                 for alt_url in discovery_endpoints:
-                    for referer in referer_options:
-                        headers["Referer"] = referer
-                        for payload in payload_variants:
-                            for is_json in [False, True]:
-                                ct = "application/json" if is_json else "application/x-www-form-urlencoded"
-                                headers["Content-Type"] = ct
-                                logger.info(f"[Piccoma] 🔄 Retrying: {alt_url} ({'snake' if 'episode_id' in payload else 'camel'}, {'JSON' if is_json else 'Form'}, Ref: {'Viewer' if 'viewer' in referer else 'Ep'})")
-                                try:
-                                    p_retry = auth_session.post(
-                                        alt_url, 
-                                        json=payload if is_json else None,
-                                        data=None if is_json else payload,
-                                        headers=headers, timeout=15
-                                    )
-                                    post_res = await p_retry
-                                    if post_res.status_code in [200, 302, 301]:
-                                        logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url} ({ct})")
-                                        break
-                                    else:
-                                        logger.debug(f"[Piccoma] Alternative {alt_url} failed with {post_res.status_code}")
-                                except Exception as alt_e:
-                                    logger.debug(f"[Piccoma] Error hitting {alt_url}: {alt_e}")
-                            if post_res.status_code in [200, 302, 301]: break
+                    for payload in payload_variants:
+                        for is_json in [False, True]:
+                            ct = "application/json" if is_json else "application/x-www-form-urlencoded"
+                            headers["Content-Type"] = ct
+                            try:
+                                p_retry = auth_session.post(
+                                    alt_url, json=payload if is_json else None,
+                                    data=None if is_json else payload, headers=headers, timeout=15
+                                )
+                                post_res = await p_retry
+                                if post_res.status_code in [200, 302, 301]:
+                                    logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url}")
+                                    break
+                            except: continue
                         if post_res.status_code in [200, 302, 301]: break
                     if post_res.status_code in [200, 302, 301]: break
             
             # 7. Verification Loop
             if post_res.status_code in [200, 302]:
-                # Try the viewer URL formats to verify access
                 viewer_paths = [f"/web/viewer/s/{series_id}/{episode_id}", f"/web/viewer/{series_id}/{episode_id}"]
                 for v_path in viewer_paths:
-                    v_url = f"{base_url}{v_path}"
-                    v_res = await auth_session.get(v_url, timeout=10)
+                    v_res = await auth_session.get(f"{base_url}{v_path}", timeout=10)
                     if v_res.status_code == 200:
                         pdata = self._extract_pdata_heuristic(v_res.text)
                         if pdata:
                             logger.info(f"[Piccoma] ✅ Access granted for episode {episode_id}")
-                            await self.session_service.record_session_success("piccoma")
                             return True
                 
-                # Check JSON response for explicit success
+                # Check JSON for success
                 try:
                     resp_json = post_res.json()
                     if resp_json.get('result') == 'ok' or resp_json.get('success'):
-                        logger.info(f"[Piccoma] ✅ Purchase confirmed via JSON response for {episode_id}")
+                        logger.info(f"[Piccoma] ✅ Purchase confirmed via JSON")
                         return True
                 except: pass
                 
@@ -698,7 +655,7 @@ class PiccomaProvider(BaseProvider):
             return False
             
         except Exception as e:
-            logger.error(f"[Piccoma] Error in fast_purchase for episode {episode_id}: {e}")
+            logger.error(f"[Piccoma] Error in fast_purchase: {e}")
             return False
 
 
