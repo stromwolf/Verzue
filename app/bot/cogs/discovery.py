@@ -64,56 +64,56 @@ class Discovery(commands.Cog):
             await ctx.send(f"❌ Failed to render V2 Component: `{e}`")
 
     @commands.command(name="test_uich", aliases=["test_chapter_ui"])
-    async def test_chapter_ui(self, ctx, target: str = "jumptoon"):
+    async def test_chapter_ui(self, ctx, target: str = "jumptoon", url: str | None = None):
         """Debug command to visualize the New Chapter Update UI. Target can be a platform or live URL."""
-        logger.info(f"🧪 [Discovery] Triggered $test UI preview for {target} by {ctx.author}")
+        # Normalize Logics: Support $test_uich <url> and $test_uich <platform> <url>
+        final_url = url if url else (target if target.startswith("http") else None)
+        final_platform = target if not target.startswith("http") else "jumptoon"
         
-        # 1. Determine if target is a URL or platform
-        is_url = target.startswith("http")
-        platform = "jumptoon" # Default
+        logger.info(f"🧪 [Discovery] Triggered $test UI preview (Target: {final_platform}, URL: {final_url}) by {ctx.author}")
         
-        if is_url:
-            provider = self.pm.get_provider_for_url(target)
-            if not provider:
-                return await ctx.send(f"❌ Unsupported URL or platform not detected: `{target}`")
-            
-            # Identify platform for accent colors
-            url_lower = target.lower()
-            if "mechacomic.jp" in url_lower: platform = "mecha"
-            elif "jumptoon.com" in url_lower: platform = "jumptoon"
-            elif "piccoma.com" in url_lower: platform = "piccoma"
-            elif "kakao.com" in url_lower: platform = "kakao"
-            elif "kuaikanmanhua.com" in url_lower: platform = "kuaikan"
-            elif "ac.qq.com" in url_lower: platform = "acqq"
-
-            # Fetch Real Data
+        if final_url:
             try:
-                msg = await ctx.send("🔍 Fetching live series data...")
-                data = await provider.get_series_info(target)
-                # (title, total_chapters, all_chapters, image_url, series_id, ...)
+                msg = await ctx.send(f"🔍 **Scraping Live Data:** <{final_url}>")
+                provider = self.pm.get_provider_for_url(final_url)
+                if not provider:
+                    return await msg.edit(content=f"❌ Unsupported URL or platform not detected: `{final_url}`")
+                
+                # Fetch Real Data (The DEVELOPER_MODE logs are inside here)
+                data = await provider.get_series_info(final_url)
                 title, total_chapters, chapter_list, image_url, s_id, _, _, _, _ = data
                 
                 if not chapter_list:
                     return await msg.edit(content="⚠️ URL processed but no chapters found.")
                 
-                # Use the latest chapter (usually the last in the list for our providers)
+                # Use the latest chapter
                 latest_ch = chapter_list[-1]
                 
                 mock_data = {
                     "title": title,
                     "custom_title": latest_ch.get("notation", "New Chapter"),
-                    "series_id": s_id or target.split("/")[-1],
-                    "url": target,
+                    "series_id": s_id or final_url.split("/")[-1],
+                    "url": final_url,
                     "poster_url": image_url,
                     "chapter_id": latest_ch.get("id"),
-                    "chapter_number": latest_ch.get("notation", "第1話") # 🟢 NEW
+                    "chapter_number": latest_ch.get("notation", "第1話")
                 }
+                # Determine platform for UI accenting
+                url_lower = final_url.lower()
+                if "mechacomic.jp" in url_lower: final_platform = "mecha"
+                elif "jumptoon.com" in url_lower: final_platform = "jumptoon"
+                elif "piccoma.com" in url_lower: final_platform = "piccoma"
+                elif "kakao.com" in url_lower: final_platform = "kakao"
+                elif "kuaikanmanhua.com" in url_lower: final_platform = "kuaikan"
+                elif "ac.qq.com" in url_lower: final_platform = "acqq"
+                
                 await msg.delete()
+                platform = final_platform # Sync for payload
             except Exception as e:
                 logger.error(f"Live Test Error: {e}")
                 return await ctx.send(f"❌ Failed to fetch live data: `{e}`")
         else:
-            # Original Mock Logic
+            # Original Mock Logic (Fallback)
             platform = target.lower()
             mocks = {
                 "jumptoon": {
@@ -139,7 +139,7 @@ class Discovery(commands.Cog):
                     "url": "https://mechacomic.jp/books/123456",
                     "poster_url": "https://mechacomic.jp/books/123456",
                     "chapter_id": "250",
-                    "chapter_number": "第250話" # 🟢 NEW
+                    "chapter_number": "第250話"
                 }
             }
             mock_data = mocks.get(platform, mocks["jumptoon"])
@@ -175,7 +175,7 @@ class Discovery(commands.Cog):
                 series_id=mock_data["series_id"],
                 notification_id=9999,
                 chapter_id=mock_data.get("chapter_id"),
-                chapter_number=mock_data.get("chapter_number"), # 🟢 NEW
+                chapter_number=mock_data.get("chapter_number"),
                 use_attachment_proxy=use_attachment_proxy
             )
 
