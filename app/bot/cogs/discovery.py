@@ -148,34 +148,36 @@ class Discovery(commands.Cog):
                  mock_data["chapter_number"] = mock_data.get("custom_title", "第1話")
             platform = platform if platform in mocks else "jumptoon"
 
-        payload = build_notification_payload(
-            platform=platform,
-            role_id=None, # No ping in test
-            series_title=mock_data["title"],
-            custom_title=mock_data["custom_title"],
-            poster_url=mock_data["poster_url"],
-            series_url=mock_data["url"],
-            series_id=mock_data["series_id"],
-            notification_id=9999,
-            chapter_id=mock_data.get("chapter_id"),
-            chapter_number=mock_data.get("chapter_number"), # 🟢 NEW
-            use_attachment_proxy=bool(mock_data.get("poster_url")) # Enable if URL exists
-        )
-        
         try:
             from curl_cffi import requests as curl_requests
             import io
             import discord
 
             files = []
+            use_attachment_proxy = False
             if mock_data.get("poster_url"):
                 try:
                     # Download the poster to bypass Discord's proxy blocking
                     res = curl_requests.get(mock_data["poster_url"], timeout=10, impersonate="chrome")
                     if res.status_code == 200:
                         files.append(discord.File(io.BytesIO(res.content), filename="poster.png"))
+                        use_attachment_proxy = True
                 except Exception as e:
                     logger.error(f"Failed to download poster for attachment: {e}")
+
+            payload = build_notification_payload(
+                platform=platform,
+                role_id=None, # No ping in test
+                series_title=mock_data["title"],
+                custom_title=mock_data["custom_title"],
+                poster_url=mock_data["poster_url"] if not use_attachment_proxy else None,
+                series_url=mock_data["url"],
+                series_id=mock_data["series_id"],
+                notification_id=9999,
+                chapter_id=mock_data.get("chapter_id"),
+                chapter_number=mock_data.get("chapter_number"), # 🟢 NEW
+                use_attachment_proxy=use_attachment_proxy
+            )
 
             route = discord.http.Route('POST', '/channels/{channel_id}/messages', channel_id=ctx.channel.id)
             await self.bot.http.request(route, json=payload, files=files)
