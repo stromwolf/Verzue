@@ -715,8 +715,8 @@ class HelperSlashCog(commands.Cog):
         app_commands.Choice(name="ACQQ", value="acqq"),
     ])
     async def delete_session(self, interaction: discord.Interaction, platform: str, account_id: str):
-        await interaction.response.defer(ephemeral=True)
         if not await self.interaction_check(interaction): return
+        await interaction.response.defer(ephemeral=True)
         
         try:
             session = await RedisManager().get_session(platform, account_id)

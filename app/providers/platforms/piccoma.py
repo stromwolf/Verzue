@@ -85,6 +85,11 @@ class PiccomaProvider(BaseProvider):
                 # Double-check after acquiring lock in case another worker already refreshed
                 session_obj = await self.session_service.get_active_session("piccoma")
                 
+                # Re-audit health of retrieved session
+                if session_obj:
+                    if not any(c.get('name') == 'pksid' and c.get('value') for c in session_obj.get("cookies", [])):
+                        session_obj = None
+
                 if not session_obj:
                     logger.info("🔄 [Piccoma Identity] No healthy sessions in vault. Triggering automated login fallback...")
                     login_success = await self.login_service.auto_login("piccoma")
@@ -610,12 +615,14 @@ class PiccomaProvider(BaseProvider):
                 "Content-Type": "application/x-www-form-urlencoded",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
-            csrf_token = csrf_input['value'] if csrf_input else None
-            
-            # CSRF Recovery: Try finding in hidden inputs if primary fails
+            # Fallback CSRF extraction (hidden inputs)
             if not csrf_token:
                 csrf_hidden = soup.find('input', type='hidden', attrs={'name': 'csrfmiddlewaretoken'})
                 csrf_token = csrf_hidden['value'] if csrf_hidden else None
+            
+            if not csrf_token:
+                csrf_token_input = soup.select_one('input[name="csrfmiddlewaretoken"], #csrfToken')
+                csrf_token = csrf_token_input['value'] if csrf_token_input else None
 
             if csrf_token:
                 headers['X-CSRF-Token'] = csrf_token
