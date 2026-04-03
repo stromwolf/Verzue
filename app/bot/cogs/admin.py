@@ -184,5 +184,34 @@ class AdminCog(commands.Cog):
             logger.error(f"Metadata Test Failed: {e}\n{traceback.format_exc()}")
             await msg.edit(content=f"❌ **Metadata Test Failed:**\n`{e}`")
 
+    @commands.group(name="clear_platform", invoke_without_command=True)
+    @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
+    async def clear_platform(self, ctx, platform: str):
+        """Usage: $clear_platform <platform>. Purges all Redis sessions for a platform."""
+        try:
+            msg = await ctx.send(f"🧹 **Cleaning sessions for: {platform.capitalize()}...**")
+            
+            # Access redis via task_queue if it exists, otherwise import
+            import redis.asyncio as aioredis
+            from app.services.redis_manager import RedisManager
+            redis_manager = RedisManager()
+            account_ids = await redis_manager.list_sessions(platform.lower())
+            
+            if not account_ids:
+                return await msg.edit(content=f"ℹ️ No active sessions found for **{platform}**.")
+            
+            r = redis_manager.redis
+            count = 0
+            for aid in account_ids:
+                key = f"verzue:sessions:{platform.lower()}:{aid}"
+                await r.delete(key)
+                count += 1
+            
+            await msg.edit(content=f"✅ Successfully purged **{count}** sessions for `{platform}`. Bot will now require fresh cookies.")
+            logger.info(f"🧹 [ADMIN] Sessions cleared for {platform} by {ctx.author}")
+        except Exception as e:
+            logger.error(f"Clear Platform Failed: {e}")
+            await ctx.send(f"❌ **Error clearing sessions:** `{e}`")
+
 async def setup(bot):
     await bot.add_cog(AdminCog(bot))
