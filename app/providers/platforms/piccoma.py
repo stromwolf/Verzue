@@ -74,10 +74,11 @@ class PiccomaProvider(BaseProvider):
             for c in session_obj["cookies"]:
                 name, value = c.get('name'), c.get('value')
                 if name and value: 
-                    async_session.cookies.set(name, value, domain=region_domain)
-                    d_base = str(region_domain)
-                    if d_base.startswith('.'):
-                        async_session.cookies.set(name, value, domain=d_base[1:])
+                    # S+ Refinement: Use original metadata (domain/path) if available for cross-subdomain compatibility.
+                    # This is critical for authentication handshakes on Piccoma subdomains.
+                    c_domain = c.get('domain') or region_domain
+                    c_path = c.get('path') or "/"
+                    async_session.cookies.set(name, value, domain=c_domain, path=c_path)
         else:
             # S-GRADE: Explicitly fail if no session is available
             raise ScraperError("No healthy sessions available for piccoma. Use /add-cookies to fix.")
