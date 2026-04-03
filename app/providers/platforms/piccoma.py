@@ -76,13 +76,17 @@ class PiccomaProvider(BaseProvider):
                 name = c.get('name') or c.get('key')
                 value = c.get('value') or c.get('val')
                 
-                if name and value: 
-                    c_domain = c.get('domain') or region_domain
-                    c_path = c.get('path') or "/"
-                    async_session.cookies.set(name, value, domain=c_domain, path=c_path)
-                    logger.info(f"  [Cookie Set Success] {name} (domain={c_domain})")
+                # S-GRADE: Brute force audit for empty or miskeyed values
+                if name:
+                    if value is not None:
+                        c_domain = c.get('domain') or region_domain
+                        c_path = c.get('path') or "/"
+                        async_session.cookies.set(str(name), str(value), domain=str(c_domain), path=str(c_path))
+                        logger.info(f"  [Cookie Set Success] {name} (domain={c_domain})")
+                    else:
+                        logger.warning(f"  [Cookie Skip] 'value' is None for key: {name}. Raw cookie: {c}")
                 else:
-                    logger.warning(f"  [Cookie Skip] Missing name/value keys. Content: {c.keys()}")
+                    logger.warning(f"  [Cookie Skip] Could not find 'name' or 'key' in: {c}")
         else:
             # S-GRADE: Explicitly fail if no session is available
             raise ScraperError("No healthy sessions available for piccoma. Use /add-cookies to fix.")
