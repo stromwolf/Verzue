@@ -14,6 +14,7 @@ from app.services.login_service import LoginService
 
 import io
 import json
+import os
 import urllib.parse
 logger = logging.getLogger("HelperCogs")
 
@@ -731,25 +732,41 @@ class HelperSlashCog(commands.Cog):
     # --- 11. COOKIE MANAGEMENT ---
 
     def _parse_cookie_content(self, content: str) -> list:
-        """Parses string content into a list of cookies (EditThisCookie JSON)."""
+        """Parses string content into a list of cookies (EditThisCookie JSON or Header-style)."""
+        clean_content = content.strip()
+        if clean_content.startswith("```"):
+            # Remove code block markers
+            lines = clean_content.split("\n")
+            if lines[0].startswith("```"): lines = lines[1:]
+            if lines and lines[-1].strip() == "```": lines = lines[:-1]
+            clean_content = "\n".join(lines).strip()
+
+        # 1. Try JSON (EditThisCookie)
         try:
-            # Clean up the string (sometimes users include markdown code blocks)
-            clean_content = content.strip()
-            if clean_content.startswith("```"):
-                # Remove code block markers
-                lines = clean_content.split("\n")
-                if lines[0].startswith("```"): lines = lines[1:]
-                if lines and lines[-1].strip() == "```": lines = lines[:-1]
-                clean_content = "\n".join(lines).strip()
-            
             data = json.loads(clean_content)
             if isinstance(data, list):
-                # Basic validation: ensure it has name/value
-                if all('name' in c and 'value' in c for c in data[:5]):
+                if all('name' in c and 'value' in c for c in data[:2]):
                     return data
-            return None
         except:
-            return None
+            pass
+
+        # 2. Try Header-style (name=value; name2=value2)
+        try:
+            cookies = []
+            parts = clean_content.split(";")
+            for p in parts:
+                if "=" in p:
+                    kv = p.split("=", 1)
+                    name = kv[0].strip()
+                    value = kv[1].strip()
+                    if name and value:
+                        cookies.append({"name": name, "value": value})
+            if cookies:
+                return cookies
+        except:
+            pass
+
+        return None
 
     def _read_docx_text(self, file_bytes: bytes) -> str:
         """Extracts text from a .docx file."""
@@ -835,13 +852,22 @@ class HelperSlashCog(commands.Cog):
             except Exception as e:
                 logger.error(f"Failed to sync cookies to disk: {e}")
 
+            # --- 🔍 Diagnostics ---
+            diagnostics = f"Successfully updated **{len(cookies)}** cookies for **{platform}** (Account: `{target_account_id}`)."
+            
+            # Platform Specific Health Check
+            if platform == "piccoma":
+                has_pksid = any(c.get('name') == 'pksid' and c.get('value') for c in cookies)
+                if not has_pksid:
+                    diagnostics += "\n\n⚠️ **WARNING:** `pksid` token was NOT found or is empty! Piccoma will likely treat this session as logged out."
+            
             embed = discord.Embed(
                 title="✅ Cookies Updated",
-                description=f"Successfully updated cookies for **{platform}** (Account: `{target_account_id}`).",
-                color=0x2ecc71
+                description=diagnostics,
+                color=0x2ecc71 if not (platform == "piccoma" and not has_pksid) else 0xf1c40f
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
-            logger.info(f"[HelperCogs] Manual cookie update for {platform}:{target_account_id} by {interaction.user}")
+            logger.info(f"[HelperCogs] Manual cookie update for {platform}:{target_account_id} by {interaction.user} (Count: {len(cookies)})")
             
         except Exception as e:
             logger.error(f"Manual cookie update failed: {e}")
