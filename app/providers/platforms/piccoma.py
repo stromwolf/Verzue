@@ -513,6 +513,13 @@ class PiccomaProvider(BaseProvider):
             
             soup = BeautifulSoup(res.text, 'html.parser')
             
+            # 🟢 S-GRADE: Early Smartoon detection via HTML/URL for correct endpoint sync
+            is_s = "/s/" in task.url.lower() or "smartoon" in str(soup).lower() or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
+            if not is_s:
+                indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-productStatus_item')
+                it_str = indicator_text.get_text().upper() if indicator_text else ""
+                is_s = "縦読み" in it_str or "SMARTOON" in it_str or "ETYPE" in task.url.upper() or "/S/" in task.url.upper()
+            
             # 2. Robust CSRF Extraction (Multi-Tier Fallback)
             csrf_token = None
             csrf_meta = soup.find('meta', {'name': 'csrf-token'})
@@ -553,12 +560,13 @@ class PiccomaProvider(BaseProvider):
                 is_waitfree = bool(soup.select_one('.btn-waitfree, .PCM-btn-waitfree'))
             
             # 5. Build Final Payload and Endpoint
+            # S-GRADE: Build correctly targeted URL based on primary detection (Smartoon: {is_s})
             if is_waitfree:
-                target_url = f"{base_url}/web/episode/waitfree/use"
-                logger.info(f"[Piccoma] ⏳ Detected 'Free to Wait' for episode {episode_id}. Using wait-free ticket.")
+                target_url = f"{base_url}/web/episode/{'s/' if is_s else ''}waitfree/use"
+                logger.info(f"[Piccoma] ⏳ Detected 'Free to Wait' for episode {episode_id}... (Smartoon: {is_s})")
             else:
-                target_url = f"{base_url}/web/episode/purchase"
-                logger.info(f"[Piccoma] 🪙 Detected coin purchase required for episode {episode_id}.")
+                target_url = f"{base_url}/web/episode/{'s/' if is_s else ''}purchase"
+                logger.info(f"[Piccoma] 🪙 Detected coin purchase required for episode {episode_id}... (Smartoon: {is_s})")
                 
             purchase_payload = {
                 "episodeId": episode_id,
@@ -580,13 +588,6 @@ class PiccomaProvider(BaseProvider):
                 target_url, data=purchase_payload, headers=headers, timeout=15, allow_redirects=True
             )
             post_res = await post_task
-            
-            # 🟢 S-GRADE: Force Smartoon detection via HTML/URL for correct endpoint sync
-            is_s = "/s/" in task.url.lower() or "smartoon" in str(soup).lower() or bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
-            if not is_s:
-                indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-productStatus_item')
-                it_str = indicator_text.get_text().upper() if indicator_text else ""
-                is_s = "縦読み" in it_str or "SMARTOON" in it_str or "ETYPE" in task.url.upper() or "/S/" in task.url.upper()
             
             # 🟢 S-GRADE: 404 Recovery & Discovery Heuristic
             if post_res.status_code == 404:
