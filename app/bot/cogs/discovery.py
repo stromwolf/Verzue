@@ -96,8 +96,8 @@ class Discovery(commands.Cog):
                 if not chapter_list:
                     return await msg.edit(content="⚠️ URL processed but no chapters found.")
                 
-                # Use the latest chapter (usually index 0 for most providers)
-                latest_ch = chapter_list[0]
+                # Use the latest chapter (usually the last in the list for our providers)
+                latest_ch = chapter_list[-1]
                 
                 mock_data = {
                     "title": title,
@@ -158,12 +158,27 @@ class Discovery(commands.Cog):
             series_id=mock_data["series_id"],
             notification_id=9999,
             chapter_id=mock_data.get("chapter_id"),
-            chapter_number=mock_data.get("chapter_number") # 🟢 NEW
+            chapter_number=mock_data.get("chapter_number"), # 🟢 NEW
+            use_attachment_proxy=bool(mock_data.get("poster_url")) # Enable if URL exists
         )
         
         try:
+            from curl_cffi import requests as curl_requests
+            import io
+            import discord
+
+            files = []
+            if mock_data.get("poster_url"):
+                try:
+                    # Download the poster to bypass Discord's proxy blocking
+                    res = curl_requests.get(mock_data["poster_url"], timeout=10, impersonate="chrome")
+                    if res.status_code == 200:
+                        files.append(discord.File(io.BytesIO(res.content), filename="poster.png"))
+                except Exception as e:
+                    logger.error(f"Failed to download poster for attachment: {e}")
+
             route = discord.http.Route('POST', '/channels/{channel_id}/messages', channel_id=ctx.channel.id)
-            await self.bot.http.request(route, json=payload)
+            await self.bot.http.request(route, json=payload, files=files)
         except Exception as e:
             await ctx.send(f"❌ Failed to render V2 Component: `{e}`")
 

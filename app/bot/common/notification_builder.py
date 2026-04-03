@@ -42,6 +42,7 @@ def build_notification_payload(
     notification_id: int,
     chapter_id: str | None = None,
     chapter_number: str | None = None, # 🟢 NEW: Actual notation (e.g. 第38話)
+    use_attachment_proxy: bool = False, # 🟢 NEW: Use attachment:// instead of URL
 ) -> dict:
     """
     Builds the full Discord message payload (flags + components) for a new chapter notification.
@@ -59,6 +60,11 @@ def build_notification_payload(
     
     # 🟢 New Layout: High-level text (no -#), role after "New Chapter"
     header_text = f"New Chapter {role_mention} of **[ {platform_emoji} [{platform_display}]({series_url}) ]**"
+
+    # --- Poster Logic ---
+    final_poster_url = poster_url
+    if use_attachment_proxy:
+        final_poster_url = "attachment://poster.png"
 
     # --- Title block ---
     # 🟢 New Layout: Subtitle is bolded Chapter Number, Original Title and Date removed.
@@ -79,10 +85,10 @@ def build_notification_payload(
     inner.append({"type": 14, "divider": True, "spacing": 1})
 
     # 3. Poster (Media Gallery for big centered image)
-    if poster_url:
+    if final_poster_url:
         inner.append({
             "type": 12,
-            "items": [{"media": {"url": poster_url}}]
+            "items": [{"media": {"url": final_poster_url}}]
         })
         inner.append({"type": 14, "divider": True, "spacing": 1})
 

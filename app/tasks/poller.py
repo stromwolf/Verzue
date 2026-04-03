@@ -283,6 +283,21 @@ class AutoDownloadPoller:
                 # Update stored chapter right away
                 update_last_chapter(group_name, series_id, current_id)
 
+                # 🟢 Image Attachment Phase
+                from curl_cffi import requests as curl_requests
+                import io
+                import discord
+                files = []
+                use_attachment_proxy = False
+                if image_url:
+                    try:
+                        res = curl_requests.get(image_url, timeout=10, impersonate="chrome")
+                        if res.status_code == 200:
+                            files.append(discord.File(io.BytesIO(res.content), filename="poster.png"))
+                            use_attachment_proxy = True
+                    except Exception as e:
+                        logger.error(f"Failed to attach image: {e}")
+
                 # Send V2 Component notification
                 await self._notify_channel(
                     group_name=group_name,
@@ -291,7 +306,9 @@ class AutoDownloadPoller:
                     series_id=series_id,
                     image_url=image_url,
                     chapter_id=current_id,
-                    chapter_number=latest_chapter.get('notation') # 🟢 NEW
+                    chapter_number=latest_chapter.get('notation'),
+                    files=files,
+                    use_attachment_proxy=use_attachment_proxy
                 )
                 return True
 
@@ -311,7 +328,8 @@ class AutoDownloadPoller:
         series_id: str,
         image_url: str | None = None,
         chapter_id: str | None = None,
-        chapter_number: str | None = None, # 🟢 NEW
+        files: list | None = None, # 🟢 NEW
+        use_attachment_proxy: bool = False, # 🟢 NEW
     ):
         """Sends a V2 Component notification to the target channel."""
         from app.core.logger import req_id_context, group_name_context, log_category_context
@@ -350,6 +368,7 @@ class AutoDownloadPoller:
                 notification_id=notification_id,
                 chapter_id=chapter_id,
                 chapter_number=chapter_number, # 🟢 NEW
+                use_attachment_proxy=use_attachment_proxy, # 🟢 NEW
             )
 
             try:
@@ -358,7 +377,7 @@ class AutoDownloadPoller:
                     '/channels/{channel_id}/messages',
                     channel_id=channel.id,
                 )
-                await self.bot.http.request(route, json=payload)
+                await self.bot.http.request(route, json=payload, files=files) # 🟢 NEW
                 logger.info(f"📨 [AutoPoller] Notification sent for {series_title} (N-ID: {notification_id})")
             except Exception as e:
                 logger.error(f"Failed to send release notification to {channel.id}: {e}")
@@ -421,6 +440,21 @@ class AutoDownloadPoller:
             if current_id != last_known:
                 update_last_chapter(group_name, series_id, current_id)
 
+                # 🟢 Image Attachment Phase
+                from curl_cffi import requests as curl_requests
+                import io
+                import discord
+                files = []
+                use_attachment_proxy = False
+                if image_url:
+                    try:
+                        res = curl_requests.get(image_url, timeout=10, impersonate="chrome")
+                        if res.status_code == 200:
+                            files.append(discord.File(io.BytesIO(res.content), filename="poster.png"))
+                            use_attachment_proxy = True
+                    except Exception as e:
+                        logger.error(f"Failed to attach image: {e}")
+
                 await self._notify_channel(
                     group_name=group_name,
                     sub=sub,
@@ -428,7 +462,9 @@ class AutoDownloadPoller:
                     series_id=series_id,
                     image_url=image_url,
                     chapter_id=current_id,
-                    chapter_number=latest_chapter.get('notation') # 🟢 NEW
+                    chapter_number=latest_chapter.get('notation'),
+                    files=files,
+                    use_attachment_proxy=use_attachment_proxy
                 )
                 return True
 
