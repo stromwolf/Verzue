@@ -161,12 +161,19 @@ class JumptoonProvider(BaseProvider):
             
         if og_match:
             image_url = og_match.group(1)
+            if Settings.DEVELOPER_MODE:
+                logger.debug(f"🧪 [Developer] Raw og:image detected via regex: {image_url}")
         else:
             # Fallback to JSON-Heuristic
             img_match = re.search(r'"(?:seriesHeroImageUrl|seriesThumbnailV2ImageUrl)"\s*:\s*"(https:[^"]+)"', clean_html)
             if img_match:
                 image_url = img_match.group(1)
+                if Settings.DEVELOPER_MODE:
+                    logger.debug(f"🧪 [Developer] Image detected via JSON-heuristic: {image_url}")
         
+        if not image_url and Settings.DEVELOPER_MODE:
+            logger.warning(f"🧪 [Developer] Image extraction FAILED. HTML Snippet: {clean_html[:1500]}...")
+
         if image_url:
             # 🟢 S-GRADE: Performance Optimization
             # Query strings can sometimes interfere with Discord's proxying of specific CDNs.

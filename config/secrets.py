@@ -26,3 +26,4 @@ class Secrets:
     STAGING_TOKEN = os.getenv("STAGING_TOKEN")
     REDIS_URL = os.getenv("REDIS_URL")
     SCRAPING_PROXY = os.getenv("SCRAPING_PROXY")
+    DEVELOPER_MODE = os.getenv("DEVELOPER_MODE", "False").lower() == "true"
