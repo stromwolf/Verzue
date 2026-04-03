@@ -15,7 +15,8 @@ from cryptography.hazmat.backends import default_backend
 from curl_cffi.requests import AsyncSession, RequestsError
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
-from app.core.exceptions import ScraperError
+from app.services.login_service import LoginService
+from app.core.exceptions import ScraperError, MechaException
 from config.settings import Settings
 
 logger = logging.getLogger("MechaProvider")
@@ -27,6 +28,7 @@ class MechaProvider(BaseProvider):
 
     def __init__(self):
         self.session_service = SessionService()
+        self.login_service = LoginService()
         self.active_account_id = None
         self.default_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -42,8 +44,21 @@ class MechaProvider(BaseProvider):
     async def _get_authenticated_session(self):
         session_obj = await self.session_service.get_active_session("mecha")
         if not session_obj:
-            logger.warning("[Mecha] No healthy sessions in vault. Using guest session.")
-            return AsyncSession(impersonate="chrome120", proxy=Settings.get_proxy())
+            # S+ GRADE: Automated Login Fallback
+            async with self.session_service.get_refresh_lock("mecha"):
+                # Double-check after lock
+                session_obj = await self.session_service.get_active_session("mecha")
+                
+                if not session_obj:
+                    logger.info("🔄 [Mecha] No healthy sessions in vault. Triggering automated login fallback...")
+                    login_success = await self.login_service.auto_login("mecha")
+                    
+                    if login_success:
+                        session_obj = await self.session_service.get_active_session("mecha")
+            
+            if not session_obj:
+                logger.warning("[Mecha] No healthy sessions in vault and fallback failed. Using guest session.")
+                return AsyncSession(impersonate="chrome120", proxy=Settings.get_proxy())
 
         self.active_account_id = session_obj["account_id"]
         async_session = AsyncSession(impersonate="chrome120", proxy=Settings.get_proxy())

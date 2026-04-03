@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
+from app.services.login_service import LoginService
 from app.core.exceptions import ScraperError, MechaException
 from config.settings import Settings
 try:
@@ -31,6 +32,7 @@ class PiccomaProvider(BaseProvider):
 
     def __init__(self):
         self.session_service = SessionService()
+        self.login_service = LoginService()
         
         self.default_headers = {
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -69,6 +71,24 @@ class PiccomaProvider(BaseProvider):
         async_session = AsyncSession(impersonate=impersonation, proxy=Settings.get_proxy())
         async_session.headers.update(self.default_headers)
         
+        if not session_obj:
+            # S+ GRADE: Automated Login Fallback
+            # If no healthy sessions are in the vault, we attempt to refresh using LoginService
+            async with self.session_service.get_refresh_lock("piccoma"):
+                # Double-check after acquiring lock in case another worker already refreshed
+                session_obj = await self.session_service.get_active_session("piccoma")
+                
+                if not session_obj:
+                    logger.info("🔄 [Piccoma Identity] No healthy sessions in vault. Triggering automated login fallback...")
+                    login_success = await self.login_service.auto_login("piccoma")
+                    
+                    if login_success:
+                        session_obj = await self.session_service.get_active_session("piccoma")
+                        
+            if not session_obj:
+                # S-GRADE: Explicitly fail if no session is available after fallback attempt
+                raise ScraperError("No healthy sessions available for piccoma. Use /add-cookies or /add-account to fix.")
+        
         if session_obj:
             logger.info(f"[Piccoma Identity] Session '{session_obj.get('account_id')}' retrieved. Applying {len(session_obj.get('cookies', []))} cookies.")
             for c in session_obj.get("cookies", []):
@@ -92,9 +112,6 @@ class PiccomaProvider(BaseProvider):
                         logger.warning(f"  [Cookie Skip] 'value' is None for key: {name}. Raw cookie: {c}")
                 else:
                     logger.warning(f"  [Cookie Skip] Could not find 'name' or 'key' in: {c}")
-        else:
-            # S-GRADE: Explicitly fail if no session is available
-            raise ScraperError("No healthy sessions available for piccoma. Use /add-cookies to fix.")
         
         return async_session
 

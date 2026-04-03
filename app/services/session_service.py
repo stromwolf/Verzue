@@ -1,13 +1,24 @@
 import logging
 import random
+import time
 from app.services.redis_manager import RedisManager
 from app.core.events import EventBus
 
 logger = logging.getLogger("SessionService")
 
 class SessionService:
+    # S-GRADE: Global Async Locks to prevent concurrent auto-login attempts
+    _refresh_locks: dict[str, asyncio.Lock] = {}
+
     def __init__(self):
         self.redis = RedisManager()
+        self._last_emit = {} # platform -> timestamp
+
+    def get_refresh_lock(self, platform: str) -> asyncio.Lock:
+        """Returns or creates an asyncio.Lock for the specific platform."""
+        if platform not in self._refresh_locks:
+            self._refresh_locks[platform] = asyncio.Lock()
+        return self._refresh_locks[platform]
 
     async def get_active_session(self, platform: str):
         """
@@ -35,6 +46,18 @@ class SessionService:
         logger.debug(f"🔄 Selected session '{chosen['account_id']}' for {platform}")
         return chosen
 
+    async def _emit_status_change(self, platform: str):
+        """Emits session status change with a small debounce to protect Discord API."""
+        now = time.time()
+        last = self._last_emit.get(platform, 0)
+        
+        # 5 second debounce per platform
+        if now - last < 5:
+            return
+            
+        self._last_emit[platform] = now
+        await EventBus.emit("session_status_changed", platform)
+
     async def report_session_failure(self, platform: str, account_id: str, reason: str = "Unknown"):
         """
         Marks a session as EXPIRED and records failure telemetry.
@@ -58,7 +81,7 @@ class SessionService:
             "platform": platform,
             "account_id": account_id
         })
-        await EventBus.emit("session_status_changed", platform)
+        await self._emit_status_change(platform)
 
     async def record_session_success(self, platform: str):
         """Records a successful request for telemetry tracking."""
@@ -81,4 +104,4 @@ class SessionService:
         session.pop("error_reason", None)
         await self.redis.set_session(platform, account_id, session)
         logger.info(f"✅ Session updated and refreshed: {platform}:{account_id}")
-        await EventBus.emit("session_status_changed", platform)
+        await self._emit_status_change(platform)
