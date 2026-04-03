@@ -255,6 +255,7 @@ class Discovery(commands.Cog):
 
             # Start the background tasks
             for t in tasks:
+                 view.active_tasks.append(t) # 🟢 Fix: Link task to view for UI tracking
                  await self.bot.task_queue.add_task(t)
             
             asyncio.create_task(view.monitor_tasks())
@@ -319,6 +320,7 @@ class Discovery(commands.Cog):
             if not tasks: return
 
             for t in tasks:
+                 view.active_tasks.append(t)
                  await self.bot.task_queue.add_task(t)
             
             asyncio.create_task(view.monitor_tasks())
@@ -382,6 +384,7 @@ class Discovery(commands.Cog):
             if not tasks: return
 
             for t in tasks:
+                 view.active_tasks.append(t)
                  await self.bot.task_queue.add_task(t)
 
             asyncio.create_task(view.monitor_tasks())

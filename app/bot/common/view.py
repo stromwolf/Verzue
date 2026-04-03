@@ -267,20 +267,23 @@ class UniversalDashboard:
                 })
             
 
-            # Fallback ONLY if both are empty
+            # Fallback ONLY if both are empty (Safeguard)
             if not all_sorted_items:
                 idxs = sorted(list(self.selected_indices))
                 chapter_names = [self.all_chapters[i].get('notation', f"Ch.{i+1}") for i in idxs]
-                chapter_names_str = "\n".join([f"> {n}" for n in chapter_names])
+                chapter_names_str = "\n".join([f"> **{n}**" for n in chapter_names]) # 🟢 S-GRADE: Professional notation
+                
+                # 🟢 S-GRADE: Attempt to resolve series root if specific link is missing
+                fallback_link = f"https://drive.google.com/drive/folders/{self.series_id_key}" if hasattr(self, 'series_id_key') and self.series_id_key else "https://drive.google.com"
                 
                 inner_components.append({
                     "type": 9, # Section
-                    "components": [{"type": 10, "content": f"**{chapter_names_str}**"}],
+                    "components": [{"type": 10, "content": chapter_names_str}],
                     "accessory": {
                         "type": 2, "style": 5, 
-                        "label": "Visit Drive", 
+                        "label": "Visit Series", 
                         "emoji": {"id": "1482676886680113172", "name": "drive"},
-                        "url": "https://drive.google.com"
+                        "url": fallback_link
                     }
                 })
 
