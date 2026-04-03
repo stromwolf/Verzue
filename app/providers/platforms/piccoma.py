@@ -493,14 +493,21 @@ class PiccomaProvider(BaseProvider):
         
         series_id, episode_id = match.groups()
         base_url, region, domain = self._get_context_from_url(task.url)
+        
+        logger.info(f"[DEV-TRACE] [Step 1] Loading session for domain: {domain}")
         auth_session = await self._get_authenticated_session(domain)
+        # Log session cookies audit
+        cookies_info = [f"{c.name}={c.value[:3]}... (domain={c.domain})" for c in auth_session.cookies]
+        logger.info(f"[DEV-TRACE] Session Cookie Audit: {len(auth_session.cookies)} total cookies. Domains: {set([c.domain for c in auth_session.cookies])}")
         
         try:
             # 1. Load episode list page to extract CSRF tokens, identify access type, and get form data
             # Use etype=E to ensure we see the list properly
             episode_page_url = f"{base_url}/web/product/{series_id}/episodes?etype=E"
+            logger.info(f"[DEV-TRACE] [Step 2] Metadata fetch from: {episode_page_url}")
             p_task = auth_session.get(episode_page_url, timeout=15)
             res = await p_task
+            logger.info(f"[DEV-TRACE] Metadata Response: Status={res.status_code}, Length={len(res.text)}")
             
             # Robust Error Detection: Identifying blocked/redirected 404 pages early
             if res.status_code == 200 and len(res.text) < 10000 and "ご利用いただけません" in res.text:
@@ -539,6 +546,7 @@ class PiccomaProvider(BaseProvider):
             }
             if csrf_token:
                 headers['X-CSRF-Token'] = csrf_token
+            logger.info(f"[DEV-TRACE] [Step 3] CSRF extraction: {csrf_token[:10]}... if found.")
             
             # 3. Security Hash (S-Grade entropy)
             import hashlib
@@ -546,6 +554,7 @@ class PiccomaProvider(BaseProvider):
             sec_hash = hashlib.sha256(seed_string.encode('utf-8')).hexdigest()
             headers['X-Security-Hash'] = sec_hash
             headers['X-Hash-Code'] = sec_hash
+            logger.info(f"[DEV-TRACE] [Step 4] Security Hash logic initialized (salt verified).")
             
             # 4. Identify Access Type (Wait-Free vs Coins)
             is_waitfree = False
@@ -553,6 +562,7 @@ class PiccomaProvider(BaseProvider):
             if ep_item:
                 waitfree_indicator = ep_item.select_one('.PCM-epList_status_waitfree, .PCM-icon_waitfree, .PCM-icon_clock')
                 is_waitfree = bool(waitfree_indicator) or "待てば¥0" in ep_item.get_text() or "待てば" in ep_item.get_text()
+                logger.info(f"[DEV-TRACE] WaitFree Detection (Episode List): {is_waitfree}")
             
             if not is_waitfree:
                 is_waitfree = bool(soup.select_one('.btn-waitfree, .PCM-btn-waitfree'))
@@ -577,6 +587,9 @@ class PiccomaProvider(BaseProvider):
                 "hash": sec_hash,
                 "hashCode": sec_hash
             }
+            logger.info(f"[DEV-TRACE] [Step 5] Primary Request targeting: {target_url}")
+            logger.info(f"[DEV-TRACE] Request Headers: {headers}")
+            logger.info(f"[DEV-TRACE] Base Payload: {purchase_payload}")
             
             # Extract additional hidden fields from purchase form if available
             purchase_form = soup.select_one('#js_purchaseForm, .js_purchaseForm, form[action*="purchase"]')
@@ -591,6 +604,9 @@ class PiccomaProvider(BaseProvider):
                 target_url, data=purchase_payload, headers=headers, timeout=15, allow_redirects=True
             )
             post_res = await post_task
+            logger.info(f"[DEV-TRACE] Primary Result: Status={post_res.status_code}")
+            if post_res.status_code != 200:
+                logger.info(f"[DEV-TRACE] Primary Response Body (Snippet): {post_res.text[:300]}")
             
             # 🟢 S-GRADE: 404 Recovery & Discovery Heuristic
             if post_res.status_code == 404:
@@ -672,7 +688,7 @@ class PiccomaProvider(BaseProvider):
                                     logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url}")
                                     break
                                 else:
-                                    logger.info(f"[Piccoma Discovery] Trial failed: {alt_url} (Result: {post_res.status_code})")
+                                    logger.info(f"[Piccoma Discovery] Trial failed: {alt_url} (Result: {post_res.status_code}) Body: {post_res.text[:200]}")
                             except Exception as trial_e:
                                 logger.info(f"[Piccoma Discovery] Trial exception: {alt_url} ({trial_e})")
                             continue
