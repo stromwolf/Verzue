@@ -141,11 +141,15 @@ class LoginService:
             # S+ Aggression: Enable redirects to follow auth-callback chain
             post_res = await session.post(login_page_url, data=payload, headers=headers, allow_redirects=True)
             
-            # --- 🟢 Stability Patch: Cookie Settle Delay ---
-            await asyncio.sleep(2.0)
-
-            # S+ Aggression: Post-Login Activation
+            # --- 🟢 S+ Identity Handshake: Warm up the session ---
+            # We visit multiple pages to ensure all tracking and session cookies are fully settled.
+            # This is critical for capturing cross-domain cookies and pksid.
+            logger.info("🎭 [Identity Handshake] Warming up session with multiple requests...")
+            await asyncio.sleep(1.0)
             await session.get(f"{base_url}/web", headers=headers)
+            await asyncio.sleep(0.5)
+            await session.get(f"{base_url}/web/product/favorite", headers=headers)
+            await asyncio.sleep(0.5)
 
             # Piccoma login success detection
             is_success = False
@@ -168,10 +172,11 @@ class LoginService:
                 # Piccoma often sets cookies across .piccoma.com, piccoma.com, and static domains.
                 # We iterate the internal _cookies structure of the RequestsCookieJar for maximum coverage.
                 try:
-                    jar = session.cookies
-                    for domain in jar._cookies:
-                        for path in jar._cookies[domain]:
-                            for name, cookie in jar._cookies[domain][path].items():
+                    # Fix: session.cookies is the wrapper, session.cookies.jar is the RequestsCookieJar
+                    jar_obj = session.cookies.jar
+                    for domain in jar_obj._cookies:
+                        for path in jar_obj._cookies[domain]:
+                            for name, cookie in jar_obj._cookies[domain][path].items():
                                 if name == "pksid" and cookie.value:
                                     has_pksid = True
                                 
@@ -182,7 +187,7 @@ class LoginService:
                                     "path": path,
                                     "expires": getattr(cookie, 'expires', None)
                                 })
-                    logger.info(f"🔎 [Identity Trace] Extracted {len(cookies)} cookies from JAR ({', '.join([c['name'] for c in cookies[:5]])}...)")
+                    logger.info(f"🔎 [Identity Trace] Extracted {len(cookies)} cookies from JAR ({', '.join([c['name'] for c in cookies[:8]])}...)")
                 except Exception as e:
                     logger.warning(f"  ⚠️ [Identity Trace] Standard JAR extraction failed ({e}), falling back to items().")
                     for name, value in session.cookies.items():
@@ -192,7 +197,7 @@ class LoginService:
                 # --- 🟢 S+ GRADE: Header Fallback ---
                 # If pksid is still missing, attempt to extract directly from Set-Cookie headers
                 if not has_pksid:
-                    logger.info("🔎 [DEV-MODE] pksid missing from jar. Attempting Header Extraction Fallback...")
+                    logger.info("🔎 [DEV-MODE] pksid missing from jar after handshake. Attempting Header Extraction Fallback...")
                     header_cookies = post_res.headers.get_list('Set-Cookie') if hasattr(post_res.headers, 'get_list') else post_res.headers.get('Set-Cookie', "").split(",")
                     for cookie_str in header_cookies:
                         if "pksid=" in cookie_str:

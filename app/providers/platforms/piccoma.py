@@ -139,14 +139,21 @@ class PiccomaProvider(BaseProvider):
             # 🟢 S+ Identity Trace: Granular cookie audit
             cookie_names = []
             for c in session_obj.get("cookies", []):
-                name = c.get('name') or c.get('key')
-                value = c.get('value') or c.get('val')
+                name = str(c.get('name') or c.get('key'))
+                value = str(c.get('value') or c.get('val'))
                 
                 if name and value is not None:
-                    c_domain = c.get('domain') or region_domain
-                    c_path = c.get('path') or "/"
-                    async_session.cookies.set(str(name), str(value), domain=str(c_domain), path=str(c_path))
-                    cookie_names.append(f"{name} ({c_domain})")
+                    # 🟢 S+ Aggressive Injection: Force universal scope for critical session cookies
+                    # This ensures pksid and others are sent on all requests regardless of original subpath/subdomain.
+                    if name.lower() in ['pksid', 'csrftoken', 'csrf_token']:
+                        c_domain = ".piccoma.com"
+                        c_path = "/"
+                    else:
+                        c_domain = c.get('domain') or region_domain
+                        c_path = c.get('path') or "/"
+                    
+                    async_session.cookies.set(name, value, domain=c_domain, path=c_path)
+                    cookie_names.append(f"{name} [{c_domain}:{c_path}]")
                 elif name == "pksid":
                     logger.warning(f"  ⚠️ [Auth Health Check] 'pksid' is EMPTY in session stash!")
             
@@ -154,7 +161,7 @@ class PiccomaProvider(BaseProvider):
             if len(session_obj.get("cookies", [])) < 5:
                 logger.warning(f"  ⚠️ [Auth Health Audit] Session '{session_obj.get('account_id')}' has suspiciously few cookies ({len(session_obj.get('cookies', []))}). Marking as SUSPICIOUS.")
                 # We don't nullify yet, but we log the trace for developer analysis
-                logger.info(f"🔎 [Identity Trace] Applied Cookies: {', '.join(cookie_names)}")
+                logger.info(f"🔎 [Identity Trace] Applied Cookies Trace: {', '.join(cookie_names)}")
         
         # 🕵️ [DEV-TRACE]: Final session audit
         logger.info(f"[DEV-TRACE] Session Identity Audit: {len(async_session.cookies)} total cookies active in AsyncSession.")
@@ -549,9 +556,25 @@ class PiccomaProvider(BaseProvider):
             is_guest = bool(soup.select_one('.PCM-headerLogin, a[href*="/acc/signin"]'))
             if is_guest:
                 # 🕵️ [S+ Identity Diagnostic]: Dump current session state to logs
-                current_cookies = [f"{c.name} ({c.domain})" for c in auth_session.cookies.jar]
+                # We use the internal jar to see the exact domains/paths of outgoing cookies
+                try:
+                    jar = auth_session.cookies.jar
+                    diag_cookies = []
+                    for domain in jar._cookies:
+                        for path in jar._cookies[domain]:
+                            for name in jar._cookies[domain][path]:
+                                diag_cookies.append(f"{name} [{domain}:{path}]")
+                    logger.info(f"🔎 [Identity Diagnostic] Outgoing Cookies: {', '.join(diag_cookies)}")
+                except:
+                    current_names = [f"{c.name} ({c.domain})" for c in auth_session.cookies.jar]
+                    logger.info(f"🔎 [Identity Diagnostic] Outgoing Cookies (fallback): {', '.join(current_names)}")
+                
+                # S+ Trace: Log Set-Cookie headers from the rejection response
+                set_cookies = res.headers.get_list('Set-Cookie') if hasattr(res.headers, 'get_list') else res.headers.get('Set-Cookie', "")
+                if set_cookies:
+                    logger.warning(f"  ⚠️ [Identity Trace] Server attempted to SET cookies during rejection: {set_cookies}")
+
                 logger.error(f"🛑 [Piccoma Identity] Browser shows LOGIN button. Session is guest or expired!")
-                logger.info(f"🔎 [Identity Diagnostic] Cookies sent in last request: {', '.join(current_cookies)}")
                 
                 # Report failure to trigger auto-login fallback on next attempt
                 await self.session_service.report_session_failure("piccoma", "primary", "Session expired/Guest detected (Login button visible)")
