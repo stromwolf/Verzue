@@ -514,24 +514,20 @@ class PiccomaProvider(BaseProvider):
             soup = BeautifulSoup(res.text, 'html.parser')
             
             # 🟢 S-GRADE: Smartoon Detection (Improved)
-            # Re-implementing detection to avoid hardcoded overrides
+            # Avoid hardcoded overrides; trust multiple indicators
             title_text = soup.select_one('h1.PCM-productTitle').text.lower() if soup.select_one('h1.PCM-productTitle') else ""
             is_s = "smartoon" in title_text or \
                    bool(soup.select_one('.PCM-productSmaIcon, .PCM-productSmaratoon, .PCM-productStatus_smartoon'))
             
             # Additional detection heuristics
+            indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-epList_item-episode, .PCM-icon_smartoon')
+            it_str = indicator_text.get_text().upper() if indicator_text else ""
+            
             if not is_s:
-                # 1. If the viewer URL was passed in (common for scrape_chapter tasks)
-                if "/web/viewer/s/" in task.url or "smartoon" in task.url.lower():
+                if "/web/viewer/s/" in task.url or "SMARTOON" in it_str or "縦読み" in it_str:
                     is_s = True
-                else:
-                    indicator_text = soup.select_one('.PCM-productStatus, .PCM-productMain_status, .PCM-epList_item-episode, .PCM-icon_smartoon')
-                    it_str = indicator_text.get_text().upper() if indicator_text else ""
-                    if "縦読み" in it_str or "SMARTOON" in it_str or soup.select_one('.PCM-icon_smartoon'):
-                        is_s = True
             
             # S-GRADE: Smartoon URL Self-Correction Logic
-            # If we know it's a Smartoon (is_s=True) but the URL is missing the /s/ prefix, Fix It.
             if is_s and "/web/viewer/" in task.url and "/web/viewer/s/" not in task.url:
                 fixed_url = task.url.replace("/web/viewer/", "/web/viewer/s/")
                 logger.info(f"[Piccoma Identity] 🛠️ Self-Corrected URL: {task.url} -> {fixed_url}")
@@ -609,74 +605,67 @@ class PiccomaProvider(BaseProvider):
             if not is_waitfree:
                 is_waitfree = bool(soup.select_one('.btn-waitfree, .PCM-btn-waitfree'))
             
-            # 🧩 DIAGNOSTIC: Log all form actions for inspection
-            forms = soup.find_all('form')
-            for f in forms:
-                logger.info(f"[Piccoma Diagnostic] Found Form: Action={f.get('action')}, ID={f.get('id')}")
+            # 5. Discovery Loop: Robust alternative endpoint & payload matching
+            discovery_endpoints = [
+                f"{base_url}/web/episode/waitfree/use" if is_waitfree else f"{base_url}/web/episode/purchase",
+                f"{base_url}/web/episode/use",
+                f"{base_url}/web/episode/purchase",
+                f"{base_url}/web/episode/waitfree/use"
+            ]
             
-            # S-GRADE: Build correctly targeted URL based on primary detection (Smartoon: {is_s})
-            # S-GRADE: Sync with 'Working Code' path segment order
-            if is_waitfree:
-                # 🛠️ Fix: Smartoon WaitFree uses the same endpoint as Manga but with Smartoon headers/context
-                target_url = f"{base_url}/web/episode/waitfree/use"
-                logger.info(f"[Piccoma] ⏳ Detected 'Free to Wait' for episode {episode_id}... (Smartoon: {is_s})")
-            else:
-                # 🛠️ Fix: Standardize purchase endpoint
-                target_url = f"{base_url}/web/episode/purchase"
-                logger.info(f"[Piccoma] 🪙 Detected coin purchase required for episode {episode_id}... (Smartoon: {is_s})")
-                
-            purchase_payload = {
-                "episodeId": episode_id,
-                "productId": series_id,
-                "hash": sec_hash,
-                "hashCode": sec_hash
-            }
-            logger.info(f"[DEV-TRACE] [Step 5] Primary Request targeting: {target_url}")
-            logger.info(f"[DEV-TRACE] Request Headers: {headers}")
-            logger.info(f"[DEV-TRACE] Base Payload: {purchase_payload}")
+            payload_variants = [
+                {"episodeId": episode_id, "productId": series_id, "hash": sec_hash, "csrfToken": csrf_token},
+                {"episode_id": episode_id, "product_id": series_id, "hash": sec_hash, "csrfmiddlewaretoken": csrf_token},
+                {"episodeId": episode_id, "productId": series_id, "hash": sec_hash}
+            ]
+
+            found = False
+            for alt_url in discovery_endpoints:
+                if found: break
+                for payload in payload_variants:
+                    if found: break
+                    for is_json in [False, True]:
+                        ct = "application/json" if is_json else "application/x-www-form-urlencoded"
+                        headers["Content-Type"] = ct
+                        try:
+                            p_retry = auth_session.post(
+                                alt_url, 
+                                json=payload if is_json else None,
+                                data=None if is_json else payload, 
+                                headers=headers, 
+                                timeout=15,
+                                allow_redirects=True
+                            )
+                            post_res = await p_retry
+                            
+                            # Success check (BREAK condition)
+                            if post_res.status_code in [200, 302, 301]:
+                                # Verification after attempt
+                                try:
+                                    # Verification logic snippet
+                                    viewer_path = f"/web/viewer/s/{series_id}/{episode_id}" if is_s else f"/web/viewer/{series_id}/{episode_id}"
+                                    v_res = await auth_session.get(f"{base_url}{viewer_path}", timeout=10)
+                                    if v_res.status_code == 200 and self._extract_pdata_heuristic(v_res.text):
+                                        logger.info(f"[Piccoma] ✨ Success via alternative: {alt_url} (is_json={is_json})")
+                                        found = True
+                                        break
+                                except Exception: pass
+                                
+                                # Fallback check for JSON results
+                                try:
+                                    resp_json = post_res.json()
+                                    if resp_json.get('result') == 'ok' or resp_json.get('success'):
+                                        logger.info(f"[Piccoma] ✨ Success via API JSON: {alt_url}")
+                                        found = True
+                                        break
+                                except: pass
+                                
+                            else:
+                                logger.info(f"[Piccoma Discovery] Trial failed: {alt_url} ({post_res.status_code}) Body: {post_res.text[:200]}")
+                        except Exception as trial_e:
+                            logger.info(f"[Piccoma Discovery] Trial exception: {alt_url} ({trial_e})")
             
-            # Extract additional hidden fields from purchase form if available
-            purchase_form = soup.select_one('#js_purchaseForm, .js_purchaseForm, form[action*="purchase"]')
-            if purchase_form:
-                for hidden in purchase_form.find_all('input', type='hidden'):
-                    name = hidden.get('name')
-                    if name and name not in purchase_payload:
-                        purchase_payload[name] = hidden.get('value', '')
-            
-            # 6. POST purchase/usage request
-            post_task = auth_session.post(
-                target_url, data=purchase_payload, headers=headers, timeout=15, allow_redirects=True
-            )
-            post_res = await post_task
-            logger.info(f"[DEV-TRACE] Primary Result: Status={post_res.status_code}")
-            if post_res.status_code != 200:
-                logger.info(f"[DEV-TRACE] Primary Response Body (Snippet): {post_res.text[:300]}")
-                # 🕵️ [DEV-MODE]: Capture purchase failure body
-                self._dump_diagnostic_data(f"purchase_fail_{episode_id}", post_res.text, {
-                    "url": target_url, "payload": purchase_payload, "status": post_res.status_code, "headers": dict(post_res.headers)
-                })
-            
-            # 7. Verification Loop
-            if post_res.status_code in [200, 302]:
-                viewer_paths = [f"/web/viewer/s/{series_id}/{episode_id}", f"/web/viewer/{series_id}/{episode_id}"]
-                for v_path in viewer_paths:
-                    v_res = await auth_session.get(f"{base_url}{v_path}", timeout=10)
-                    if v_res.status_code == 200:
-                        pdata = self._extract_pdata_heuristic(v_res.text)
-                        if pdata:
-                            logger.info(f"[Piccoma] ✅ Access granted for episode {episode_id}")
-                            return True
-                
-                # Check JSON for success
-                try:
-                    resp_json = post_res.json()
-                    if resp_json.get('result') == 'ok' or resp_json.get('success'):
-                        logger.info(f"[Piccoma] ✅ Purchase confirmed via JSON")
-                        return True
-                except: pass
-                
-            logger.warning(f"[Piccoma] Purchase/Usage failed for episode {episode_id} (HTTP {post_res.status_code})")
-            return False
+            return found
             
         except Exception as e:
             logger.error(f"[Piccoma] Error in fast_purchase: {e}")
@@ -751,10 +740,13 @@ class PiccomaProvider(BaseProvider):
                                     new_series.append({
                                         "series_id": sid, "title": title, "poster_url": poster, "url": f"{base_url}/web/product/{sid}"
                                     })
+                        
                         if new_series: 
                             logger.info(f"[Piccoma] Tier 2 (Paginated API) total: {len(new_series)} series.")
                             break
-                    except Exception: continue
+                    except Exception as e:
+                        logger.debug(f"[Piccoma Discovery] API Trial failed: {e}")
+                        continue
 
             # 3. Final Fallback: General New Page (Tier 3)
             if not new_series:
