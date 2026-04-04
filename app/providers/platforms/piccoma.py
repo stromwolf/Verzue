@@ -135,8 +135,10 @@ class PiccomaProvider(BaseProvider):
         
         if session_obj:
             logger.info(f"[Piccoma Identity] Applying session '{session_obj.get('account_id')}' ({len(session_obj.get('cookies', []))} cookies).")
+            
+            # 🟢 S+ Identity Trace: Granular cookie audit
+            cookie_names = []
             for c in session_obj.get("cookies", []):
-                # S-Grade: Fast attribute extraction
                 name = c.get('name') or c.get('key')
                 value = c.get('value') or c.get('val')
                 
@@ -144,11 +146,18 @@ class PiccomaProvider(BaseProvider):
                     c_domain = c.get('domain') or region_domain
                     c_path = c.get('path') or "/"
                     async_session.cookies.set(str(name), str(value), domain=str(c_domain), path=str(c_path))
+                    cookie_names.append(f"{name} ({c_domain})")
                 elif name == "pksid":
                     logger.warning(f"  ⚠️ [Auth Health Check] 'pksid' is EMPTY in session stash!")
+            
+            # S+ Health Audit: Mark as SUSPICIOUS if cookie count is suspiciously low
+            if len(session_obj.get("cookies", [])) < 5:
+                logger.warning(f"  ⚠️ [Auth Health Audit] Session '{session_obj.get('account_id')}' has suspiciously few cookies ({len(session_obj.get('cookies', []))}). Marking as SUSPICIOUS.")
+                # We don't nullify yet, but we log the trace for developer analysis
+                logger.info(f"🔎 [Identity Trace] Applied Cookies: {', '.join(cookie_names)}")
         
         # 🕵️ [DEV-TRACE]: Final session audit
-        logger.info(f"[DEV-TRACE] Session Identity Audit: {len(async_session.cookies)} cookies loaded into AsyncSession.")
+        logger.info(f"[DEV-TRACE] Session Identity Audit: {len(async_session.cookies)} total cookies active in AsyncSession.")
         return async_session
 
     async def is_session_valid(self, session) -> bool:
@@ -539,7 +548,13 @@ class PiccomaProvider(BaseProvider):
             # Piccoma shows a "Login" button (PCM-headerLogin) if not authenticated
             is_guest = bool(soup.select_one('.PCM-headerLogin, a[href*="/acc/signin"]'))
             if is_guest:
-                logger.error("🛑 [Piccoma Identity] Browser shows LOGIN button. Session is guest or expired!")
+                # 🕵️ [S+ Identity Diagnostic]: Dump current session state to logs
+                current_cookies = [f"{c.name} ({c.domain})" for c in auth_session.cookies.jar]
+                logger.error(f"🛑 [Piccoma Identity] Browser shows LOGIN button. Session is guest or expired!")
+                logger.info(f"🔎 [Identity Diagnostic] Cookies sent in last request: {', '.join(current_cookies)}")
+                
+                # Report failure to trigger auto-login fallback on next attempt
+                await self.session_service.report_session_failure("piccoma", "primary", "Session expired/Guest detected (Login button visible)")
                 raise ScraperError("Your Piccoma session has expired or is invalid. Please re-login on the dashboard.")
 
             # 2. Robust CSRF Extraction (Multi-Tier Fallback)

@@ -164,23 +164,33 @@ class LoginService:
                 cookies = []
                 has_pksid = False
                 
-                # S+ Safety: Primary Jar Extraction
-                # Iterating session.cookies directly yields strings in some environments.
-                # We use items() to get name/value pairs reliably.
-                for name, value in session.cookies.items():
-                    if name == "pksid" and value:
-                        has_pksid = True
-                    
-                    cookies.append({
-                        "name": name,
-                        "value": value,
-                        "domain": ".piccoma.com", # Fallback domain
-                        "path": "/",
-                        "expires": None
-                    })
+                # 🟢 S+ Identity Trace: Extract ALL cookies from the jar
+                # Piccoma often sets cookies across .piccoma.com, piccoma.com, and static domains.
+                # We iterate the internal _cookies structure of the RequestsCookieJar for maximum coverage.
+                try:
+                    jar = session.cookies
+                    for domain in jar._cookies:
+                        for path in jar._cookies[domain]:
+                            for name, cookie in jar._cookies[domain][path].items():
+                                if name == "pksid" and cookie.value:
+                                    has_pksid = True
+                                
+                                cookies.append({
+                                    "name": name,
+                                    "value": cookie.value,
+                                    "domain": domain,
+                                    "path": path,
+                                    "expires": getattr(cookie, 'expires', None)
+                                })
+                    logger.info(f"🔎 [Identity Trace] Extracted {len(cookies)} cookies from JAR ({', '.join([c['name'] for c in cookies[:5]])}...)")
+                except Exception as e:
+                    logger.warning(f"  ⚠️ [Identity Trace] Standard JAR extraction failed ({e}), falling back to items().")
+                    for name, value in session.cookies.items():
+                        if name == "pksid" and value: has_pksid = True
+                        cookies.append({"name": name, "value": value, "domain": ".piccoma.com", "path": "/"})
                 
                 # --- 🟢 S+ GRADE: Header Fallback ---
-                # If pksid is still missing from the jar, attempt to extract directly from Set-Cookie headers
+                # If pksid is still missing, attempt to extract directly from Set-Cookie headers
                 if not has_pksid:
                     logger.info("🔎 [DEV-MODE] pksid missing from jar. Attempting Header Extraction Fallback...")
                     header_cookies = post_res.headers.get_list('Set-Cookie') if hasattr(post_res.headers, 'get_list') else post_res.headers.get('Set-Cookie', "").split(",")
@@ -201,8 +211,7 @@ class LoginService:
                     logger.error(f"[Piccoma] Login returned success but {'pksid was MISSING' if not has_pksid else 'no cookies found'}.")
                     # --- 🛠️ Diagnostic Fallback on Failure ---
                     found_cookies = [f"{n} | {len(v)}" for n, v in session.cookies.items()]
-                    logger.info(f"🔎 [DEV-MODE Cookie Audit] Current Jar: {', '.join(found_cookies)}")
-                    logger.info(f"🔎 [DEV-MODE Response Trace] Body (first 1000 chars):\n{post_res.text[:1000]}")
+                    logger.info(f"🔎 [DEV-MODE Cookie Audit] Current Jar Keys: {', '.join(found_cookies)}")
                     return False
             else:
                 reason = "Rerendered login page" if rerendered else f"HTTP {post_res.status_code}"
@@ -210,8 +219,7 @@ class LoginService:
                 
                 # --- 🛠️ Diagnostic Fallback on Failure ---
                 found_cookies = [f"{n} | {len(v)}" for n, v in session.cookies.items()]
-                logger.info(f"🔎 [DEV-MODE Cookie Audit] Current Jar: {', '.join(found_cookies)}")
-                logger.info(f"🔎 [DEV-MODE Failure Trace] Body (first 1000 chars):\n{post_res.text[:1000]}")
+                logger.info(f"🔎 [DEV-MODE Cookie Audit] Current Jar Keys: {', '.join(found_cookies)}")
                 return False
 
     async def _login_mecha(self, creds: dict):
