@@ -8,6 +8,8 @@ import os
 import random
 import threading
 import struct
+import time
+import uuid
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
 from app.providers.base import BaseProvider
@@ -156,7 +158,6 @@ class PiccomaProvider(BaseProvider):
             # so the user doesn't have to re-login.
             current_names = [str(c.get('name') or c.get('key')).lower() for c in session_obj.get("cookies", [])]
             if len(current_names) < 5:
-                import uuid, random, time
                 logger.info(f"🛡️ [Piccoma Identity] 'Thin' session detected. Injecting safety-net breadcrumbs...")
                 
                 # Synthetic Trackers (Same formats as LoginService)
