@@ -435,6 +435,29 @@ class PiccomaProvider(BaseProvider):
                     logger.info(f"[Piccoma] Manifest recovered via regex fallback: {len(paths)} images.")
                     return {'img': [{'path': p} for p in paths]}
             
+        # Heuristic 4: Modern PC Smartoon (episodeDetail)
+        if next_data:
+            try:
+                n_data = json.loads(next_data.string)
+                # PC Smartoon hierarchy: props -> pageProps -> episodeDetail -> manifest
+                manifest = n_data.get('props', {}).get('pageProps', {}).get('episodeDetail', {}).get('manifest', {})
+                images = manifest.get('images', [])
+                if images:
+                    pdata = {'img': [{'path': img.get('path')} for img in images if img.get('path')]}
+                    logger.info(f"✨ [Piccoma Heuristic] Success via episodeDetail hierarchy! ({len(images)} images)")
+                    return pdata
+            except: pass
+
+        # Heuristic 5: Recursive Deep Regex Scan (Last Stand)
+        # Look for 'path' or 'imageUrl' keys anywhere in the HTML blob
+        # Search for lists of image paths directly via regex if JSON parsing is nested too deep
+        img_matches = re.findall(r'["\']path["\']\s*:\s*["\'](https?://[^"\']+\.(?:jpg|png|webp|jpeg)[^"\']*)["\']', html_text)
+        if img_matches:
+            pdata_list = [{'path': m} for m in img_matches if '/seed' in m or '/img' in m]
+            if pdata_list:
+                logger.info(f"✨ [Piccoma Heuristic] Success via Deep Regex Pattern! ({len(pdata_list)} images)")
+                return {'img': pdata_list}
+            
         return None
 
     async def _download_robust(self, session, img_data, idx, out_dir, region):
