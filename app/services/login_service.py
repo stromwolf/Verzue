@@ -103,8 +103,18 @@ class LoginService:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
             })
             
-            # 🟢 Stability Patch: Tiny warm-up delay for proxy tunnel
+            # 🟢 S+ Stability Patch: Tiny warm-up delay for proxy tunnel
             await asyncio.sleep(1.0)
+            
+            # --- 🟢 S+ USER-REQUEST: Homepage Handshake ---
+            # Visit the homepage first to initialize browser tracking cookies (_ga, _clck, snexid, etc.)
+            # This makes the subsequent login request look like it's coming from a real browser session.
+            logger.info("🏠 [Piccoma] Initializing Homepage Handshake...")
+            try:
+                h_res = await session.get(f"{base_url}/web/", timeout=15)
+                logger.info(f"   [Handshake] Homepage Status: {h_res.status_code} | Jar: {len(session.cookies)} cookies.")
+            except Exception as e:
+                logger.warning(f"   ⚠️ [Handshake] Homepage visit failed ({e}), continuing to login anyway.")
             
             # 1. Get CSRF Token (Piccoma uses csrfmiddlewaretoken)
             res = await session.get(login_page_url)

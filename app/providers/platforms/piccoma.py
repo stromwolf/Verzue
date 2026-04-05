@@ -143,13 +143,10 @@ class PiccomaProvider(BaseProvider):
                 value = str(c.get('value') or c.get('val'))
                 
                 if name and value is not None:
-                    # 🟢 S+ Aggressive Injection: Force universal scope for critical session cookies
-                    if name.lower() in ['pksid', 'csrftoken', 'csrf_token']:
-                        c_domain = ".piccoma.com"
-                        c_path = "/"
-                    else:
-                        c_domain = c.get('domain') or region_domain
-                        c_path = c.get('path') or "/"
+                    # 🟢 S+ USER-REQUEST: Honor exact metadata (No forced dot-domain overrides)
+                    # Forcing .piccoma.com on host-only cookies (like csrftoken) is a bot signal.
+                    c_domain = c.get('domain') or region_domain
+                    c_path = c.get('path') or "/"
                     
                     async_session.cookies.set(name, value, domain=c_domain, path=c_path)
                     
@@ -597,10 +594,18 @@ class PiccomaProvider(BaseProvider):
                     csrf_token = csrf_meta.get('content')
             
             if not csrf_token:
-                config_script = soup.find('script', string=re.compile(r'__p_config__'))
+                config_script = soup.find('script', string=re.compile(r'__p_config__|__NEXT_DATA__'))
                 if config_script and config_script.string:
+                    # Try p_config (Legacy/Static)
                     token_m = re.search(r'csrfToken\s*:\s*["\']([^"\']+)["\']', config_script.string)
                     csrf_token = token_m.group(1) if token_m else None
+                    
+                    # Try NEXT_DATA (Modern/Hydrated)
+                    if not csrf_token:
+                        try:
+                            n_data = json.loads(config_script.string)
+                            csrf_token = n_data.get('props', {}).get('pageProps', {}).get('csrfToken')
+                        except: pass
             
             headers = {
                 "Referer": episode_page_url,
