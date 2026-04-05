@@ -163,13 +163,16 @@ class PiccomaProvider(BaseProvider):
                     # 🕵️ Audit the resulting matured jar
                     matured_cookies = []
                     for c in async_session.cookies.jar:
-                        matured_cookies.append({
-                            "name": c.name,
-                            "value": c.value,
-                            "domain": c.domain,
-                            "path": c.path,
-                            "expires": getattr(c, 'expires', None)
-                        })
+                        # Defensive check: ensure we have a real Cookie object
+                        name = getattr(c, 'name', None)
+                        if name:
+                            matured_cookies.append({
+                                "name": name,
+                                "value": getattr(c, 'value', ""),
+                                "domain": getattr(c, 'domain', ".piccoma.com"),
+                                "path": getattr(c, 'path', "/"),
+                                "expires": getattr(c, 'expires', None)
+                            })
                     
                     if len(matured_cookies) >= 8:
                         logger.info(f"✅ [Piccoma Identity] Identity matured and PERSISTED ({len(matured_cookies)} cookies).")
@@ -622,7 +625,8 @@ class PiccomaProvider(BaseProvider):
                                 diag_cookies.append(f"{name} [{domain}:{path}]")
                     logger.info(f"🔎 [Identity Diagnostic] Outgoing Cookies: {', '.join(diag_cookies)}")
                 except:
-                    current_names = [f"{c.name} ({c.domain})" for c in auth_session.cookies.jar]
+                    # Safe iteration over names and values
+                    current_names = [f"{n} ({auth_session.cookies.get(n)})" for n in auth_session.cookies]
                     logger.info(f"🔎 [Identity Diagnostic] Outgoing Cookies (fallback): {', '.join(current_names)}")
                 
                 # S+ Trace: Log Set-Cookie headers from the rejection response
@@ -706,9 +710,10 @@ class PiccomaProvider(BaseProvider):
             # --- TIER 6: Cookie Jar Discovery (S+ Last Resort) ---
             if not csrf_token:
                 # In modern Next.js apps, CSRF is often exclusively in cookies
-                for c in auth_session.cookies:
-                    if c.name.lower() in ["csrftoken", "__host-csrf", "csrf"]:
-                        csrf_token = c.value
+                # Use .items() for string-safe iteration across all library versions
+                for name, value in auth_session.cookies.items():
+                    if name.lower() in ["csrftoken", "__host-csrf", "csrf"]:
+                        csrf_token = value
                         logger.info(f"🍪 [Piccoma Diagnostic] CSRF extracted from session cookies: {csrf_token[:10]}...")
                         break
 
