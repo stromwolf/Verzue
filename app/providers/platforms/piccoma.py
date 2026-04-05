@@ -706,6 +706,7 @@ class PiccomaProvider(BaseProvider):
                     csrf_token = csrf_meta.get('content')
             
             # --- TIER 3: Hydrated State (Next.js) ---
+            build_id = None
             if not csrf_token:
                 config_script = soup.find('script', string=re.compile(r'__p_config__|__NEXT_DATA__'))
                 if config_script and config_script.string:
@@ -714,6 +715,10 @@ class PiccomaProvider(BaseProvider):
                         n_data = json.loads(config_script.string)
                         # Root discovery
                         csrf_token = n_data.get('props', {}).get('pageProps', {}).get('csrfToken')
+                        # Build ID extraction for Next.js Data API
+                        build_id = n_data.get('buildId')
+                        if build_id: logger.info(f"🏗️ [Piccoma Identity] Next.js Build ID extracted: {build_id}")
+                        
                         # Fallback initialState discovery
                         if not csrf_token:
                             csrf_token = n_data.get('initialState', {}).get('app', {}).get('csrfToken')
@@ -750,11 +755,20 @@ class PiccomaProvider(BaseProvider):
                         break
 
             headers = {
+                "Host": "piccoma.com",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
                 "Referer": episode_page_url,
-                "Origin": base_url,
+                "Origin": "https://piccoma.com",
+                "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
                 "X-Requested-With": "XMLHttpRequest", # CRITICAL: Ensure server treats as XHR
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                "Content-Type": "application/x-www-form-urlencoded"
             }
             
             if csrf_token:
@@ -816,14 +830,23 @@ class PiccomaProvider(BaseProvider):
                 f"{base_url}/web/api/v1/episode/point/use",
                 # Path-Based Candidates (Dynamic)
                 f"{base_url}/web/episode/{episode_id}/use",
-                f"{base_url}/web/episode/{episode_id}/purchase",
+                f"{base_url}/web/episode/{episode_id}/purchase"
+            ]
+            
+            # --- NEXT.JS DATA API (TIER 8) ---
+            if build_id:
+                # Mirroring browser's background data fetch
+                discovery_endpoints.append(f"{base_url}/_next/data/{build_id}/web/api/v2/episode/waitfree/use.json")
+                discovery_endpoints.append(f"{base_url}/_next/data/{build_id}/web/api/v2/episode/point/use.json")
+            
+            discovery_endpoints.extend([
                 # Original Static Candidates
                 f"{base_url}/web/episode/waitfree/use",
                 f"{base_url}/web/episode/point/use",
                 f"{base_url}/web/episode/coin/use",
                 f"{base_url}/web/episode/purchase",
                 f"{base_url}/web/episode/use",
-            ]
+            ])
             
             payload_variants = [
                 {"episodeId": episode_id, "productId": series_id, "hash": sec_hash, "csrfToken": csrf_token},
@@ -831,6 +854,12 @@ class PiccomaProvider(BaseProvider):
                 {"episodeId": episode_id, "productId": series_id, "hash": sec_hash},
                 {"episode_id": episode_id, "productId": series_id, "type": "point", "hash": sec_hash}
             ]
+
+            # 🟢 S+ Lateny Emulation (Mimicking human interaction delay)
+            import random
+            latency = random.uniform(0.5, 1.2)
+            logger.info(f"⏳ [Piccoma Identity] Emulating human latency: {latency:.2f}s before trial...")
+            await asyncio.sleep(latency)
 
             # --- TIER 7: Diagnostic Truth-Scanner ---
             found = False
