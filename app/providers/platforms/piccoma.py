@@ -721,7 +721,7 @@ class PiccomaProvider(BaseProvider):
                 # Check if it's currently CHARGING (User must wait)
                 charging = ep_item.select_one('.PCM-epList_status_waitfreeCharging, .PCM-chargeBar_waitfree')
                 if charging or "分後に読めます" in item_text or "チャージ中" in item_text:
-                    logger.warning(f"⚠️ [Piccoma] Wait-Free is CHARGING for episode {chapter_id}. Switching to Point fallback.")
+                    logger.info(f"[Piccoma Identity] Wait-Free is currently charging for episode {episode_id}. Switching to Point/Coin fallback.")
                     is_waitfree = False
                 
                 logger.info(f"[DEV-TRACE] WaitFree Detection (Episode List): {is_waitfree} (Indicators: {bool(waitfree_indicator)})")
