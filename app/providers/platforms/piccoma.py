@@ -137,14 +137,13 @@ class PiccomaProvider(BaseProvider):
             logger.info(f"[Piccoma Identity] Applying session '{session_obj.get('account_id')}' ({len(session_obj.get('cookies', []))} cookies).")
             
             # 🟢 S+ Identity Trace: Granular cookie audit
-            cookie_names = []
+            applied_trace = []
             for c in session_obj.get("cookies", []):
                 name = str(c.get('name') or c.get('key'))
                 value = str(c.get('value') or c.get('val'))
                 
                 if name and value is not None:
                     # 🟢 S+ Aggressive Injection: Force universal scope for critical session cookies
-                    # This ensures pksid and others are sent on all requests regardless of original subpath/subdomain.
                     if name.lower() in ['pksid', 'csrftoken', 'csrf_token']:
                         c_domain = ".piccoma.com"
                         c_path = "/"
@@ -153,15 +152,20 @@ class PiccomaProvider(BaseProvider):
                         c_path = c.get('path') or "/"
                     
                     async_session.cookies.set(name, value, domain=c_domain, path=c_path)
-                    cookie_names.append(f"{name} [{c_domain}:{c_path}]")
+                    
+                    # Log trace: 🍪 [Name] -> [Domain:Path] | Status: Applied
+                    preview = f"{value[:3]}...{value[-3:]}" if len(value) > 6 else "***"
+                    applied_trace.append(f"   🍪 {name:<12} | {c_domain}:{c_path:<10} | {preview}")
                 elif name == "pksid":
                     logger.warning(f"  ⚠️ [Auth Health Check] 'pksid' is EMPTY in session stash!")
             
             # S+ Health Audit: Mark as SUSPICIOUS if cookie count is suspiciously low
             if len(session_obj.get("cookies", [])) < 5:
                 logger.warning(f"  ⚠️ [Auth Health Audit] Session '{session_obj.get('account_id')}' has suspiciously few cookies ({len(session_obj.get('cookies', []))}). Marking as SUSPICIOUS.")
-                # We don't nullify yet, but we log the trace for developer analysis
-                logger.info(f"🔎 [Identity Trace] Applied Cookies Trace: {', '.join(cookie_names)}")
+                
+            if applied_trace:
+                logger.info(f"🔎 [Identity Audit] Re-injecting {len(applied_trace)} cookies into AsyncSession:")
+                for line in applied_trace: logger.info(line)
         
         # 🕵️ [DEV-TRACE]: Final session audit
         logger.info(f"[DEV-TRACE] Session Identity Audit: {len(async_session.cookies)} total cookies active in AsyncSession.")

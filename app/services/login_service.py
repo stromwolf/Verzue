@@ -168,17 +168,21 @@ class LoginService:
                 cookies = []
                 has_pksid = False
                 
-                # 🟢 S+ Identity Trace: Extract ALL cookies from the jar
-                # Piccoma often sets cookies across .piccoma.com, piccoma.com, and static domains.
-                # We iterate the internal _cookies structure of the RequestsCookieJar for maximum coverage.
+                # 🕵️ [DEVELOPER MODE]: Exhaustive Identity Audit
+                logger.info("🕵️ [DEV-MODE] Login flow complete. Auditing resulting Jar state...")
+                
                 try:
-                    # Fix: session.cookies is the wrapper, session.cookies.jar is the RequestsCookieJar
                     jar_obj = session.cookies.jar
+                    log_entries = []
                     for domain in jar_obj._cookies:
                         for path in jar_obj._cookies[domain]:
                             for name, cookie in jar_obj._cookies[domain][path].items():
                                 if name == "pksid" and cookie.value:
                                     has_pksid = True
+                                
+                                # High level trace entry
+                                val_preview = f"{cookie.value[:4]}...{cookie.value[-4:]}" if len(cookie.value) > 8 else cookie.value
+                                log_entries.append(f"   🍪 {name:<12} | Dom: {domain:<18} | Path: {path:<5} | Val: {val_preview}")
                                 
                                 cookies.append({
                                     "name": name,
@@ -187,24 +191,30 @@ class LoginService:
                                     "path": path,
                                     "expires": getattr(cookie, 'expires', None)
                                 })
-                    logger.info(f"🔎 [Identity Trace] Extracted {len(cookies)} cookies from JAR ({', '.join([c['name'] for c in cookies[:8]])}...)")
+                    
+                    if log_entries:
+                        logger.info(f"🔎 [Identity Trace] Total {len(log_entries)} cookies captured from JAR:")
+                        for entry in log_entries: logger.info(entry)
+                    else:
+                        logger.warning("⚠️ [Identity Trace] WARNING: Jar is EMPTY after handshake!")
+                        
                 except Exception as e:
-                    logger.warning(f"  ⚠️ [Identity Trace] Standard JAR extraction failed ({e}), falling back to items().")
+                    logger.warning(f"  ⚠️ [Identity Trace] Jar iteration failed ({e}), using items fallback.")
                     for name, value in session.cookies.items():
                         if name == "pksid" and value: has_pksid = True
                         cookies.append({"name": name, "value": value, "domain": ".piccoma.com", "path": "/"})
                 
                 # --- 🟢 S+ GRADE: Header Fallback ---
-                # If pksid is still missing, attempt to extract directly from Set-Cookie headers
                 if not has_pksid:
-                    logger.info("🔎 [DEV-MODE] pksid missing from jar after handshake. Attempting Header Extraction Fallback...")
+                    logger.info("🔎 [DEV-MODE] pksid missing from jar. Scanning response headers...")
                     header_cookies = post_res.headers.get_list('Set-Cookie') if hasattr(post_res.headers, 'get_list') else post_res.headers.get('Set-Cookie', "").split(",")
                     for cookie_str in header_cookies:
+                        logger.info(f"   [Header Scan] -> {cookie_str[:80]}...")
                         if "pksid=" in cookie_str:
                             p_match = re.search(r'pksid=([^; ]+)', cookie_str)
                             if p_match:
                                 p_val = p_match.group(1)
-                                logger.info(f"✅ [Header Fallback] FOUND pksid in headers! Length: {len(p_val)}")
+                                logger.info(f"✅ [Header Scan] SUCCESS! Captured pksid from headers.")
                                 has_pksid = True
                                 cookies.append({"name": "pksid", "value": p_val, "domain": ".piccoma.com", "path": "/"})
                 
@@ -213,10 +223,7 @@ class LoginService:
                     logger.info(f"✅ Automated login successful for Piccoma ({email}) with pksid.")
                     return True
                 else:
-                    logger.error(f"[Piccoma] Login returned success but {'pksid was MISSING' if not has_pksid else 'no cookies found'}.")
-                    # --- 🛠️ Diagnostic Fallback on Failure ---
-                    found_cookies = [f"{n} | {len(v)}" for n, v in session.cookies.items()]
-                    logger.info(f"🔎 [DEV-MODE Cookie Audit] Current Jar Keys: {', '.join(found_cookies)}")
+                    logger.error(f"🛑 [DEV-MODE] Login returned success but pksid is MISSING. (Found cookies: {len(cookies)})")
                     return False
             else:
                 reason = "Rerendered login page" if rerendered else f"HTTP {post_res.status_code}"
