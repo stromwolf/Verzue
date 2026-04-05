@@ -210,8 +210,7 @@ class PiccomaProvider(BaseProvider):
         # --- 🟢 S+ USER-REQUEST: Mandatory /web/ Handshake for Cookies ---
         # If we don't have a 'csrftoken' in our jar, we MUST hit the landing page 
         # first to establish the cookie identity, as per user requirement.
-        has_csrf_cookie = any(c.name.lower() == 'csrftoken' for c in auth_session.cookies)
-        if not has_csrf_cookie:
+        if 'csrftoken' not in auth_session.cookies:
             logger.info("🛡️ [Piccoma Identity] Seed CSRF cookie missing. Performing /web/ Handshake...")
             try:
                 handshake_res = await auth_session.get(f"{base_url}/web/", timeout=10)
@@ -556,8 +555,7 @@ class PiccomaProvider(BaseProvider):
         # --- 🟢 S+ USER-REQUEST: Mandatory /web/ Handshake for Cookies ---
         # If we don't have a 'csrftoken' in our jar, we MUST hit the landing page 
         # first to establish the cookie identity, as per user requirement.
-        has_csrf_cookie = any(c.name.lower() == 'csrftoken' for c in auth_session.cookies)
-        if not has_csrf_cookie:
+        if 'csrftoken' not in auth_session.cookies:
             logger.info("🛡️ [Piccoma Identity] Seed CSRF cookie missing. Performing /web/ Handshake...")
             try:
                 handshake_res = await auth_session.get(f"{base_url}/web/", timeout=10)
