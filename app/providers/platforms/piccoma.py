@@ -707,22 +707,29 @@ class PiccomaProvider(BaseProvider):
             
             # --- TIER 3: Hydrated State (Next.js) ---
             build_id = None
-            if not csrf_token:
-                config_script = soup.find('script', string=re.compile(r'__p_config__|__NEXT_DATA__'))
-                if config_script and config_script.string:
-                    # NEXT_DATA (Modern)
-                    try:
-                        n_data = json.loads(config_script.string)
-                        # Root discovery
+            config_script = soup.find('script', string=re.compile(r'__p_config__|__NEXT_DATA__'))
+            if config_script and config_script.string:
+                # NEXT_DATA (Modern)
+                try:
+                    n_data = json.loads(config_script.string)
+                    # Try to extract CSRF if not already found
+                    if not csrf_token:
                         csrf_token = n_data.get('props', {}).get('pageProps', {}).get('csrfToken')
-                        # Build ID extraction for Next.js Data API
-                        build_id = n_data.get('buildId')
-                        if build_id: logger.info(f"🏗️ [Piccoma Identity] Next.js Build ID extracted: {build_id}")
-                        
-                        # Fallback initialState discovery
                         if not csrf_token:
                             csrf_token = n_data.get('initialState', {}).get('app', {}).get('csrfToken')
-                    except: pass
+                    
+                    # Always try to extract Build ID for Next.js Data API
+                    build_id = n_data.get('buildId')
+                    if build_id: logger.info(f"🏗️ [Piccoma Identity] Next.js Build ID extracted: {build_id}")
+                except: pass
+
+            # --- TIER 3.5: Wide-Net Build ID Recovery ---
+            if not build_id:
+                # Scan raw text for any buildId pattern (common in modern obfuscated JS blocks)
+                bid_m = re.search(r'["\']buildId["\']\s*:\s*["\']([^"\']+)["\']', res.text)
+                if bid_m:
+                    build_id = bid_m.group(1)
+                    logger.info(f"🏗️ [Piccoma Identity] Next.js Build ID found via wide-net: {build_id}")
             
             # --- TIER 4: Hidden Inputs (Durable Fallback) ---
             if not csrf_token:
@@ -870,6 +877,12 @@ class PiccomaProvider(BaseProvider):
                     for is_json in [False, True]:
                         ct = "application/json" if is_json else "application/x-www-form-urlencoded"
                         headers["Content-Type"] = ct
+                        
+                        # 🟢 S+ NEXT.JS MASTER-KEY: Force JSON response mode
+                        if is_json:
+                            headers["x-nextjs-data"] = "1"
+                        else:
+                            headers.pop("x-nextjs-data", None)
                         
                         # 🕵️ [S+ Trace]: High-entropy diagnostic log
                         trial_label = f"Trial {endpoint_idx+1}.{payload_idx+1}.{'J' if is_json else 'F'}"
