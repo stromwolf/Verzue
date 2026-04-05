@@ -138,6 +138,15 @@ class PiccomaProvider(BaseProvider):
         if session_obj:
             logger.info(f"[Piccoma Identity] Applying session '{session_obj.get('account_id')}' ({len(session_obj.get('cookies', []))} cookies).")
             
+            # 🟢 S+ Identity Deep Fingerprint: Strict Header Ordering
+            # This mimics exactly how a modern browser sends headers to bypass WAF sequencing checks.
+            async_session.header_order = [
+                "Host", "User-Agent", "Accept", "Accept-Language", "Accept-Encoding",
+                "Referer", "Origin", "Connection", "Upgrade-Insecure-Requests",
+                "Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site", "Sec-Fetch-User",
+                "X-Requested-With", "X-CSRF-Token", "X-Security-Hash", "X-Hash-Code"
+            ]
+            
             # 🟢 S+ Identity Trace: Granular cookie audit
             applied_trace = []
             for c in session_obj.get("cookies", []):
@@ -788,9 +797,6 @@ class PiccomaProvider(BaseProvider):
             if not is_waitfree:
                 # Fallback: check global 'Free' buttons on the page
                 is_waitfree = bool(soup.select_one('.btn-waitfree, .PCM-btn-waitfree, .PCM-footerWaitfree'))
-                if is_waitfree:
-                    logger.info("[DEV-TRACE] WaitFree Detection (Global): True (Fallback)")
-            
             # S+: Support Smartoon specific wait-free check
             if not is_waitfree and is_s:
                 # Verify it's actually unlocked (Not just free-to-wait label)
@@ -826,14 +832,19 @@ class PiccomaProvider(BaseProvider):
                 {"episode_id": episode_id, "productId": series_id, "type": "point", "hash": sec_hash}
             ]
 
+            # --- TIER 7: Diagnostic Truth-Scanner ---
             found = False
-            for alt_url in discovery_endpoints:
+            for endpoint_idx, alt_url in enumerate(discovery_endpoints):
                 if found: break
-                for payload in payload_variants:
+                for payload_idx, payload in enumerate(payload_variants):
                     if found: break
                     for is_json in [False, True]:
                         ct = "application/json" if is_json else "application/x-www-form-urlencoded"
                         headers["Content-Type"] = ct
+                        
+                        # 🕵️ [S+ Trace]: High-entropy diagnostic log
+                        trial_label = f"Trial {endpoint_idx+1}.{payload_idx+1}.{'J' if is_json else 'F'}"
+                        
                         try:
                             p_retry = auth_session.post(
                                 alt_url, 
@@ -845,8 +856,27 @@ class PiccomaProvider(BaseProvider):
                             )
                             post_res = await p_retry
                             
+                            # 🛡️ SECURITY DETECTOR: Scan for 404-HTML redirects
+                            resp_ct = post_res.headers.get('Content-Type', '').lower()
+                            is_html = 'text/html' in resp_ct or post_res.text.strip().startswith('<!')
+                            
+                            if is_html:
+                                status_msg = f"🛡️ Security Redirect (HTML Page) | Status: {post_res.status_code}"
+                                if "ログインしてください" in post_res.text or "signin" in post_res.text.lower():
+                                    status_msg += " | Reason: Login Required (Session Expired)"
+                                elif "エラー" in post_res.text:
+                                    status_msg += " | Reason: Server-side Error"
+                            else:
+                                status_msg = f"Result: {post_res.status_code}"
+                                try:
+                                    trial_json = post_res.json()
+                                    status_msg += f" | JSON: {json.dumps(trial_json)}"
+                                except: pass
+
+                            logger.info(f"   📡 [Discovery] {trial_label} -> {alt_url} | {status_msg}")
+                            
                             # Success check (BREAK condition)
-                            if post_res.status_code in [200, 302, 301]:
+                            if post_res.status_code in [200, 302, 301] and not is_html:
                                 # Verification after attempt
                                 try:
                                     # Verification logic snippet
