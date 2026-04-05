@@ -114,16 +114,33 @@ class LoginService:
                 # Since curl_cffi doesn't run JS, we must manually inject the 'history' cookies 
                 # (Google Analytics, Clarity, etc.) that Piccoma's WAF expects to see.
                 import uuid, random, time
+                # GA: Universal Tracking
                 ga_id = f"GA1.1.{random.randint(100000000, 999999999)}.{int(time.time())}"
+                # Clarity: Interaction Tracking
                 clck_id = f"{uuid.uuid4().hex[:8]}%5E2%5Eg4y%5E0%5E{random.randint(1000, 9999)}"
+                # TikTok / Analytics (Found in user's comparison)
+                ttp_id = f"{uuid.uuid4()}"
+                ebtd_id = f"{random.randint(1000000, 9999999)}.{int(time.time())}"
                 snex_id = str(uuid.uuid4())
                 
-                session.cookies.set("_ga", ga_id, domain=".piccoma.com", path="/")
-                session.cookies.set("_clck", clck_id, domain=".piccoma.com", path="/")
-                session.cookies.set("snexid", snex_id, domain=".piccoma.com", path="/")
+                # Injected trackers list for explicit persistence later
+                injected_trackers = {
+                    "_ga": ga_id,
+                    "_clck": clck_id,
+                    "snexid": snex_id,
+                    "_ttp": ttp_id,
+                    "_ebtd": ebtd_id,
+                    "ttcsid": str(uuid.uuid4()),
+                    "_im_vid": f"v_{uuid.uuid4().hex}"
+                }
+                
+                for k, v in injected_trackers.items():
+                    session.cookies.set(k, v, domain=".piccoma.com", path="/")
                 
                 h_res = await session.get(f"{base_url}/web/", timeout=15)
-                logger.info(f"   [Handshake] Homepage Status: {h_res.status_code} | Jar: {len(session.cookies)} cookies (Injected: 3)")
+                # Correctly report jar size by checking the internal RequestsCookieJar
+                jar_len = len(session.cookies.get_dict())
+                logger.info(f"   [Handshake] Homepage Status: {h_res.status_code} | Jar: {jar_len} cookies (Injected Trackers Active)")
             except Exception as e:
                 logger.warning(f"   ⚠️ [Handshake] Homepage visit failed ({e}), continuing anyway.")
             
@@ -216,6 +233,14 @@ class LoginService:
                     if log_entries:
                         logger.info(f"🔎 [Identity Trace] Total {len(log_entries)} cookies captured from JAR:")
                         for entry in log_entries: logger.info(entry)
+                        
+                        # --- 🟢 S+ USER-REQUEST: Explicit Tracker Persistence ---
+                        # Ensure the injected breadcrumbs (if they aren't already captured) are saved.
+                        # This prevents 'SUSPICIOUS' warnings and 'Naked Bot' rejection on reload.
+                        current_names = [c.get('name') for c in cookies]
+                        for k, v in injected_trackers.items():
+                            if k not in current_names:
+                                cookies.append({"name": k, "value": v, "domain": ".piccoma.com", "path": "/"})
                     else:
                         logger.warning("⚠️ [Identity Trace] WARNING: Jar is EMPTY after handshake!")
                         
