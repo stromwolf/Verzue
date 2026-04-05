@@ -601,30 +601,51 @@ class PiccomaProvider(BaseProvider):
 
             # 2. Robust CSRF Extraction (Multi-Tier Fallback)
             csrf_token = None
+            
+            # --- TIER 1: Standard Forms ---
             csrf_form = soup.find('form', id='js_purchaseForm')
             if csrf_form:
                 csrf_token = csrf_form.find('input', {'name': 'csrfToken'})
                 if csrf_token: csrf_token = csrf_token.get('value')
             
+            # --- TIER 2: Meta Tags ---
             if not csrf_token:
                 csrf_meta = soup.find('meta', {'name': 'csrf-token'})
                 if csrf_meta:
                     csrf_token = csrf_meta.get('content')
             
+            # --- TIER 3: Hydrated State (Next.js) ---
             if not csrf_token:
                 config_script = soup.find('script', string=re.compile(r'__p_config__|__NEXT_DATA__'))
                 if config_script and config_script.string:
-                    # Try p_config (Legacy/Static)
+                    # p_config (Legacy/Static)
                     token_m = re.search(r'csrfToken\s*:\s*["\']([^"\']+)["\']', config_script.string)
                     csrf_token = token_m.group(1) if token_m else None
-                    
-                    # Try NEXT_DATA (Modern/Hydrated)
+                    # NEXT_DATA (Modern)
                     if not csrf_token:
                         try:
                             n_data = json.loads(config_script.string)
                             csrf_token = n_data.get('props', {}).get('pageProps', {}).get('csrfToken')
                         except: pass
             
+            # --- TIER 4: Hidden Inputs (Durable Fallback) ---
+            if not csrf_token:
+                # Be aggressive: find ANY input with "csrf" in its name
+                csrf_inputs = soup.find_all('input', attrs={'name': re.compile(r'csrf', re.I)})
+                for inp in csrf_inputs:
+                    val = inp.get('value')
+                    if val and len(val) > 10:
+                        csrf_token = val
+                        break
+            
+            # --- TIER 5: Final Stand (Regex on Raw Text) ---
+            if not csrf_token:
+                # Sometimes BS4 fails on malformed HTML; use direct regex
+                token_m = re.search(r'name="csrfmiddlewaretoken"\s+value="([^"]+)"', res.text)
+                if not token_m:
+                    token_m = re.search(r'csrfmiddlewaretoken\s*:\s*["\']([^"\']+)["\']', res.text)
+                csrf_token = token_m.group(1) if token_m else None
+
             headers = {
                 "Referer": episode_page_url,
                 "Origin": base_url,
@@ -632,21 +653,13 @@ class PiccomaProvider(BaseProvider):
                 "Content-Type": "application/x-www-form-urlencoded",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
-            # Fallback CSRF extraction (hidden inputs)
-            if not csrf_token:
-                csrf_hidden = soup.find('input', type='hidden', attrs={'name': 'csrfmiddlewaretoken'})
-                csrf_token = csrf_hidden['value'] if csrf_hidden else None
             
-            if not csrf_token:
-                csrf_token_input = soup.select_one('input[name="csrfmiddlewaretoken"], #csrfToken')
-                csrf_token = csrf_token_input['value'] if csrf_token_input else None
-
             if csrf_token:
                 headers['X-CSRF-Token'] = csrf_token
-                logger.info(f"[DEV-TRACE] [Step 3] CSRF extraction: {csrf_token[:10]}...")
+                headers['X-CSRFToken'] = csrf_token # Double indicator
+                logger.info(f"[DEV-TRACE] [Step 3] CSRF extraction: {csrf_token[:10]}... (S+ Robust)")
             else:
                 logger.warning("[DEV-TRACE] [Step 3] CSRF extraction FAILED. Page might be logged out or blocked.")
-                # 🕵️ [DEV-MODE]: Capture episode list HTML on CSRF failure
                 self._dump_diagnostic_data(f"csrf_fail_{episode_id}", res.text, {
                     "url": episode_page_url, "status": res.status_code, "headers": dict(res.headers)
                 })
@@ -661,27 +674,41 @@ class PiccomaProvider(BaseProvider):
             
             # 4. Identify Access Type (Wait-Free vs Coins)
             is_waitfree = False
-            ep_item = soup.select_one(f'a[data-episode_id="{episode_id}"]')
+            # Search for episode link containing ID
+            ep_item = soup.select_one(f'a[data-episode_id="{episode_id}"], a[href*="/{episode_id}"]')
             if ep_item:
-                waitfree_indicator = ep_item.select_one('.PCM-epList_status_waitfree, .PCM-icon_waitfree, .PCM-icon_clock')
-                is_waitfree = bool(waitfree_indicator) or "待てば¥0" in ep_item.get_text() or "待てば" in ep_item.get_text()
-                logger.info(f"[DEV-TRACE] WaitFree Detection (Episode List): {is_waitfree}")
+                # Check for icons/text indicating free-to-wait
+                waitfree_indicator = ep_item.select_one('.PCM-epList_status_waitfree, .PCM-icon_waitfree, .PCM-icon_clock, .PCM-epList_waitfree')
+                item_text = ep_item.get_text()
+                is_waitfree = bool(waitfree_indicator) or "待てば¥0" in item_text or "待てば" in item_text or "¥0" in item_text
+                logger.info(f"[DEV-TRACE] WaitFree Detection (Episode List): {is_waitfree} (Indicators: {bool(waitfree_indicator)})")
             
             if not is_waitfree:
-                is_waitfree = bool(soup.select_one('.btn-waitfree, .PCM-btn-waitfree'))
+                # Fallback: check global 'Free' buttons on the page
+                is_waitfree = bool(soup.select_one('.btn-waitfree, .PCM-btn-waitfree, .PCM-footerWaitfree'))
+                if is_waitfree:
+                    logger.info("[DEV-TRACE] WaitFree Detection (Global): True (Fallback)")
+            
+            # S+: Support Smartoon specific wait-free check
+            if not is_waitfree and is_s:
+                if "1話無料" in res.text or "待てば" in res.text:
+                    is_waitfree = True
+                    logger.info("[DEV-TRACE] WaitFree Detection (Raw Text): True (Smartoon Fallback)")
             
             # 5. Discovery Loop: Robust alternative endpoint & payload matching
             discovery_endpoints = [
-                f"{base_url}/web/episode/waitfree/use" if is_waitfree else f"{base_url}/web/episode/purchase",
-                f"{base_url}/web/episode/use",
+                f"{base_url}/web/episode/waitfree/use" if is_waitfree else f"{base_url}/web/episode/point/use",
+                f"{base_url}/web/episode/coin/use",
+                f"{base_url}/web/episode/point/use",
                 f"{base_url}/web/episode/purchase",
-                f"{base_url}/web/episode/waitfree/use"
+                f"{base_url}/web/episode/use",
             ]
             
             payload_variants = [
                 {"episodeId": episode_id, "productId": series_id, "hash": sec_hash, "csrfToken": csrf_token},
                 {"episode_id": episode_id, "product_id": series_id, "hash": sec_hash, "csrfmiddlewaretoken": csrf_token},
-                {"episodeId": episode_id, "productId": series_id, "hash": sec_hash}
+                {"episodeId": episode_id, "productId": series_id, "hash": sec_hash},
+                {"episode_id": episode_id, "productId": series_id, "type": "point", "hash": sec_hash}
             ]
 
             found = False
