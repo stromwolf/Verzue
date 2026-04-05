@@ -207,6 +207,19 @@ class PiccomaProvider(BaseProvider):
         base_url, region, domain = self._get_context_from_url(url)
         auth_session = await self._get_authenticated_session(domain)
         
+        # --- 🟢 S+ USER-REQUEST: Mandatory /web/ Handshake for Cookies ---
+        # If we don't have a 'csrftoken' in our jar, we MUST hit the landing page 
+        # first to establish the cookie identity, as per user requirement.
+        has_csrf_cookie = any(c.name.lower() == 'csrftoken' for c in auth_session.cookies)
+        if not has_csrf_cookie:
+            logger.info("🛡️ [Piccoma Identity] Seed CSRF cookie missing. Performing /web/ Handshake...")
+            try:
+                handshake_res = await auth_session.get(f"{base_url}/web/", timeout=10)
+                if handshake_res.status_code == 200:
+                    logger.info("✅ [Piccoma Identity] /web/ Handshake complete. Cookies primed.")
+            except Exception as e:
+                logger.warning(f"⚠️ [Piccoma Identity] /web/ Handshake ritual failed: {e}")
+
         # 1. Parallel Fetching (S-Grade Latency Optimization)
         product_url = f"{base_url}/web/product/{series_id}"
         episodes_url = f"{base_url}/web/product/{series_id}/episodes?etype=E"
@@ -345,8 +358,9 @@ class PiccomaProvider(BaseProvider):
             if await self.fast_purchase(task):
                 # Re-fetch after successful purchase
                 auth_session = await self._get_authenticated_session(domain)
-                r_task = auth_session.get(task.url)
-                res = await r_task
+                res = await auth_session.get(task.url)
+            else:
+                logger.error(f"  ❌ [Piccoma] Fast purchase failed for {chapter_id}")
              
         if res.status_code != 200: 
             logger.error(f"[Piccoma] Final access attempt failed for {chapter_id} (Status: {res.status_code})")
@@ -538,6 +552,20 @@ class PiccomaProvider(BaseProvider):
         
         logger.info(f"[DEV-TRACE] [Step 1] Initializing authenticated session for domain: {domain}")
         auth_session = await self._get_authenticated_session(domain)
+
+        # --- 🟢 S+ USER-REQUEST: Mandatory /web/ Handshake for Cookies ---
+        # If we don't have a 'csrftoken' in our jar, we MUST hit the landing page 
+        # first to establish the cookie identity, as per user requirement.
+        has_csrf_cookie = any(c.name.lower() == 'csrftoken' for c in auth_session.cookies)
+        if not has_csrf_cookie:
+            logger.info("🛡️ [Piccoma Identity] Seed CSRF cookie missing. Performing /web/ Handshake...")
+            try:
+                handshake_res = await auth_session.get(f"{base_url}/web/", timeout=10)
+                if handshake_res.status_code == 200:
+                    logger.info("✅ [Piccoma Identity] /web/ Handshake complete. Cookies primed.")
+            except Exception as e:
+                logger.warning(f"⚠️ [Piccoma Identity] /web/ Handshake ritual failed: {e}")
+
         # Log session cookies audit
         logger.info(f"[DEV-TRACE] Session Identity Audit: {len(auth_session.cookies)} cookies loaded into AsyncSession.")
         if len(auth_session.cookies) == 0:
@@ -680,6 +708,15 @@ class PiccomaProvider(BaseProvider):
                 if not token_m:
                     token_m = re.search(r'csrfToken\s*:\s*["\']([^"\']+)["\']', res.text)
                 csrf_token = token_m.group(1) if token_m else None
+
+            # --- TIER 6: Cookie Jar Discovery (S+ Last Resort) ---
+            if not csrf_token:
+                # In modern Next.js apps, CSRF is often exclusively in cookies
+                for c in auth_session.cookies:
+                    if c.name.lower() in ["csrftoken", "__host-csrf", "csrf"]:
+                        csrf_token = c.value
+                        logger.info(f"🍪 [Piccoma Diagnostic] CSRF extracted from session cookies: {csrf_token[:10]}...")
+                        break
 
             headers = {
                 "Referer": episode_page_url,
