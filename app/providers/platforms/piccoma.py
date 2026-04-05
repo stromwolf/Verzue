@@ -152,39 +152,35 @@ class PiccomaProvider(BaseProvider):
                     
                     async_session.cookies.set(name, value, domain=c_domain, path=c_path)
                     
-            # --- 🟢 S+ USER-REQUEST: Thick Identity Safety Net ---
-            # If the loaded session is 'thin' (only 2 cookies), it means it was created 
-            # before our stabilization update. We'll inject breadcrumbs on-the-fly 
-            # so the user doesn't have to re-login.
-            current_names = [str(c.get('name') or c.get('key')).lower() for c in session_obj.get("cookies", [])]
-            if len(current_names) < 8:
-                logger.info(f"🛡️ [Piccoma Identity] 'Thin' session detected. Injecting dense safety-net breadcrumbs...")
-                
-                # Synthetic Trackers (Dense Variety)
-                safety_breadcrumbs = {
-                    "_ga": f"GA1.1.{random.randint(100000000, 999999999)}.{int(time.time())}",
-                    "_ga_9DBP9C6JX2": f"GS2.1.s{int(time.time())}$o103$g1$t{int(time.time())}$j37$l0$h0",
-                    "_clck": f"{uuid.uuid4().hex[:8]}%5E2%5Eg4w%5E0%5E{random.randint(1000, 9999)}",
-                    "snexid": str(uuid.uuid4()),
-                    "_ttp": str(uuid.uuid4()),
-                    "__ast_prm": f"__t_{int(time.time())}000_%7B%22uuid%22%3A%22{uuid.uuid4()}%22%7D",
-                    "__lt__cid": str(uuid.uuid4()),
-                    "_yjsu_yjad": f"{int(time.time())}.{uuid.uuid4()}"
-                }
-                
-                for k, v in safety_breadcrumbs.items():
-                    if k not in current_names:
-                        c_domain = "piccoma.com" if k in ["snexid"] else ".piccoma.com"
-                        async_session.cookies.set(k, v, domain=c_domain, path="/")
-                        applied_trace.append(f"   🛡️ {k:<12} | {c_domain}:/ (Dense Net) | Applied")
+            # --- 🟢 S+ USER-REQUEST: Persistent Thick Identity Maturation ---
+            # If the loaded session is 'thin' (too few cookies), it triggers a 'Warming Ritual'
+            # to acquire tracking cookies and then SAVES them back to the vault.
+            if len(async_session.cookies) < 8:
+                logger.info(f"🛡️ [Piccoma Identity] 'Thin' session detected ({len(async_session.cookies)} cookies). Maturing profile...")
+                try:
+                    # 1. Handshake Ritual (Landing + Product)
+                    await async_session.get(f"{base_url}/web/", timeout=10)
+                    # 🕵️ Audit the resulting matured jar
+                    matured_cookies = []
+                    for c in async_session.cookies.jar:
+                        matured_cookies.append({
+                            "name": c.name,
+                            "value": c.value,
+                            "domain": c.domain,
+                            "path": c.path,
+                            "expires": getattr(c, 'expires', None)
+                        })
+                    
+                    if len(matured_cookies) >= 8:
+                        logger.info(f"✅ [Piccoma Identity] Identity matured and PERSISTED ({len(matured_cookies)} cookies).")
+                        # Save back to vault so next task starts matured
+                        await self.session_service.update_session_cookies("piccoma", session_obj.get('account_id', 'primary'), matured_cookies)
+                except Exception as ritual_e:
+                    logger.warning(f"⚠️ [Piccoma Identity] Identity maturation failed: {ritual_e}")
 
-            if applied_trace:
-                logger.info(f"🔎 [Identity Audit] Re-injecting {len(applied_trace)} cookies into AsyncSession:")
-                for line in applied_trace: logger.info(line)
-        
-        # 🕵️ [DEV-TRACE]: Final session audit
-        logger.info(f"[DEV-TRACE] Session Identity Audit: {len(async_session.cookies)} total cookies active in AsyncSession.")
-        return async_session
+            # 🕵️ [DEV-TRACE]: Final session audit
+            logger.info(f"[DEV-TRACE] Session Identity Audit: {len(async_session.cookies)} total cookies active in AsyncSession.")
+            return async_session
 
     async def is_session_valid(self, session) -> bool:
         """Stateless validation: Check if redirected on the current session's base."""
