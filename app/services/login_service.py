@@ -110,37 +110,42 @@ class LoginService:
             # Visit the homepage first to initialize browser tracking cookies (_ga, _clck, snexid, etc.)
             logger.info("🏠 [Piccoma] Initializing Homepage Handshake...")
             try:
-                # 🕵️ [S+ BREADCRUMB INJECTION]:
-                # Since curl_cffi doesn't run JS, we must manually inject the 'history' cookies 
-                # (Google Analytics, Clarity, etc.) that Piccoma's WAF expects to see.
+                # --- 🟢 S+ USER-REQUEST: Dense Tracking Identity ---
+                # Using the 'Gold Standard' cookie list from user's VPS
                 import uuid, random, time
-                # GA: Universal Tracking
+                # GA & Site-Specific GA4
                 ga_id = f"GA1.1.{random.randint(100000000, 999999999)}.{int(time.time())}"
-                # Clarity: Interaction Tracking
+                ga4_id = f"GS2.1.s{int(time.time())}$o103$g1$t{int(time.time())}$j37$l0$h0"
+                # Clarity & Line/Kakao Tracking
                 clck_id = f"{uuid.uuid4().hex[:8]}%5E2%5Eg4y%5E0%5E{random.randint(1000, 9999)}"
-                # TikTok / Analytics (Found in user's comparison)
-                ttp_id = f"{uuid.uuid4()}"
-                ebtd_id = f"{random.randint(1000000, 9999999)}.{int(time.time())}"
+                lt_cid = str(uuid.uuid4())
+                ast_prm = f"__t_{int(time.time())}000_%7B%22uuid%22%3A%22{uuid.uuid4()}%22%7D"
                 snex_id = str(uuid.uuid4())
                 
-                # Injected trackers list for explicit persistence later
+                # Injected trackers list (Dense Tracking)
                 injected_trackers = {
                     "_ga": ga_id,
+                    "_ga_9DBP9C6JX2": ga4_id,
                     "_clck": clck_id,
                     "snexid": snex_id,
-                    "_ttp": ttp_id,
-                    "_ebtd": ebtd_id,
-                    "ttcsid": str(uuid.uuid4()),
-                    "_im_vid": f"v_{uuid.uuid4().hex}"
+                    "_ttp": str(uuid.uuid4()),
+                    "_ebtd": f"1.{uuid.uuid4().hex[:10]}.{int(time.time())}",
+                    "ttcsid": f"{int(time.time())}000::{uuid.uuid4().hex[:20]}.98.{int(time.time())}.0",
+                    "_im_vid": f"01K{uuid.uuid4().hex[:20].upper()}",
+                    "__ast_prm": ast_prm,
+                    "__lt__cid": lt_cid,
+                    "__lt__sid": f"{uuid.uuid4().hex[:8]}-{uuid.uuid4().hex[:8]}",
+                    "_yjsu_yjad": f"{int(time.time())}.{uuid.uuid4()}"
                 }
                 
                 for k, v in injected_trackers.items():
-                    session.cookies.set(k, v, domain=".piccoma.com", path="/")
+                    # Correct domain scoping based on user's VPS log
+                    c_domain = "piccoma.com" if k in ["snexid", "csrftoken"] else ".piccoma.com"
+                    session.cookies.set(k, v, domain=c_domain, path="/")
                 
                 h_res = await session.get(f"{base_url}/web/", timeout=15)
-                # Correctly report jar size by checking the internal RequestsCookieJar
                 jar_len = len(session.cookies.get_dict())
-                logger.info(f"   [Handshake] Homepage Status: {h_res.status_code} | Jar: {jar_len} cookies (Injected Trackers Active)")
+                logger.info(f"   [Handshake] Homepage Status: {h_res.status_code} | Jar: {jar_len} cookies (Dense Identity Active)")
             except Exception as e:
                 logger.warning(f"   ⚠️ [Handshake] Homepage visit failed ({e}), continuing anyway.")
             

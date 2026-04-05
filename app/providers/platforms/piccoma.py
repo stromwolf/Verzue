@@ -157,22 +157,26 @@ class PiccomaProvider(BaseProvider):
             # before our stabilization update. We'll inject breadcrumbs on-the-fly 
             # so the user doesn't have to re-login.
             current_names = [str(c.get('name') or c.get('key')).lower() for c in session_obj.get("cookies", [])]
-            if len(current_names) < 5:
-                logger.info(f"🛡️ [Piccoma Identity] 'Thin' session detected. Injecting safety-net breadcrumbs...")
+            if len(current_names) < 8:
+                logger.info(f"🛡️ [Piccoma Identity] 'Thin' session detected. Injecting dense safety-net breadcrumbs...")
                 
-                # Synthetic Trackers (Same formats as LoginService)
+                # Synthetic Trackers (Dense Variety)
                 safety_breadcrumbs = {
                     "_ga": f"GA1.1.{random.randint(100000000, 999999999)}.{int(time.time())}",
-                    "_clck": f"{uuid.uuid4().hex[:8]}%5E2%5Eg4y%5E0%5E{random.randint(1000, 9999)}",
+                    "_ga_9DBP9C6JX2": f"GS2.1.s{int(time.time())}$o103$g1$t{int(time.time())}$j37$l0$h0",
+                    "_clck": f"{uuid.uuid4().hex[:8]}%5E2%5Eg4w%5E0%5E{random.randint(1000, 9999)}",
                     "snexid": str(uuid.uuid4()),
                     "_ttp": str(uuid.uuid4()),
-                    "ttcsid": str(uuid.uuid4())
+                    "__ast_prm": f"__t_{int(time.time())}000_%7B%22uuid%22%3A%22{uuid.uuid4()}%22%7D",
+                    "__lt__cid": str(uuid.uuid4()),
+                    "_yjsu_yjad": f"{int(time.time())}.{uuid.uuid4()}"
                 }
                 
                 for k, v in safety_breadcrumbs.items():
                     if k not in current_names:
-                        async_session.cookies.set(k, v, domain=".piccoma.com", path="/")
-                        applied_trace.append(f"   🛡️ {k:<12} | .piccoma.com:/ (Safety Net) | Applied")
+                        c_domain = "piccoma.com" if k in ["snexid"] else ".piccoma.com"
+                        async_session.cookies.set(k, v, domain=c_domain, path="/")
+                        applied_trace.append(f"   🛡️ {k:<12} | {c_domain}:/ (Dense Net) | Applied")
 
             if applied_trace:
                 logger.info(f"🔎 [Identity Audit] Re-injecting {len(applied_trace)} cookies into AsyncSession:")
