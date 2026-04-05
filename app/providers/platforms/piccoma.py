@@ -47,13 +47,7 @@ class PiccomaProvider(BaseProvider):
             'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
             'Cache-Control': 'no-cache',
             'Pragma': 'no-cache',
-            "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
             "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
             "Upgrade-Insecure-Requests": "1"
         }
         # S-Grade Backpressure
@@ -139,8 +133,13 @@ class PiccomaProvider(BaseProvider):
                 # Check for fake 404 content
                 if self._is_fake_404(res.status_code, res.text, res.headers, url=current_url):
                     if self.DEVELOPER_MODE:
+                        # Log request headers as well to debug mismatches
+                        req_headers = dict(res.request.headers) if hasattr(res, 'request') else "N/A"
                         self._dump_diagnostic_data(f"trap_detected_{int(time.time())}", res.text, {
-                            "url": current_url, "status": res.status_code, "headers": dict(res.headers)
+                            "url": current_url, 
+                            "status": res.status_code, 
+                            "headers": dict(res.headers),
+                            "request_headers": req_headers
                         })
                     raise ScraperError(f"Block/Trap page detected at {current_url}")
                     
@@ -264,11 +263,20 @@ class PiccomaProvider(BaseProvider):
         session_obj = await self.session_service.get_active_session("piccoma")
         
         # S+ Fingerprint Entropy: Rotate between modern browser profiles
-        browser_profiles = ["chrome110", "chrome116", "chrome120", "safari15_5", "edge101"]
-        impersonation = random.choice(browser_profiles)
+        profiles = {
+            "chrome120": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "chrome116": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+            "safari15_5": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15"
+        }
+        impersonation = random.choice(list(profiles.keys()))
+        ua = profiles[impersonation]
         
         async_session = AsyncSession(impersonate=impersonation, proxy=Settings.get_proxy())
-        async_session.headers.update(self.default_headers)
+        
+        # 🟢 S+ Critical Fix: Synchronize UA with TLS Fingerprint
+        headers = self.default_headers.copy()
+        headers["User-Agent"] = ua
+        async_session.headers.update(headers)
 
         if session_obj:
             # Audit session health: Ensure pksid exists and is not empty
@@ -303,15 +311,6 @@ class PiccomaProvider(BaseProvider):
         if session_obj:
             logger.info(f"[Piccoma Identity] Applying session '{session_obj.get('account_id')}' ({len(session_obj.get('cookies', []))} cookies).")
             
-            # 🟢 S+ Identity Deep Fingerprint: Strict Header Ordering
-            # This mimics exactly how a modern browser sends headers to bypass WAF sequencing checks.
-            async_session.header_order = [
-                "Host", "User-Agent", "Accept", "Accept-Language", "Accept-Encoding",
-                "Referer", "Origin", "Connection", "Upgrade-Insecure-Requests",
-                "Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site", "Sec-Fetch-User",
-                "X-Requested-With", "X-CSRF-Token", "X-Security-Hash", "X-Hash-Code"
-            ]
-            
             # 🟢 S+ Identity Trace: Granular cookie audit
             applied_trace = []
             for c in session_obj.get("cookies", []):
@@ -325,14 +324,6 @@ class PiccomaProvider(BaseProvider):
                     c_path = c.get('path') or "/"
                     
                     async_session.cookies.set(name, value, domain=c_domain, path=c_path)
-                    
-            # Set explicit header order for curl_cffi
-            async_session.header_order = [
-                "Host", "User-Agent", "Accept", "Accept-Language", "Accept-Encoding",
-                "Referer", "Origin", "Connection", "Upgrade-Insecure-Requests",
-                "Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site", "Sec-Fetch-User",
-                "X-Requested-With", "X-CSRF-Token", "X-Security-Hash", "X-Hash-Code"
-            ]
                     
             # --- 🟢 S+ USER-REQUEST: Persistent Thick Identity Maturation ---
             # If the loaded session is 'thin' (too few cookies), it triggers a 'Warming Ritual'
