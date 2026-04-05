@@ -150,16 +150,29 @@ class PiccomaProvider(BaseProvider):
                     
                     async_session.cookies.set(name, value, domain=c_domain, path=c_path)
                     
-                    # Log trace: 🍪 [Name] -> [Domain:Path] | Status: Applied
-                    preview = f"{value[:3]}...{value[-3:]}" if len(value) > 6 else "***"
-                    applied_trace.append(f"   🍪 {name:<12} | {c_domain}:{c_path:<10} | {preview}")
-                elif name == "pksid":
-                    logger.warning(f"  ⚠️ [Auth Health Check] 'pksid' is EMPTY in session stash!")
-            
-            # S+ Health Audit: Mark as SUSPICIOUS if cookie count is suspiciously low
-            if len(session_obj.get("cookies", [])) < 5:
-                logger.warning(f"  ⚠️ [Auth Health Audit] Session '{session_obj.get('account_id')}' has suspiciously few cookies ({len(session_obj.get('cookies', []))}). Marking as SUSPICIOUS.")
+            # --- 🟢 S+ USER-REQUEST: Thick Identity Safety Net ---
+            # If the loaded session is 'thin' (only 2 cookies), it means it was created 
+            # before our stabilization update. We'll inject breadcrumbs on-the-fly 
+            # so the user doesn't have to re-login.
+            current_names = [str(c.get('name') or c.get('key')).lower() for c in session_obj.get("cookies", [])]
+            if len(current_names) < 5:
+                import uuid, random, time
+                logger.info(f"🛡️ [Piccoma Identity] 'Thin' session detected. Injecting safety-net breadcrumbs...")
                 
+                # Synthetic Trackers (Same formats as LoginService)
+                safety_breadcrumbs = {
+                    "_ga": f"GA1.1.{random.randint(100000000, 999999999)}.{int(time.time())}",
+                    "_clck": f"{uuid.uuid4().hex[:8]}%5E2%5Eg4y%5E0%5E{random.randint(1000, 9999)}",
+                    "snexid": str(uuid.uuid4()),
+                    "_ttp": str(uuid.uuid4()),
+                    "ttcsid": str(uuid.uuid4())
+                }
+                
+                for k, v in safety_breadcrumbs.items():
+                    if k not in current_names:
+                        async_session.cookies.set(k, v, domain=".piccoma.com", path="/")
+                        applied_trace.append(f"   🛡️ {k:<12} | .piccoma.com:/ (Safety Net) | Applied")
+
             if applied_trace:
                 logger.info(f"🔎 [Identity Audit] Re-injecting {len(applied_trace)} cookies into AsyncSession:")
                 for line in applied_trace: logger.info(line)
