@@ -108,13 +108,24 @@ class LoginService:
             
             # --- 🟢 S+ USER-REQUEST: Homepage Handshake ---
             # Visit the homepage first to initialize browser tracking cookies (_ga, _clck, snexid, etc.)
-            # This makes the subsequent login request look like it's coming from a real browser session.
             logger.info("🏠 [Piccoma] Initializing Homepage Handshake...")
             try:
+                # 🕵️ [S+ BREADCRUMB INJECTION]:
+                # Since curl_cffi doesn't run JS, we must manually inject the 'history' cookies 
+                # (Google Analytics, Clarity, etc.) that Piccoma's WAF expects to see.
+                import uuid, random, time
+                ga_id = f"GA1.1.{random.randint(100000000, 999999999)}.{int(time.time())}"
+                clck_id = f"{uuid.uuid4().hex[:8]}%5E2%5Eg4y%5E0%5E{random.randint(1000, 9999)}"
+                snex_id = str(uuid.uuid4())
+                
+                session.cookies.set("_ga", ga_id, domain=".piccoma.com", path="/")
+                session.cookies.set("_clck", clck_id, domain=".piccoma.com", path="/")
+                session.cookies.set("snexid", snex_id, domain=".piccoma.com", path="/")
+                
                 h_res = await session.get(f"{base_url}/web/", timeout=15)
-                logger.info(f"   [Handshake] Homepage Status: {h_res.status_code} | Jar: {len(session.cookies)} cookies.")
+                logger.info(f"   [Handshake] Homepage Status: {h_res.status_code} | Jar: {len(session.cookies)} cookies (Injected: 3)")
             except Exception as e:
-                logger.warning(f"   ⚠️ [Handshake] Homepage visit failed ({e}), continuing to login anyway.")
+                logger.warning(f"   ⚠️ [Handshake] Homepage visit failed ({e}), continuing anyway.")
             
             # 1. Get CSRF Token (Piccoma uses csrfmiddlewaretoken)
             res = await session.get(login_page_url)
