@@ -71,23 +71,27 @@ class PiccomaProvider(BaseProvider):
         # We'll use curl_cffi's impersonation feature which handles this internally.
         return headers
 
-    def _is_fake_404(self, status: int, text: str, headers: dict) -> bool:
+    def _is_fake_404(self, status: int, text: str, headers: dict, url: str = "") -> bool:
         """S-Grade: Detects 'trap' 404 pages (status 200 but 404 content, or redirect to 404)."""
         content_type = headers.get('Content-Type', '').lower()
+        
+        # If status is 404, its definitely a block/missing
+        if status == 404:
+            logger.warning(f"🛑 [Piccoma Identity] Hard 404 detected at {url}")
+            return True
+
         if 'text/html' not in content_type:
             return False
             
         low_text = text.lower()
-        indicators = ["404", "見つかりません", "not found", "error", "ご利用いただけません"]
+        indicators = ["404", "見つかりません", "not found", "error", "ご利用いただけません", "アクセス制限", "access denied"]
         
-        # If status is 404, its definitely a block/missing
-        if status == 404:
-            return True
-            
         # If status is 200 but too small and contains indicators
-        if status == 200 and len(text) < 15000:
-            if any(ind in low_text for ind in indicators):
-                return True
+        if status == 200 and len(text) < 18000:
+            for ind in indicators:
+                if ind in low_text:
+                    logger.warning(f"🛑 [Piccoma Identity] Trap Triggered: HTTP {status}, length {len(text)}, found trigger '{ind}' at {url}")
+                    return True
                 
         return False
 
@@ -99,9 +103,11 @@ class PiccomaProvider(BaseProvider):
         max_redirects = 5
         current_url = url
         
-        for _ in range(max_redirects):
+        for i in range(max_redirects):
             try:
+                start_time = time.time()
                 res = await session.request(method, current_url, **kwargs)
+                elapsed = time.time() - start_time
                 
                 # Check for redirects
                 if res.status_code in [301, 302, 303, 307, 308]:
@@ -112,8 +118,11 @@ class PiccomaProvider(BaseProvider):
                     if not location.startswith("http"):
                         location = urllib.parse.urljoin(current_url, location)
                     
+                    logger.info(f"📡 [Piccoma Identity] Redirect {i+1}: {res.status_code} -> {location}")
+                    
                     # Detect redirect trap
-                    if any(trap in location.lower() for trap in ["404", "blocked", "captcha", "error"]):
+                    if any(trap in location.lower() for trap in ["404", "blocked", "captcha", "error", "ご利用いただけません"]):
+                        logger.error(f"⚠️ [Piccoma Identity] Redirect Trap: {current_url} -> {location}")
                         raise ScraperError(f"Redirect trap detected: -> {location}")
                         
                     current_url = location
@@ -123,8 +132,12 @@ class PiccomaProvider(BaseProvider):
                     kwargs.pop("json", None)
                     continue
                 
+                # Final result logging
+                if i > 0:
+                    logger.debug(f"✅ [Piccoma Identity] Followed to: {current_url} ({res.status_code}, {len(res.text)} bytes, {elapsed:.2f}s)")
+                
                 # Check for fake 404 content
-                if self._is_fake_404(res.status_code, res.text, res.headers):
+                if self._is_fake_404(res.status_code, res.text, res.headers, url=current_url):
                     if self.DEVELOPER_MODE:
                         self._dump_diagnostic_data(f"trap_detected_{int(time.time())}", res.text, {
                             "url": current_url, "status": res.status_code, "headers": dict(res.headers)
@@ -142,28 +155,42 @@ class PiccomaProvider(BaseProvider):
 
     async def run_ritual(self, session: AsyncSession) -> None:
         """
-        S-Grade: Performs randomized navigation to 'warm up' the session.
+        S-Grade Adaptive Ritual: Performs randomized navigation to 'warm up' the session.
         Mimics human-like discovery patterns to bypass threshold-based WAFs.
         """
         scenarios = [
+            # Scenario A: Home & Genre Browsing
             ["/", "/web/genre/comic", "/web/product/list?list_type=T&sort_type=N"], 
+            # Scenario B: Search Simulation
+            ["/", "/web/search/result?word={word}"],
+            # Scenario C: Smartoon Focus
             ["/web/genre/smartoon", "/web/product/list?list_type=T&sort_type=H"], 
+            # Scenario D: User Library Interaction (Simulated)
             ["/web/mypage/history", "/web/mypage/bookshelf"] 
         ]
-        path = random.choice(scenarios)
         
-        logger.info(f"[Piccoma Ritual] Starting {len(path)}-step warm-up...")
-        for rel_url in path:
+        keywords = ["ファンタジー", "アクション", "令嬢", "恋愛", "異世界", "冒険"]
+        scenario = random.choice(scenarios)
+        
+        logger.info(f"[Piccoma Identity] 🔮 Warm-up Ritual: Scenario {scenarios.index(scenario)} initiated.")
+        for step in scenario:
             try:
+                rel_url = step
+                if "{word}" in step:
+                    rel_url = step.format(word=random.choice(keywords))
+                
                 full_url = f"{self.BASE_URL}{rel_url}"
-                # Use safe_request to handle potential traps during ritual
                 await self._safe_request(session, "GET", full_url)
-                # Weighted human delay
-                delay = random.uniform(2.5, 6.0)
+                
+                # Human Gaussian Latency
+                delay = max(2.5, random.gauss(6, 2))
+                logger.debug(f"[Piccoma Identity] Ritual step complete. Pausing {delay:.2f}s...")
                 await asyncio.sleep(delay)
             except Exception as e:
-                logger.debug(f"[Piccoma Ritual] Step {rel_url} failed: {e}")
-        logger.info("[Piccoma Ritual] Session matured.")
+                # We log as warning since ritual failures often signal imminent block
+                logger.warning(f"⚠️ [Piccoma Identity] Ritual step '{step}' failed: {e}")
+        
+        logger.info("[Piccoma Identity] ✅ Session matured. Proceeding to target.")
 
     def _extract_pdata_heuristic(self, html: str) -> dict:
         """S-Grade: Heuristic manifest discovery via Next.js state or raw regex."""
@@ -935,43 +962,3 @@ class PiccomaProvider(BaseProvider):
             logger.error(f"[Piccoma] Fatal error in new series discovery: {e}")
             return []
 
-    async def run_ritual(self, session):
-        """S+ Adaptive Ritual Engine: Randomized human-like navigation paths."""
-        base_url = "https://piccoma.com" 
-        
-        scenarios = [
-            # Scenario A: Trend Watching
-            ["/web/manga/bestseller", "/web/manga/recent"],
-            # Scenario B: Searching for content
-            ["/web/search/result?word={word}"],
-            # Scenario C: Browsing Categories
-            ["/web/manga/category/1", "/web/manga/ranking/category/1/daily"],
-            # Scenario D: Deep Discovery
-            ["/web/manga/ranking/daily", "/web/manga/ranking/weekly"],
-            # Scenario E: Account maintenance
-            ["/web/product/favorite", "/web/mypage/history"]
-        ]
-        
-        words = ["ファンタジー", "アクション", "令嬢", "恋愛", "異世界"]
-        
-        scenario = random.choice(scenarios)
-        logger.info(f"[Piccoma] S+ Adaptive Ritual: Scenario {scenarios.index(scenario)} initiated.")
-        
-        for segment in scenario:
-            url = segment
-            if "{word}" in segment:
-                url = segment.format(word=random.choice(words))
-            
-            full_url = f"{base_url}{url}"
-            try:
-                # Use _safe_request for ritual too to build tracking cookies correctly
-                await self._safe_request(session, "GET", full_url)
-                
-                # S+ Gaussian Jitter
-                delay = max(2.0, random.gauss(5, 1.5))
-                logger.debug(f"[Piccoma Ritual] Waiting {delay:.2f}s...")
-                await asyncio.sleep(delay)
-            except Exception as e:
-                logger.warning(f"[Piccoma Ritual] Step failed: {url} ({e})")
-        
-        logger.info("[Piccoma] S+ Ritual Complete.")
