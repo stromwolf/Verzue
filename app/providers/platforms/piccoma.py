@@ -334,26 +334,41 @@ class PiccomaProvider(BaseProvider):
         
         # 1. Primary Extraction (Next.js Hydration Data)
         res = await auth_session.get(task.url)
-        if res.status_code != 200:
+        
+        # S+ Logic: Trigger unlock if 403/401 OR if 200 but page contains purchase indicators
+        is_locked_ui = res.status_code == 200 and ("js_purchaseForm" in res.text or "チャージ中" in res.text or "ポイントで読む" in res.text)
+        
+        if res.status_code != 200 or is_locked_ui:
             # Attempt to unlock locked chapters (Coins or Wait-Free)
-            logger.info(f"[Piccoma] Chapter {chapter_id} locked (HTTP {res.status_code}), attempting fast purchase/unlock.")
+            reason = f"HTTP {res.status_code}" if res.status_code != 200 else "Locked UI detected"
+            logger.info(f"[Piccoma] Chapter {chapter_id} {reason}, attempting fast purchase/unlock.")
             if await self.fast_purchase(task):
                 # Re-fetch after successful purchase
                 auth_session = await self._get_authenticated_session(domain)
                 r_task = auth_session.get(task.url)
                 res = await r_task
              
-        if res.status_code != 200: raise ScraperError(f"Access error: {res.status_code}")
+        if res.status_code != 200: 
+            logger.error(f"[Piccoma] Final access attempt failed for {chapter_id} (Status: {res.status_code})")
+            raise ScraperError(f"Access error: {res.status_code}")
+        
         await self.session_service.record_session_success("piccoma")
 
         # S+ DRM Heuristic: Multi-stage manifest discovery
         pdata = self._extract_pdata_heuristic(res.text)
         if not pdata:
             # 🕵️ [DEV-MODE]: Capture viewer HTML on manifest failure
+            logger.error(f"[Piccoma] Manifest extraction FAILED for {chapter_id}. Heuristics exhausted.")
+            # Check for common reasons
+            if "js_purchaseForm" in res.text:
+                logger.warning(f"  ⚠️ [Piccoma] Page still shows PURCHASE form after unlock attempt. Points/Coins likely insufficient.")
+            elif "チャージ中" in res.text:
+                logger.warning(f"  ⚠️ [Piccoma] Page still shows CHARGING status. Wait-Free ticket used recently.")
+            
             self._dump_diagnostic_data(f"manifest_fail_{chapter_id}", res.text, {
                 "url": task.url, "status": res.status_code, "headers": dict(res.headers)
             })
-            raise ScraperError("Could not extract chapter manifest via any heuristic.")
+            raise ScraperError(f"Could not extract chapter manifest for {chapter_id} via any heuristic. Check diagnostics for details.")
 
         # Capture V30 metadata for debugging
         p_category = pdata.get('category')
@@ -599,8 +614,26 @@ class PiccomaProvider(BaseProvider):
                 await self.session_service.report_session_failure("piccoma", "primary", "Session expired/Guest detected (Login button visible)")
                 raise ScraperError("Your Piccoma session has expired or is invalid. Please re-login on the dashboard.")
 
+            def _log_response_debug(r, label):
+                """Internal high-verbose diagnostic helper."""
+                try:
+                    heads = dict(r.headers)
+                    snippet = r.text[:1000] if hasattr(r, 'text') else "N/A"
+                    logger.info(f"📊 [Piccoma Debug] {label} Status: {r.status_code}")
+                    logger.info(f"📋 [Piccoma Debug] {label} Headers: {json.dumps(heads, indent=2)}")
+                    logger.info(f"📄 [Piccoma Debug] {label} Body Snippet: {snippet}...")
+                    # 🍪 Check for specific cookies that might signal blocks
+                    sc = r.headers.get_list('Set-Cookie') if hasattr(r.headers, 'get_list') else r.headers.get('Set-Cookie', "")
+                    if sc: logger.info(f"🍪 [Piccoma Debug] {label} Set-Cookie: {sc}")
+                except Exception as de:
+                    logger.debug(f"Failed to log debug: {de}")
+
             # 2. Robust CSRF Extraction (Multi-Tier Fallback)
             csrf_token = None
+            
+            # --- PRE-CHECK: Diagnostic search for token markers ---
+            csrf_count = res.text.lower().count("csrf")
+            logger.info(f"🔎 [Piccoma Diagnostic] Found {csrf_count} occurrences of 'csrf' in response text.")
             
             # --- TIER 1: Standard Forms ---
             csrf_form = soup.find('form', id='js_purchaseForm')
@@ -618,19 +651,19 @@ class PiccomaProvider(BaseProvider):
             if not csrf_token:
                 config_script = soup.find('script', string=re.compile(r'__p_config__|__NEXT_DATA__'))
                 if config_script and config_script.string:
-                    # p_config (Legacy/Static)
-                    token_m = re.search(r'csrfToken\s*:\s*["\']([^"\']+)["\']', config_script.string)
-                    csrf_token = token_m.group(1) if token_m else None
                     # NEXT_DATA (Modern)
-                    if not csrf_token:
-                        try:
-                            n_data = json.loads(config_script.string)
-                            csrf_token = n_data.get('props', {}).get('pageProps', {}).get('csrfToken')
-                        except: pass
+                    try:
+                        n_data = json.loads(config_script.string)
+                        # Root discovery
+                        csrf_token = n_data.get('props', {}).get('pageProps', {}).get('csrfToken')
+                        # Fallback initialState discovery
+                        if not csrf_token:
+                            csrf_token = n_data.get('initialState', {}).get('app', {}).get('csrfToken')
+                    except: pass
             
             # --- TIER 4: Hidden Inputs (Durable Fallback) ---
             if not csrf_token:
-                # Be aggressive: find ANY input with "csrf" in its name
+                # Find ANY input containing "csrf" in its name or ID
                 csrf_inputs = soup.find_all('input', attrs={'name': re.compile(r'csrf', re.I)})
                 for inp in csrf_inputs:
                     val = inp.get('value')
@@ -640,26 +673,29 @@ class PiccomaProvider(BaseProvider):
             
             # --- TIER 5: Final Stand (Regex on Raw Text) ---
             if not csrf_token:
-                # Sometimes BS4 fails on malformed HTML; use direct regex
-                token_m = re.search(r'name="csrfmiddlewaretoken"\s+value="([^"]+)"', res.text)
+                # Durable regex: handle any attribute order and whitespace
+                token_m = re.search(r'name=["\']csrfmiddlewaretoken["\']\s+value=["\']([^"\']+)["\']', res.text, re.DOTALL)
                 if not token_m:
-                    token_m = re.search(r'csrfmiddlewaretoken\s*:\s*["\']([^"\']+)["\']', res.text)
+                    token_m = re.search(r'value=["\']([^"\']+)["\']\s+name=["\']csrfmiddlewaretoken["\']', res.text, re.DOTALL)
+                if not token_m:
+                    token_m = re.search(r'csrfToken\s*:\s*["\']([^"\']+)["\']', res.text)
                 csrf_token = token_m.group(1) if token_m else None
 
             headers = {
                 "Referer": episode_page_url,
                 "Origin": base_url,
-                "X-Requested-With": "XMLHttpRequest",
+                "X-Requested-With": "XMLHttpRequest", # CRITICAL: Ensure server treats as XHR
                 "Content-Type": "application/x-www-form-urlencoded",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
             
             if csrf_token:
                 headers['X-CSRF-Token'] = csrf_token
-                headers['X-CSRFToken'] = csrf_token # Double indicator
+                headers['X-CSRFToken'] = csrf_token 
                 logger.info(f"[DEV-TRACE] [Step 3] CSRF extraction: {csrf_token[:10]}... (S+ Robust)")
             else:
-                logger.warning("[DEV-TRACE] [Step 3] CSRF extraction FAILED. Page might be logged out or blocked.")
+                logger.warning("[DEV-TRACE] [Step 3] CSRF extraction FAILED. Triggering high-veracity debug dump.")
+                _log_response_debug(res, "Metadata-Fail")
                 self._dump_diagnostic_data(f"csrf_fail_{episode_id}", res.text, {
                     "url": episode_page_url, "status": res.status_code, "headers": dict(res.headers)
                 })
@@ -681,6 +717,13 @@ class PiccomaProvider(BaseProvider):
                 waitfree_indicator = ep_item.select_one('.PCM-epList_status_waitfree, .PCM-icon_waitfree, .PCM-icon_clock, .PCM-epList_waitfree')
                 item_text = ep_item.get_text()
                 is_waitfree = bool(waitfree_indicator) or "待てば¥0" in item_text or "待てば" in item_text or "¥0" in item_text
+                
+                # Check if it's currently CHARGING (User must wait)
+                charging = ep_item.select_one('.PCM-epList_status_waitfreeCharging, .PCM-chargeBar_waitfree')
+                if charging or "分後に読めます" in item_text or "チャージ中" in item_text:
+                    logger.warning(f"⚠️ [Piccoma] Wait-Free is CHARGING for episode {chapter_id}. Switching to Point fallback.")
+                    is_waitfree = False
+                
                 logger.info(f"[DEV-TRACE] WaitFree Detection (Episode List): {is_waitfree} (Indicators: {bool(waitfree_indicator)})")
             
             if not is_waitfree:
@@ -691,15 +734,28 @@ class PiccomaProvider(BaseProvider):
             
             # S+: Support Smartoon specific wait-free check
             if not is_waitfree and is_s:
+                # Verify it's actually unlocked (Not just free-to-wait label)
                 if "1話無料" in res.text or "待てば" in res.text:
-                    is_waitfree = True
-                    logger.info("[DEV-TRACE] WaitFree Detection (Raw Text): True (Smartoon Fallback)")
+                    if "チャージ中" not in res.text:
+                        is_waitfree = True
+                        logger.info("[DEV-TRACE] WaitFree Detection (Raw Text): True (Smartoon Fallback)")
             
             # 5. Discovery Loop: Robust alternative endpoint & payload matching
+            # --- MODERN PC WEB API CANDIDATES ---
             discovery_endpoints = [
-                f"{base_url}/web/episode/waitfree/use" if is_waitfree else f"{base_url}/web/episode/point/use",
-                f"{base_url}/web/episode/coin/use",
+                # API V2 Candidates (Durable)
+                f"{base_url}/web/api/v2/episode/waitfree/use" if is_waitfree else f"{base_url}/web/api/v2/episode/point/use",
+                f"{base_url}/web/api/v2/episode/coin/use",
+                # API V1 Candidates (Legacy)
+                f"{base_url}/web/api/v1/episode/waitfree/use",
+                f"{base_url}/web/api/v1/episode/point/use",
+                # Path-Based Candidates (Dynamic)
+                f"{base_url}/web/episode/{episode_id}/use",
+                f"{base_url}/web/episode/{episode_id}/purchase",
+                # Original Static Candidates
+                f"{base_url}/web/episode/waitfree/use",
                 f"{base_url}/web/episode/point/use",
+                f"{base_url}/web/episode/coin/use",
                 f"{base_url}/web/episode/purchase",
                 f"{base_url}/web/episode/use",
             ]
