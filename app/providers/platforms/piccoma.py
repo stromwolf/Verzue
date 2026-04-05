@@ -843,8 +843,14 @@ class PiccomaProvider(BaseProvider):
             # --- NEXT.JS DATA API (TIER 8) ---
             if build_id:
                 # Mirroring browser's background data fetch
+                # Standard Paths
                 discovery_endpoints.append(f"{base_url}/_next/data/{build_id}/web/api/v2/episode/waitfree/use.json")
                 discovery_endpoints.append(f"{base_url}/_next/data/{build_id}/web/api/v2/episode/point/use.json")
+                # 🟢 Smartoon Paths (is_s=True)
+                if is_s:
+                    discovery_endpoints.append(f"{base_url}/_next/data/{build_id}/web/viewer/s/{series_id}/{episode_id}.json")
+                    discovery_endpoints.append(f"{base_url}/_next/data/{build_id}/web/api/v2/s/episode/use.json")
+                    discovery_endpoints.append(f"{base_url}/_next/data/{build_id}/web/api/v2/s/episode/point/use.json")
             
             discovery_endpoints.extend([
                 # Original Static Candidates
@@ -884,6 +890,13 @@ class PiccomaProvider(BaseProvider):
                         else:
                             headers.pop("x-nextjs-data", None)
                         
+                        # 🕵️ [S+ De-Botting]: Prune X-Requested-With for some trials
+                        # Modern browsers using fetch() don't send this, its presence can block
+                        if endpoint_idx % 2 == 1:
+                            headers.pop("X-Requested-With", None)
+                        else:
+                            headers["X-Requested-With"] = "XMLHttpRequest"
+                        
                         # 🕵️ [S+ Trace]: High-entropy diagnostic log
                         trial_label = f"Trial {endpoint_idx+1}.{payload_idx+1}.{'J' if is_json else 'F'}"
                         
@@ -898,24 +911,34 @@ class PiccomaProvider(BaseProvider):
                             )
                             post_res = await p_retry
                             
-                            # 🛡️ SECURITY DETECTOR: Scan for 404-HTML redirects
-                            resp_ct = post_res.headers.get('Content-Type', '').lower()
-                            is_html = 'text/html' in resp_ct or post_res.text.strip().startswith('<!')
-                            
-                            if is_html:
-                                status_msg = f"🛡️ Security Redirect (HTML Page) | Status: {post_res.status_code}"
-                                if "ログインしてください" in post_res.text or "signin" in post_res.text.lower():
-                                    status_msg += " | Reason: Login Required (Session Expired)"
-                                elif "エラー" in post_res.text:
-                                    status_msg += " | Reason: Server-side Error"
-                            else:
-                                status_msg = f"Result: {post_res.status_code}"
+                            # 🔬 Truth-Scanner Logic
+                            if post_res.status_code == 200:
+                                is_html = "<!doctype html>" in post_res.text.lower() or "<html" in post_res.text.lower()
+                                if is_html:
+                                    # 📁 Full Diagnostic Dump (Tier 11)
+                                    try:
+                                        dump_path = f"tmp/piccoma_debug_404_{trial_label.replace('.','_')}_{episode_id}.html"
+                                        if not os.path.exists("tmp"): os.makedirs("tmp")
+                                        with open(dump_path, "w", encoding="utf-8") as f: f.write(post_res.text)
+                                        logger.info(f"   📡 [Discovery] {trial_label} -> {alt_url} | 🛡️ HTML 404 (Dump: {dump_path})")
+                                    except: 
+                                        logger.info(f"   📡 [Discovery] {trial_label} -> {alt_url} | 🛡️ HTML 404 (Security Redirect)")
+                                    continue
+                                
                                 try:
-                                    trial_json = post_res.json()
-                                    status_msg += f" | JSON: {json.dumps(trial_json)}"
-                                except: pass
-
-                            logger.info(f"   📡 [Discovery] {trial_label} -> {alt_url} | {status_msg}")
+                                    res_json = post_res.json()
+                                    status = res_json.get('status') or res_json.get('data', {}).get('status')
+                                    # Handle different response structures
+                                    if status == "success" or res_json.get('data'):
+                                        logger.info(f"   ✅ [Discovery] {trial_label} -> SUCCESS (JSON Protocol Valid)")
+                                        found = True
+                                        break
+                                    else:
+                                        logger.info(f"   📡 [Discovery] {trial_label} -> API Denial: {json.dumps(res_json)}")
+                                except Exception as je:
+                                    logger.info(f"   📡 [Discovery] {trial_label} -> Non-JSON Response ({je})")
+                            else:
+                                logger.info(f"   📡 [Discovery] {trial_label} -> {alt_url} | HTTP {post_res.status_code}")
                             
                             # Success check (BREAK condition)
                             if post_res.status_code in [200, 302, 301] and not is_html:
