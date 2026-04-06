@@ -53,11 +53,26 @@ class PiccomaProvider(BaseProvider):
     # S-Grade Backpressure
     self._download_semaphore = asyncio.Semaphore(10)
 
-    def _calculate_security_hash(self, episode_id: str | int) -> str:
-        """S-Grade: Generates the mandatory X-Security-Hash for purchase/unlock."""
-        import hashlib
-        seed_string = f"{episode_id}fh_SpJ#a4LuNa6t8"
-        return hashlib.sha256(seed_string.encode('utf-8')).hexdigest()
+    def _extract_pdata(self, html: str) -> dict | None:
+        """S-Grade: Heuristic extraction of pData (image manifest) from Piccoma viewer page."""
+        try:
+            match = re.search(r'var\s+pData\s*=\s*({.*?});', html, re.DOTALL)
+            if match:
+                return json.loads(match.group(1))
+            
+            # Alternative: Search for __NEXT_DATA__
+            if 'pData' in html:
+                # Find the start of the object and match braces
+                start = html.find('pData')
+                brace_start = html.find('{', start)
+                brace_count = 0
+                for i in range(brace_start, len(html)):
+                    if html[i] == '{': brace_count += 1
+                    elif html[i] == '}': brace_count -= 1
+                    if brace_count == 0:
+                        return json.loads(html[brace_start:i+1])
+        except Exception: pass
+        return None
 
     def _build_browser_headers(self, referer: str = None) -> dict:
         """S-Grade: Generates headers with randomized ordering to bypass WAF sequencing checks."""
@@ -760,65 +775,92 @@ class PiccomaProvider(BaseProvider):
                 await self.session_service.record_session_failure("piccoma")
                 return False
 
-            # --- CSRF EXTRACTION ---
+            # --- CSRF EXTRACTION (Multi-Source Search) ---
             csrf_token = None
+            csrf_middleware_token = None
+            
+            # Meta tags
+            meta_csrf = soup.select_one('meta[name="csrf-token"]')
+            if meta_csrf: csrf_token = meta_csrf.get('content')
+            
+            # Hidden inputs (Common for Django/Django REST)
+            csrf_input = soup.select_one('input[name="csrfmiddlewaretoken"]')
+            if csrf_input: csrf_middleware_token = csrf_input.get('value')
+            
+            # Next.JS props
             next_data_script = soup.select_one('script#__NEXT_DATA__')
             if next_data_script:
                 try:
                     n_data = json.loads(next_data_script.string)
-                    csrf_token = n_data.get('props', {}).get('pageProps', {}).get('csrfToken')
+                    csrf_token = csrf_token or n_data.get('props', {}).get('pageProps', {}).get('csrfToken')
                 except: pass
-            if not csrf_token:
-                meta_csrf = soup.select_one('meta[name="csrf-token"]')
-                if meta_csrf: csrf_token = meta_csrf.get('content')
 
             # 2. Security Hash Calculation
             sec_hash = self._calculate_security_hash(episode_id)
             
-            # 3. Discovery Loop: Target multiple endpoints for resilience
-            # We try the most modern API first, then fall back to the legacy endpoints from the documentation.
+            # 3. Discovery Matrix: Multi-endpoint, Multi-encoding, Multi-keys
+            # -----------------------------------------------------------
             endpoints = [
-                # Tier 1: Modern API v2
-                {"url": f"{base_url}/web/api/v2/episode/waitfree/use", "method": "POST", "type": "WAITFREE"},
-                # Tier 2: Documentation Legacy Paths
-                {"url": f"{base_url}/web/episode/waitfree/use", "method": "POST", "type": "WAITFREE"},
-                {"url": f"{base_url}/web/episode/use", "method": "POST", "type": "GENERIC"}
+                "/web/api/v2/episode/waitfree/use", 
+                "/web/episode/waitfree/use", 
+                "/web/episode/use", 
+                "/web/episode/purchase"
+            ]
+            encodings = ["JSON", "FORM"]
+            key_sets = [
+                {"ep": "episodeId", "prod": "productId", "csrft": "csrfToken"},
+                {"ep": "episode_id", "prod": "product_id", "csrft": "csrfmiddlewaretoken"}
             ]
 
-            for discovery in endpoints:
-                try:
-                    purchase_url = discovery["url"]
-                    logger.debug(f"🔍 [Piccoma] Trial Discovery: Attempting {discovery['type']} unlock at {purchase_url}")
-                    
-                    payload = {
-                        "episodeId": int(episode_id),
-                        "productId": int(series_id),
-                        "hash": sec_hash,
-                        "csrfToken": csrf_token
-                    }
-                    
-                    headers = self._build_browser_headers(referer=episode_page_url)
-                    headers.update({
-                        "Content-Type": "application/json",
-                        "X-CSRF-Token": csrf_token,
-                        "X-Requested-With": "XMLHttpRequest",
-                        "X-Security-Hash": sec_hash,
-                        "X-Hash-Code": sec_hash # Legacy compatibility
-                    })
-                    
-                    purchase_res = await self._safe_request(auth_session, "POST", purchase_url, json=payload, headers=headers)
-                    result = purchase_res.json()
-                    
-                    if result.get("result") == "ok":
-                        logger.info(f"✨ [Piccoma] Successfully unlocked episode {episode_id} via {purchase_url}!")
-                        return True
-                    else:
-                        logger.debug(f"⚠️ [Piccoma] Trial at {purchase_url} returned: {result.get('message')}")
-                except Exception as trial_e:
-                    logger.debug(f"⚠️ [Piccoma] Trial at {discovery['url']} failed: {trial_e}")
-                    continue
+            for endpoint in endpoints:
+                purchase_url = f"{base_url}{endpoint}"
+                for encoding in encodings:
+                    for keys in key_sets:
+                        try:
+                            # Build the specific payload for this trial
+                            payload = {
+                                keys["ep"]: int(episode_id),
+                                keys["prod"]: int(series_id),
+                                "hash": sec_hash,
+                                keys["csrft"]: csrf_token if "middleware" not in keys["csrft"] else csrf_middleware_token
+                            }
+                            # Cleanup: don't send None
+                            payload = {k: v for k, v in payload.items() if v is not None}
+                            
+                            headers = self._build_browser_headers(referer=episode_page_url)
+                            if encoding == "JSON":
+                                headers["Content-Type"] = "application/json"
+                                headers["Accept"] = "application/json"
+                                kwargs = {"json": payload}
+                            else:
+                                headers["Content-Type"] = "application/x-www-form-urlencoded"
+                                kwargs = {"data": payload}
+                                
+                            headers.update({
+                                "X-CSRF-Token": csrf_token or csrf_middleware_token,
+                                "X-Requested-With": "XMLHttpRequest",
+                                "X-Security-Hash": sec_hash,
+                                "X-Hash-Code": sec_hash
+                            })
+                            
+                            logger.debug(f"🔍 [Piccoma Discovery] Trial: {endpoint} ({encoding}, {keys['ep']})")
+                            purchase_res = await self._safe_request(auth_session, "POST", purchase_url, headers=headers, **kwargs)
+                            
+                            # Success verification Part 1: API Response
+                            if purchase_res.status_code == 200:
+                                try:
+                                    res_json = purchase_res.json()
+                                    if res_json.get("result") == "ok":
+                                        logger.info(f"✨ [Piccoma API] Discovery loop found valid endpoint: {endpoint} ({encoding})")
+                                        # Verification Part 2: Final Manifest Check (Mandatory)
+                                        viewer_res = await self._safe_request(auth_session, "GET", task.url)
+                                        if self._extract_pdata(viewer_res.text):
+                                            logger.info(f"✅ [Piccoma] Discovery Matrix Success! Chapter {episode_id} is functionally UNLOCKED.")
+                                            return True
+                                except: pass
+                        except Exception: continue
 
-            logger.error(f"❌ [Piccoma] Wait-Free unlock failed after attempting all discovery endpoints.")
+            logger.error(f"❌ [Piccoma] Discovery Matrix Exhausted: No Wait-Free path found for episode {episode_id}")
             return False
 
         except Exception as e:
