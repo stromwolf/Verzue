@@ -50,8 +50,14 @@ class PiccomaProvider(BaseProvider):
             "Sec-Ch-Ua-Mobile": "?0",
             "Upgrade-Insecure-Requests": "1"
         }
-        # S-Grade Backpressure
-        self._download_semaphore = asyncio.Semaphore(10)
+    # S-Grade Backpressure
+    self._download_semaphore = asyncio.Semaphore(10)
+
+    def _calculate_security_hash(self, episode_id: str | int) -> str:
+        """S-Grade: Generates the mandatory X-Security-Hash for purchase/unlock."""
+        import hashlib
+        seed_string = f"{episode_id}fh_SpJ#a4LuNa6t8"
+        return hashlib.sha256(seed_string.encode('utf-8')).hexdigest()
 
     def _build_browser_headers(self, referer: str = None) -> dict:
         """S-Grade: Generates headers with randomized ordering to bypass WAF sequencing checks."""
@@ -318,10 +324,15 @@ class PiccomaProvider(BaseProvider):
                 value = str(c.get('value') or c.get('val'))
                 
                 if name and value is not None:
-                    # 🟢 S+ USER-REQUEST: Honor exact metadata (No forced dot-domain overrides)
-                    # Forcing .piccoma.com on host-only cookies (like csrftoken) is a bot signal.
-                    c_domain = c.get('domain') or region_domain
-                    c_path = c.get('path') or "/"
+                    # 🟢 S+ USER-REQUEST: Aggressive Cookie Injection
+                    # Forcing .piccoma.com on host-only cookies (like csrftoken) is a bot signal
+                    # for SOME sites, but for Piccoma's Wait-Free logic, it is REQUIRED.
+                    if name.lower() in ['pksid', 'csrftoken', 'csrf_token']:
+                        c_domain = ".piccoma.com"
+                        c_path = "/"
+                    else:
+                        c_domain = c.get('domain') or region_domain
+                        c_path = c.get('path') or "/"
                     
                     async_session.cookies.set(name, value, domain=c_domain, path=c_path)
                     
@@ -720,46 +731,36 @@ class PiccomaProvider(BaseProvider):
         parsed = urllib.parse.urlparse(url)
         qs = urllib.parse.parse_qs(parsed.query)
         expires = qs.get('expires', [''])[0]
-        
-        if expires and chk:
-            # S+ Mirrors pyccoma's iterative rotation logic
-            for num in str(expires):
-                if num.isdigit() and int(num) != 0:
-                    shift = int(num)
-                    # Rotate right
-                    chk = chk[-shift:] + chk[:-shift]
-        
-        return chk
-
     async def fast_purchase(self, task) -> bool:
         """
         S-Grade Unified Purchase: Detects and handles Coin, Point, and Wait-Free chapters.
         Implements human-like 'Ritual' warm-up and automated redirect trap detection.
+        Follows the 'Discovery Loop' architecture for maximum resilience.
         """
         match = re.search(r'/web/viewer/(?:s/)?(\d+)/(\d+)', task.url)
-        if not match:
-            logger.debug(f"[Piccoma] fast_purchase: Could not parse series/episode from URL: {task.url}")
-            return False
+        if not match: return False
             
         series_id, episode_id = match.groups()
         base_url, region, domain = self._get_context_from_url(task.url)
-        
         auth_session = await self._get_authenticated_session(domain)
-        logger.info(f"[Piccoma Identity] 🚀 Chapter Handoff: {series_id}/{episode_id} | Session: {domain}")
         
-        # 🟢 S-Grade: Ritual warm-up to build tracking cookies/bypass WAF
-        try:
-            await self.run_ritual(auth_session)
-        except Exception as ritual_e:
-            logger.warning(f"⚠️ [Piccoma Ritual] Warm-up failed, proceeding anyway: {ritual_e}")
+        logger.info(f"[Piccoma Identity] 🚀 Chapter Handoff: {series_id}/{episode_id} | Session: {domain}")
+        await self.run_ritual(auth_session)
 
         try:
-            # 1. Load episode list page for CSRF and Metadata
+            # 1. Fetch Landing Page for CSRF/Audit
             episode_page_url = f"{base_url}/web/product/{series_id}/episodes?etype=E"
             res = await self._safe_request(auth_session, "GET", episode_page_url)
             soup = BeautifulSoup(res.text, 'html.parser')
             
-            # --- CSRF & Build ID Extraction ---
+            # --- 🟢 IDENTITY AUDIT ---
+            is_guest = bool(soup.select_one('.PCM-headerLogin, a[href*="/acc/signin"]'))
+            if is_guest:
+                logger.error("🛑 [Piccoma Identity] Browser shows LOGIN button. Session is guest or expired!")
+                await self.session_service.record_session_failure("piccoma")
+                return False
+
+            # --- CSRF EXTRACTION ---
             csrf_token = None
             next_data_script = soup.select_one('script#__NEXT_DATA__')
             if next_data_script:
@@ -767,81 +768,58 @@ class PiccomaProvider(BaseProvider):
                     n_data = json.loads(next_data_script.string)
                     csrf_token = n_data.get('props', {}).get('pageProps', {}).get('csrfToken')
                 except: pass
-
-            if not csrf_token:
-                for name, value in auth_session.cookies.items():
-                    if name.lower() in ["csrftoken", "__host-csrf", "csrf", "__csrf"]:
-                        csrf_token = value
-                        break
-            
             if not csrf_token:
                 meta_csrf = soup.select_one('meta[name="csrf-token"]')
                 if meta_csrf: csrf_token = meta_csrf.get('content')
 
             # 2. Security Hash Calculation
-            import hashlib
-            seed_string = f"{episode_id}fh_SpJ#a4LuNa6t8"
-            sec_hash = hashlib.sha256(seed_string.encode('utf-8')).hexdigest()
+            sec_hash = self._calculate_security_hash(episode_id)
             
-            # 3. Fetch Precise Episode Info
-            info_url = f"{base_url}/web/api/v2/episode/info"
-            info_params = {"episodeId": episode_id, "productId": series_id}
-            info_headers = self._build_browser_headers(referer=episode_page_url)
-            info_headers.update({"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"})
-            
-            await asyncio.sleep(random.uniform(0.8, 1.5)) # Human latency
-            
-            info_res = await self._safe_request(auth_session, "GET", info_url, params=info_params, headers=info_headers)
-            info_data = info_res.json()
-            if info_data.get("result") != "ok":
-                raise ScraperError(f"Episode info API failed: {info_data.get('message')}")
-            
-            ep_info = info_data.get("data", {})
-            unlock_type = ep_info.get("unlockType") # WAITFREE, POINT, COIN
-            
-            if not unlock_type:
-                logger.info(f"[Piccoma] Episode {episode_id} appears already unlocked.")
-                return True
-                
-            if unlock_type == "WAITFREE" and (ep_info.get("charging") or ep_info.get("remainingWaitSeconds", 0) > 0):
-                logger.warning(f"[Piccoma] Episode {episode_id} is charging. Wait-Free unavailable.")
-                return False
+            # 3. Discovery Loop: Target multiple endpoints for resilience
+            # We try the most modern API first, then fall back to the legacy endpoints from the documentation.
+            endpoints = [
+                # Tier 1: Modern API v2
+                {"url": f"{base_url}/web/api/v2/episode/waitfree/use", "method": "POST", "type": "WAITFREE"},
+                # Tier 2: Documentation Legacy Paths
+                {"url": f"{base_url}/web/episode/waitfree/use", "method": "POST", "type": "WAITFREE"},
+                {"url": f"{base_url}/web/episode/use", "method": "POST", "type": "GENERIC"}
+            ]
 
-            # 4. Execute Targeted Unlock
-            endpoint_map = {
-                "WAITFREE": "/web/api/v2/episode/waitfree/use",
-                "COIN": "/web/api/v2/episode/coin/use",
-                "POINT": "/web/api/v2/episode/point/use"
-            }
-            purchase_url = f"{base_url}{endpoint_map.get(unlock_type)}"
-            
-            payload = {
-                "episodeId": int(episode_id),
-                "productId": int(series_id),
-                "hash": sec_hash,
-                "csrfToken": csrf_token,
-                "paymentMethod": unlock_type
-            }
-            if unlock_type == "COIN": payload["coinAmount"] = ep_info.get("coinPrice", 0)
+            for discovery in endpoints:
+                try:
+                    purchase_url = discovery["url"]
+                    logger.debug(f"🔍 [Piccoma] Trial Discovery: Attempting {discovery['type']} unlock at {purchase_url}")
+                    
+                    payload = {
+                        "episodeId": int(episode_id),
+                        "productId": int(series_id),
+                        "hash": sec_hash,
+                        "csrfToken": csrf_token
+                    }
+                    
+                    headers = self._build_browser_headers(referer=episode_page_url)
+                    headers.update({
+                        "Content-Type": "application/json",
+                        "X-CSRF-Token": csrf_token,
+                        "X-Requested-With": "XMLHttpRequest",
+                        "X-Security-Hash": sec_hash,
+                        "X-Hash-Code": sec_hash # Legacy compatibility
+                    })
+                    
+                    purchase_res = await self._safe_request(auth_session, "POST", purchase_url, json=payload, headers=headers)
+                    result = purchase_res.json()
+                    
+                    if result.get("result") == "ok":
+                        logger.info(f"✨ [Piccoma] Successfully unlocked episode {episode_id} via {purchase_url}!")
+                        return True
+                    else:
+                        logger.debug(f"⚠️ [Piccoma] Trial at {purchase_url} returned: {result.get('message')}")
+                except Exception as trial_e:
+                    logger.debug(f"⚠️ [Piccoma] Trial at {discovery['url']} failed: {trial_e}")
+                    continue
 
-            headers = self._build_browser_headers(referer=episode_page_url)
-            headers.update({
-                "Content-Type": "application/json",
-                "X-CSRF-Token": csrf_token,
-                "X-Requested-With": "XMLHttpRequest",
-                "X-Security-Hash": sec_hash
-            })
-            
-            logger.info(f"🎯 [Piccoma] Attempting {unlock_type} unlock for {episode_id}...")
-            purchase_res = await self._safe_request(auth_session, "POST", purchase_url, json=payload, headers=headers)
-            
-            result = purchase_res.json()
-            if result.get("result") == "ok":
-                logger.info(f"✨ [Piccoma] Successfully unlocked episode {episode_id}!")
-                return True
-            else:
-                logger.error(f"❌ [Piccoma] Unlock failed: {result.get('message', result)}")
-                return False
+            logger.error(f"❌ [Piccoma] Wait-Free unlock failed after attempting all discovery endpoints.")
+            return False
 
         except Exception as e:
             logger.error(f"[Piccoma] Error in fast_purchase: {e}")
