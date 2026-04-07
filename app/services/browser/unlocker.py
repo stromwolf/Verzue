@@ -4,6 +4,7 @@ import time
 from app.core.events import EventBus
 from app.providers.manager import ProviderManager
 from app.services.session_service import SessionService
+from app.services.unlocker.factory import UnlockerFactory
 
 logger = logging.getLogger("BatchUnlocker")
 
@@ -105,52 +106,16 @@ class BatchUnlocker:
             if view: view.trigger_refresh()
             if p == 90: asyncio.create_task(EventBus.emit("purchase_near_completion", context_id, task))
 
-        service = self.worker_stats[context_id]["service"]
-
-        if service == "mecha":
-            update_progress(15, "API Fast-Path Attempt")
+        service_name = self.worker_stats[context_id]["service"]
+        
+        # 🟢 S-GRADE: Modular Unlocker Delegation
+        unlocker = UnlockerFactory.get_unlocker(service_name, self.provider_manager)
+        
+        if unlocker:
             try:
-                provider = self.provider_manager.get_provider("mecha")
-                success = await provider.fast_purchase(task)
-                
-                if success:
-                    update_progress(90, "API Purchase Successful")
-                    return
-                
-                raise Exception("Mecha API fast-purchase failed. Session might be expired or chapter requires purchase.")
-                    
+                await unlocker.unlock(context_id, task, view, update_progress)
             except Exception as e:
-                logger.error(f"Worker {context_id} Mecha task failed: {e}")
-                raise e
-        elif service == "piccoma":
-            update_progress(15, "API Coin Purchase Attempt")
-            try:
-                provider = self.provider_manager.get_provider("piccoma")
-                success = await provider.fast_purchase(task)
-                
-                if success:
-                    update_progress(90, "Coin Purchase Successful")
-                    return
-                
-                raise Exception("Piccoma coin purchase failed via API")
-                    
-            except Exception as e:
-                logger.error(f"Worker {context_id} Piccoma purchase failed: {e}")
-                raise e
-        elif service == "jumptoon":
-            update_progress(15, "API Ticket Unlock Attempt")
-            try:
-                provider = self.provider_manager.get_provider("jumptoon")
-                success = await provider.fast_purchase(task)
-                
-                if success:
-                    update_progress(90, "Ticket Unlock Successful")
-                    return
-                
-                raise Exception("Jumptoon ticket unlock failed via API")
-                    
-            except Exception as e:
-                logger.error(f"Worker {context_id} Jumptoon unlock failed: {e}")
+                # Error already logged by platform unlocker
                 raise e
         else:
-            raise Exception(f"Service {service} not supported in BatchUnlocker yet.")
+            raise Exception(f"Service {service_name} not supported in BatchUnlocker yet.")
