@@ -345,6 +345,9 @@ class MechaProvider(BaseProvider):
             if 'contents_vertical' in str(res.url):
                 return str(res.url)
 
+            # Assign response body for subsequent checks
+            body = res.text
+
             # 🟢 S-GRADE FALLBACK: Try the /download endpoint directly if no viewer URL found
             if 'contents_vertical' not in body:
                 download_url = f"{self.BASE_URL}/chapters/{real_id}/download"

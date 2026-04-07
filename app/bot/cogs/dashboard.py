@@ -554,13 +554,22 @@ class DashboardCog(commands.Cog):
         """Helper to reset view and re-queue tasks for a fresh download."""
         req_id = view.req_id
         
-        # 1. Forensic Deletion (Remove existing folders on Drive)
+        # 🟢 S-GRADE: Filter only FAILED tasks to avoid wasting resources on successful ones
+        failed_tasks = [t for t in view.active_tasks if t.status == TaskStatus.FAILED]
+        
+        if not failed_tasks:
+            try:
+                await interaction.followup.send("✅ All selected chapters have already completed successfully. Nothing to retry.", ephemeral=True)
+            except: pass
+            return
+
+        # 1. Forensic Deletion (Remove existing folders on Drive) for FAILED tasks only
         uploader = self.bot.task_queue.uploader
         redis = self.bot.task_queue.redis
         
         if uploader:
-            logger.info(f"[{req_id}] 🗑️ Retrying: Deleting existing Drive assets...")
-            for task in view.active_tasks:
+            logger.info(f"[{req_id}] 🗑️ Retrying: Deleting existing assets for {len(failed_tasks)} failed tasks...")
+            for task in failed_tasks:
                 # 🟢 S-GRADE: Prioritize deletion by ID if we have it
                 if task.pre_created_folder_id:
                     logger.info(f"[{req_id}] Deleting folder by ID: {task.pre_created_folder_id}")
@@ -582,26 +591,34 @@ class DashboardCog(commands.Cog):
         view.phases["download"] = "loading"
         view.trigger_refresh()
         
-        # 3. Re-queue tasks
+        # 3. Re-queue only the failed tasks
         new_tasks = []
-        for t in view.active_tasks:
-            # 🟢 CRITICAL: Clear the Redis Active Task Flag to allow deduplication to pass
-            key = f"{t.series_id_key}:{t.episode_id}"
-            await redis.remove_active_task(key)
-
-            # Reset task object
-            t.status = TaskStatus.QUEUED
-            t.pre_created_folder_id = None
-            t.share_link = None
-            t.error_message = None
-            
-            # 🟢 S-GRADE: Prune existing_links from view to ensure fresh UI
-            if hasattr(view, 'existing_links') and t.chapter_str in view.existing_links:
-                del view.existing_links[t.chapter_str]
-            
-            new_tasks.append(await self.bot.task_queue.add_task(t))
+        # Keep the completed tasks as they are in the view, only replace the failed ones with their new instances
+        task_map = {t.episode_id: t for t in failed_tasks}
         
-        view.active_tasks = new_tasks
+        updated_active_tasks = []
+        for t in view.active_tasks:
+            if t.episode_id in task_map:
+                # 🟢 CRITICAL: Clear the Redis Active Task Flag to allow deduplication to pass
+                key = f"{t.series_id_key}:{t.episode_id}"
+                await redis.remove_active_task(key)
+
+                # Reset task object
+                t.status = TaskStatus.QUEUED
+                t.pre_created_folder_id = None
+                t.share_link = None
+                t.error_message = None
+                
+                # 🟢 S-GRADE: Prune existing_links from view to ensure fresh UI
+                if hasattr(view, 'existing_links') and t.chapter_str in view.existing_links:
+                    del view.existing_links[t.chapter_str]
+                
+                new_t = await self.bot.task_queue.add_task(t)
+                updated_active_tasks.append(new_t)
+            else:
+                updated_active_tasks.append(t)
+        
+        view.active_tasks = updated_active_tasks
         asyncio.create_task(view.monitor_tasks())
 
     @commands.Cog.listener()
@@ -947,7 +964,6 @@ class DashboardCog(commands.Cog):
 
                 # NEW: Error Retry Logic
                 if custom_id.startswith("btn_error_retry_"):
-                    view.interaction = interaction
                     # 1. Immediate Ephemeral Feedback
                     apology = (
                         "We apologize for the inconvenience. I'll re-download this chapter and get back to you soon."

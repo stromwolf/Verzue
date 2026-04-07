@@ -566,6 +566,7 @@ class UniversalDashboard:
                         )
                         # Discord allows modifying Webhook messages with Bot token if you specify the channel/message
                         try:
+                            payload_data.pop("content", None)
                             await self.bot.http.request(route, json=payload_data)
                         except: pass
                     else:
