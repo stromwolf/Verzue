@@ -571,7 +571,7 @@ class JumptoonProvider(BaseProvider):
         # Concurrent Download with S-Grade Semaphore
         total = len(image_data)
         stats = {"completed": 0}
-        from app.core.logger import ProgressBar
+        from app.core.progress import ProgressBar
         progress = ProgressBar(task.req_id, "Downloading", "Jumptoon", total)
         progress.update(stats["completed"])
 

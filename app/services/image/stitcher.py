@@ -112,7 +112,7 @@ class ImageStitcher:
             # 🟢 Standardized Progress Bar
             if req_id:
                 if 'progress' not in locals():
-                    from app.core.logger import ProgressBar
+                    from app.core.progress import ProgressBar
                     progress = ProgressBar(req_id, "Stitching", service_name.capitalize(), total_h)
                 
                 progress.update(cut_y)

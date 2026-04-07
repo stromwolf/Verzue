@@ -1,307 +1,134 @@
-import redis.asyncio as redis
-from redis.asyncio.retry import Retry
-from redis.backoff import ExponentialBackoff
-from redis.exceptions import ConnectionError, TimeoutError
-import time
-import json
 import logging
-from config.settings import Settings
-from app.core.lua_scripts import TOKEN_BUCKET_SCRIPT
-from app.core.events import EventBus
+import json
+from .redis import (
+    RedisConnection,
+    RedisQueue,
+    RedisSessionStore,
+    RedisSubscriptions,
+    RedisPubSub,
+    RedisTelemetry
+)
 
 logger = logging.getLogger("RedisManager")
 
 class RedisManager:
+    """
+    S-Grade Orchestrator for Redis Services.
+    Maintains backward compatibility while delegating logic to specialized sub-modules.
+    """
     _instance = None
-    _is_connected = True # Track state for alerting
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(RedisManager, cls).__new__(cls)
-            try:
-                logger.info(f"🔌 Connecting to Redis: {Settings.REDIS_URL}")
-                
-                # S-GRADE: Implement Exponential Backoff Retry Strategy
-                # This handles temporary VPS drops (1s, 2s, 4s...) autonomously.
-                retry_strategy = Retry(ExponentialBackoff(cap=10, base=1), 5)
-                
-                cls._instance.pool = redis.ConnectionPool.from_url(
-                    Settings.REDIS_URL, 
-                    decode_responses=True, 
-                    max_connections=50,
-                    retry=retry_strategy,
-                    retry_on_timeout=True,
-                    retry_on_error=[ConnectionError, TimeoutError]
-                )
-                cls._instance.client = redis.Redis(connection_pool=cls._instance.pool)
-                cls._instance._lua_limiter = None
-            except Exception as e:
-                logger.critical(f"Redis Setup Failed: {e}")
-                cls._instance.client = None
+            cls._instance._initialize()
         return cls._instance
 
-    # --- S-GRADE: CONNECTION RESILIENCE HELPERS ---
-    async def _handle_connection_status(self, is_success: bool):
-        """Monitors connectivity and emits global events when the status changes."""
-        if is_success:
-            if not self._is_connected:
-                logger.info("📡 [Redis] RECONNECTED: Connection restored.")
-                self.__class__._is_connected = True
-                await EventBus.emit("redis_connected", {})
-        else:
-            if self._is_connected:
-                logger.error("🚨 [Redis] DISCONNECTED: Connection lost. Hibernating services...")
-                self.__class__._is_connected = False
-                await EventBus.emit("redis_lost", {})
+    def _initialize(self):
+        # 1. Connection (Core)
+        self.connection = RedisConnection(self)
+        self.client = self.connection.client
+        
+        # 2. Specialized Services
+        self.queue = RedisQueue(self)
+        self.sessions = RedisSessionStore(self)
+        self.subscriptions = RedisSubscriptions(self)
+        self.pubsub = RedisPubSub(self)
+        self.telemetry = RedisTelemetry(self)
 
-    # --- RATE LIMITING (Existing) ---
+    @property
+    def _is_connected(self):
+        return self.connection._is_connected
+
+    # --- Connection & Rate Limiting Delegation ---
+    
+    async def _handle_connection_status(self, is_success: bool):
+        return await self.connection._handle_connection_status(is_success)
+
     async def get_token(self, bucket_name: str, rate: int = 40, capacity: int = 50):
-        if not self.client: return True, 0
-        try:
-            if not self._lua_limiter:
-                self._lua_limiter = self.client.register_script(TOKEN_BUCKET_SCRIPT)
-            bucket_key = "global_ui_limit" if "discord_ui" in bucket_name else bucket_name
-            result = await self._lua_limiter(keys=[f"limiter:{bucket_key}"], args=[capacity, rate, time.time()])
-            await self._handle_connection_status(True)
-            return result[0] == 1, result[1]
-        except (ConnectionError, TimeoutError):
-            await self._handle_connection_status(False)
-            return True, 0
-        except Exception as e:
-            logger.error(f"Redis Limiter Error: {e}")
-            return True, 0
+        return await self.connection.get_token(bucket_name, rate, capacity)
 
     async def check_connection(self):
-        if not self.client: return False
-        try: 
-            status = await self.client.ping()
-            await self._handle_connection_status(True)
-            return status
-        except (ConnectionError, TimeoutError):
-            await self._handle_connection_status(False)
-            return False
-        except: return False
+        return await self.connection.check_connection()
 
-    # --- DISTRIBUTED QUEUE METHODS (Phase 3) ---
+    # --- Queue Delegation ---
+
     async def enqueue_task(self, queue_name: str, task_dict: dict):
-        """Pushes a serialized task to the back of the Redis List."""
-        if not self.client: return False
-        try:
-            await self.client.rpush(queue_name, json.dumps(task_dict))
-            await self._handle_connection_status(True)
-            return True
-        except (ConnectionError, TimeoutError):
-            await self._handle_connection_status(False)
-            return False
+        return await self.queue.enqueue_task(queue_name, task_dict)
 
     async def dequeue_task(self, queue_name: str, timeout: int = 5):
-        """Blocks and pops a task from the front of the Redis List."""
-        if not self.client: return None
-        try:
-            result = await self.client.blpop(queue_name, timeout=timeout)
-            await self._handle_connection_status(True)
-            if result:
-                return json.loads(result[1]) # result is a tuple: (queue_key, data)
-            return None
-        except (ConnectionError, TimeoutError):
-            await self._handle_connection_status(False)
-            return None
+        return await self.queue.dequeue_task(queue_name, timeout)
 
-    # --- S-GRADE DISTRIBUTED QUEUE (Approach A) ---
     async def push_task(self, task_dict: dict):
-        """Standardized global queue entry."""
-        return await self.enqueue_task("verzue:queue:global", task_dict)
+        return await self.queue.push_task(task_dict)
 
     async def pop_task(self, timeout: int = 5):
-        """Standardized global queue exit."""
-        return await self.dequeue_task("verzue:queue:global", timeout=timeout)
+        return await self.queue.pop_task(timeout)
 
-    # --- ACTIVE TASK TRACKING (Deduplication) ---
     async def set_active_task(self, key: str, task_id: str):
-        """Marks a series:episode as 'in progress' across all workers."""
-        if not self.client: return
-        await self.client.hset("verzue:active_tasks", key, task_id)
+        return await self.queue.set_active_task(key, task_id)
 
     async def get_active_task(self, key: str):
-        """Checks if a task is already being handled elsewhere."""
-        if not self.client: return None
-        return await self.client.hget("verzue:active_tasks", key)
+        return await self.queue.get_active_task(key)
 
     async def remove_active_task(self, key: str):
-        """Clears the active flag after completion/failure."""
-        if not self.client: return
-        await self.client.hdel("verzue:active_tasks", key)
+        return await self.queue.remove_active_task(key)
 
-    # --- SUBSCRIPTION INDEXING ---
-    async def update_subs_index(self, series_id: str, group_name: str, title: str = None, channel_id: int = None, url: str = None):
-        """Caches a subscription mapping for fast global lookups."""
-        if not self.client: return
-        payload = {"group": group_name}
-        if title: payload["title"] = title
-        if channel_id: payload["channel_id"] = channel_id
-        if url: payload["url"] = url
-        await self.client.hset("verzue:index:subs", series_id, json.dumps(payload))
+    # --- Subscription Delegation ---
 
-    async def update_schedule_index(self, group_name: str, day: str, series_id: str, platform: str = None):
-        """Adds a series to group's daily release schedule and group-wide sets."""
-        if not self.client: return
-        # 1. Daily schedule
-        key = f"verzue:schedule:{group_name}:{day.capitalize()}"
-        await self.client.sadd(key, series_id)
-        
-        # 2. Group-wide all set
-        await self.client.sadd(f"verzue:group:{group_name}:all", series_id)
-        
-        # 3. Platform-specific group set
-        if platform:
-            await self.client.sadd(f"verzue:group:{group_name}:platform:{platform.lower()}", series_id)
+    async def update_subs_index(self, *args, **kwargs):
+        return await self.subscriptions.update_subs_index(*args, **kwargs)
 
-    async def remove_from_schedule_index(self, group_name: str, day: str, series_id: str, platform: str = None):
-        """Removes a series from group's daily schedule and global group sets."""
-        if not self.client: return
-        key = f"verzue:schedule:{group_name}:{day.capitalize()}"
-        await self.client.srem(key, series_id)
-        await self.client.srem(f"verzue:group:{group_name}:all", series_id)
-        if platform:
-            await self.client.srem(f"verzue:group:{group_name}:platform:{platform.lower()}", series_id)
+    async def update_schedule_index(self, *args, **kwargs):
+        return await self.subscriptions.update_schedule_index(*args, **kwargs)
 
-    async def clear_group_schedule(self, group_name: str):
-        """Clears all schedule and group-wide sets for a group."""
-        if not self.client: return
-        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        keys = [f"verzue:schedule:{group_name}:{d}" for d in days]
-        keys.append(f"verzue:group:{group_name}:all")
-        
-        # Find all platform keys dynamically
-        platforms = ["jumptoon", "piccoma", "mecha", "acqq", "kakao", "kuaikan"]
-        for p in platforms:
-            keys.append(f"verzue:group:{group_name}:platform:{p}")
-            
-        await self.client.delete(*keys)
+    async def remove_from_schedule_index(self, *args, **kwargs):
+        return await self.subscriptions.remove_from_schedule_index(*args, **kwargs)
 
-    async def get_group_subs(self, group_name: str, platform: str = None):
-        """Returns all hydrated subscriptions for a group, optionally filtered by platform."""
-        if not self.client: return []
-        key = f"verzue:group:{group_name}:platform:{platform.lower()}" if platform else f"verzue:group:{group_name}:all"
-        series_ids = await self.client.smembers(key)
-        
-        results = []
-        if series_ids:
-            pipe = self.client.pipeline()
-            for s_id in series_ids:
-                pipe.hget("verzue:index:subs", s_id)
-            raw_data = await pipe.execute()
-            for r in raw_data:
-                if r:
-                    sub_data = json.loads(r)
-                    if not sub_data.get("series_id"): # Ensure series_id is present
-                        # We might need to inject it if not in JSON
-                        pass
-                    results.append(sub_data)
-        return results
+    async def clear_group_schedule(self, *args, **kwargs):
+        return await self.subscriptions.clear_group_schedule(*args, **kwargs)
 
-    async def get_schedule_for_group(self, group_name: str, day: str):
-        """Returns hydrated subscription data for a specific day."""
-        if not self.client: return []
-        key = f"verzue:schedule:{group_name}:{day.capitalize()}"
-        series_ids = await self.client.smembers(key)
-        
-        results = []
-        if series_ids:
-            # Fetch metadata from index hash
-            pipe = self.client.pipeline()
-            for s_id in series_ids:
-                pipe.hget("verzue:index:subs", s_id)
-            
-            raw_data = await pipe.execute()
-            for r in raw_data:
-                if r:
-                    sub_data = json.loads(r)
-                    results.append(sub_data)
-        return results
+    async def get_group_subs(self, *args, **kwargs):
+        return await self.subscriptions.get_group_subs(*args, **kwargs)
 
-    async def get_indexed_sub(self, series_id: str):
-        """O(1) lookup for series subscriptions."""
-        if not self.client: return None
-        data = await self.client.hget("verzue:index:subs", series_id)
-        return json.loads(data) if data else None
+    async def get_schedule_for_group(self, *args, **kwargs):
+        return await self.subscriptions.get_schedule_for_group(*args, **kwargs)
 
-    async def remove_indexed_sub(self, series_id: str):
-        """Removes a sub from the fast index."""
-        if not self.client: return
-        await self.client.hdel("verzue:index:subs", series_id)
+    async def get_indexed_sub(self, *args, **kwargs):
+        return await self.subscriptions.get_indexed_sub(*args, **kwargs)
 
-    # --- PUB/SUB FOR REAL-TIME DISCORD UI UPDATES (Phase 3) ---
+    async def remove_indexed_sub(self, *args, **kwargs):
+        return await self.subscriptions.remove_indexed_sub(*args, **kwargs)
+
+    # --- Pub/Sub Delegation ---
+
     async def publish_event(self, channel: str, event_type: str, payload: dict):
-        """Workers use this to tell the Bot that a task updated."""
-        if not self.client: return
-        message = json.dumps({"event": event_type, "data": payload})
-        await self.client.publish(channel, message)
+        return await self.pubsub.publish_event(channel, event_type, payload)
 
     def get_subscriber(self):
-        """Returns a PubSub object for the Bot to listen for worker events."""
-        if not self.client: return None
-        return self.client.pubsub()
+        return self.pubsub.get_subscriber()
 
-    # --- SESSION VAULT METHODS (Phase 1) ---
+    # --- Session Vault Delegation ---
+
     async def set_session(self, platform: str, account_id: str, session_data: dict):
-        """Saves session data (cookies, tokens, metadata) to Redis."""
-        if not self.client: return
-        key = f"verzue:session:{platform}:{account_id}"
-        await self.client.set(key, json.dumps(session_data))
-        logger.debug(f"💾 Redis: Saved session for {platform}:{account_id}")
+        return await self.sessions.set_session(platform, account_id, session_data)
 
     async def get_session(self, platform: str, account_id: str):
-        """Retrieves session data from Redis."""
-        if not self.client: return None
-        key = f"verzue:session:{platform}:{account_id}"
-        data = await self.client.get(key)
-        return json.loads(data) if data else None
+        return await self.sessions.get_session(platform, account_id)
 
     async def get_sessions_batch(self, platform: str, account_ids: list[str]):
-        """S-Grade: Retrieves multiple sessions in a single MGET call."""
-        if not self.client or not account_ids: return []
-        keys = [f"verzue:session:{platform}:{aid}" for aid in account_ids]
-        raw_data = await self.client.mget(keys)
-        return [json.loads(d) for d in raw_data if d]
+        return await self.sessions.get_sessions_batch(platform, account_ids)
 
     async def list_sessions(self, platform: str):
-        """Lists all account IDs for a given platform."""
-        if not self.client: return []
-        pattern = f"verzue:session:{platform}:*"
-        keys = await self.client.keys(pattern)
-        return [k.split(":")[-1] for k in keys]
+        return await self.sessions.list_sessions(platform)
 
     async def delete_session(self, platform: str, account_id: str):
-        """Removes a session from Redis."""
-        if not self.client: return
-        key = f"verzue:session:{platform}:{account_id}"
-        await self.client.delete(key)
+        return await self.sessions.delete_session(platform, account_id)
 
-    # --- TELEMETRY & METRICS (Phase 5) ---
+    # --- Telemetry Delegation ---
+
     async def record_request(self, platform: str, success: bool, error_type: str = None):
-        """Tracks success/failure metrics for S-Grade monitoring."""
-        if not self.client: return
-        pipe = self.client.pipeline()
-        date_str = time.strftime("%Y-%m-%d")
-        base_key = f"verzue:metrics:{platform}:{date_str}"
-        
-        await pipe.hincrby(base_key, "total_requests", 1)
-        if success:
-            await pipe.hincrby(base_key, "success_count", 1)
-        else:
-            await pipe.hincrby(base_key, "failure_count", 1)
-            if error_type:
-                await pipe.hincrby(f"{base_key}:errors", error_type, 1)
-        
-        await pipe.execute()
+        return await self.telemetry.record_request(platform, success, error_type)
 
     async def get_metrics(self, platform: str, date_str: str = None):
-        """Retrieves metrics for a specific platform and date."""
-        if not self.client: return {}
-        if not date_str: date_str = time.strftime("%Y-%m-%d")
-        base_key = f"verzue:metrics:{platform}:{date_str}"
-        
-        stats = await self.client.hgetall(base_key)
-        errors = await self.client.hgetall(f"{base_key}:errors")
-        return {"stats": stats, "errors": errors}
+        return await self.telemetry.get_metrics(platform, date_str)

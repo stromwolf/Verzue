@@ -195,7 +195,7 @@ class KakaoProvider(BaseProvider):
 
         total = len(files)
         completed = 0
-        from app.core.logger import ProgressBar
+        from app.core.progress import ProgressBar
         progress = ProgressBar(task.req_id, "Downloading", "Kakao", total)
         progress.update(completed)
 
@@ -230,7 +230,7 @@ class KakaoProvider(BaseProvider):
             files = res.json()['data']['viewerInfo']['viewerData']['imageDownloadData']['files']
             total = len(files)
             completed = 0
-            from app.core.logger import ProgressBar
+            from app.core.progress import ProgressBar
             progress = ProgressBar(task.req_id, "Downloading", "Kakao", total)
             progress.update(completed)
 

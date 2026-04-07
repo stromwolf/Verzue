@@ -97,7 +97,7 @@ class KuaikanProvider(BaseProvider):
 
         total = len(image_urls)
         completed = 0
-        from app.core.logger import ProgressBar
+        from app.core.progress import ProgressBar
         progress = ProgressBar(task.req_id, "Downloading", "Kuaikan", total)
         progress.update(completed)
 

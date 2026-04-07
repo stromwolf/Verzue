@@ -275,7 +275,7 @@ class TaskWorker:
             # 🟢 Standardized Progress Bar Tracking
             completed = [1] # Use list for mutable scoping in nested async
             total = len(files)
-            from app.core.logger import ProgressBar
+            from app.core.progress import ProgressBar
             progress = ProgressBar(task.req_id, "Uploading", task.service.capitalize(), total)
             progress.update(completed[0])
 

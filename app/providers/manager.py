@@ -30,9 +30,17 @@ class ProviderManager:
             return
 
         loaded_providers = []
-        for filename in os.listdir(platforms_dir):
-            if filename.endswith(".py") and not filename.startswith("__"):
-                module_name = f"app.providers.platforms.{filename[:-3]}"
+        for entry in os.scandir(platforms_dir):
+            if entry.name.startswith("__"):
+                continue
+                
+            module_name = None
+            if entry.is_file() and entry.name.endswith(".py"):
+                module_name = f"app.providers.platforms.{entry.name[:-3]}"
+            elif entry.is_dir() and os.path.isfile(os.path.join(entry.path, "__init__.py")):
+                module_name = f"app.providers.platforms.{entry.name}"
+
+            if module_name:
                 try:
                     module = importlib.import_module(module_name)
                     for name, obj in inspect.getmembers(module):
@@ -40,10 +48,11 @@ class ProviderManager:
                             issubclass(obj, BaseProvider) and 
                             obj is not BaseProvider):
                             
-                            # Use a convention or attribute for the platform name
                             platform_name = getattr(obj, "IDENTIFIER", name.lower().replace("provider", ""))
-                            self._providers[platform_name] = obj()
-                            loaded_providers.append(f"                  -   {platform_name} ({obj.__name__})")
+                            # Prevent duplicate instantiation if both file and dir exist
+                            if platform_name not in self._providers:
+                                self._providers[platform_name] = obj()
+                                loaded_providers.append(f"                  -   {platform_name} ({obj.__name__})")
                 except Exception as e:
                     logger.error(f"❌ Failed to load provider module {module_name}: {e}")
         
