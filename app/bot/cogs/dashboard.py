@@ -639,11 +639,16 @@ class DashboardCog(commands.Cog):
             # --- Platform Selection Modal ---
             if custom_id == "v2_platform_select":
                 platform = interaction.data["values"][0]
+                
+                # 🟢 S-GRADE: Pretty Names Mapping
+                mapping = {"piccoma": "Piccoma", "mecha": "Mechacomic", "jumptoon": "Jumptoon"}
+                platform_name = mapping.get(platform, platform.capitalize())
+                
                 modal_payload = {
                     "type": 9,
                     "data": {
                         "custom_id": f"v2_modal_{platform}",
-                        "title": f"{platform} Extractor",
+                        "title": f"{platform_name}'s Downloader",
                         "components": [
                             {
                                 "type": 18,
@@ -660,10 +665,10 @@ class DashboardCog(commands.Cog):
                             },
                             {
                                 "type": 18,
-                                "label": f"Add {platform} link here:",
+                                "label": f"Add {platform_name} link here:",
                                 "component": {
                                     "type": 4, "custom_id": "url_input", "style": 1,
-                                    "placeholder": f"Paste {platform} URL...", "required": True
+                                    "placeholder": f"Paste {platform_name} URL...", "required": True
                                 }
                             }
                         ]
@@ -1369,6 +1374,10 @@ class DashboardCog(commands.Cog):
             pass
 
         platform = custom_id.replace("v2_modal_", "")
+        
+        # 🟢 S-GRADE: Pretty Names Mapping
+        mapping = {"piccoma": "Piccoma", "mecha": "Mechacomic", "jumptoon": "Jumptoon"}
+        platform_name = mapping.get(platform, platform.capitalize())
         raw_url, action = "", "download"
         
         for row in interaction.data.get("components", []):
@@ -1577,7 +1586,7 @@ class DashboardCog(commands.Cog):
                 "type": 17,
                 "components": [{
                     "type": 10,
-                    "content": f"🔍 **Analyzing {platform} Link:**\n`{url}`\n*Fetching metadata, please wait...*"
+                    "content": f"🔍 **Analyzing {platform_name} Link:**\n`{url}`\n*Fetching metadata, please wait...*"
                 }]
             }]
         }
