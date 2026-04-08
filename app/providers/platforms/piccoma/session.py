@@ -1,6 +1,6 @@
 import logging
 import random
-from curl_cffi.requests import AsyncSession
+from curl_cffi.requests import AsyncSession, ProxyError, RequestsError
 from app.services.session_service import SessionService
 from app.services.login_service import LoginService
 from app.core.exceptions import ScraperError
@@ -88,7 +88,7 @@ class PiccomaSession:
             if len(async_session.cookies) < 8:
                 logger.info(f"🛡️ [Piccoma Identity] 'Thin' session detected ({len(async_session.cookies)} cookies). Maturing profile...")
                 try:
-                    await async_session.get("https://piccoma.com/web/", timeout=10)
+                    await async_session.get("https://piccoma.com/web/", timeout=15)
                     matured_cookies = []
                     # S+ Identity Handshake Capture
                     for c in async_session.cookies.jar:
@@ -105,6 +105,8 @@ class PiccomaSession:
                     if len(matured_cookies) >= 8:
                         logger.info(f"✅ [Piccoma Identity] Identity matured and PERSISTED ({len(matured_cookies)} cookies).")
                         await session_service.update_session_cookies("piccoma", session_obj.get('account_id', 'primary'), matured_cookies)
+                except (ProxyError, RequestsError) as proxy_e:
+                    logger.warning(f"⚠️ [Piccoma Identity] Proxy error during identity maturation: {proxy_e}")
                 except Exception as ritual_e:
                     logger.warning(f"⚠️ [Piccoma Identity] Identity maturation failed: {ritual_e}")
 

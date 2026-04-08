@@ -508,6 +508,7 @@ class UniversalDashboard:
             action_buttons.append({"type": 2, "style": 2, "label": "Cancel", "custom_id": f"btn_cancel_{self.req_id}"})
 
             inner_components.append({"type": 1, "components": action_buttons})
+            inner_components.append({"type": 14, "divider": True, "spacing": 1})
             inner_components.append({ "type": 10, "content": footer_text })
             
             footer = self._get_footer_action_row()

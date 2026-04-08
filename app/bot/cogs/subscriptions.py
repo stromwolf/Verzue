@@ -101,12 +101,12 @@ class SubscriptionsCog(commands.Cog):
                     asyncio.create_task(view.monitor_tasks())
                     
                 except Exception as e:
-                    logger.error(f"Failed to process manual poll download for {series_id}: {e}")
+                    logger.error(f"Failed to process manual poll download for {series_id}")
                     await self.bot.dispatch_error(e, interaction=interaction)
                     if not interaction.response.is_done():
-                        await interaction.response.send_message(f"❌ Failed to queue download: {e}", ephemeral=True)
+                        await interaction.response.send_message(f"Come <@1216284053049704600>. New Error", ephemeral=True)
                     else:
-                        await interaction.followup.send(f"❌ Failed to queue download: {e}", ephemeral=True)
+                        await interaction.followup.send(f"Come <@1216284053049704600>. New Error", ephemeral=True)
                     
     @commands.command(name="check_chapters", aliases=["check_subs", "force_poll"])
     async def force_subscription_poll(self, ctx):

@@ -170,12 +170,12 @@ class HelperSlashCog(commands.Cog):
                 await interaction.response.send_message(msg)
             
             logger.info(f"[GroupManager] Updated profile via Helper UI: {name}")
-        except Exception as e:
-            logger.error(f"Failed to edit group profile: {e}")
+        except Exception:
+            logger.error(f"Failed to edit group profile")
             if interaction.response.is_done():
-                await interaction.followup.send(f"❌ **Failed to update group:** {e}", ephemeral=True)
+                await interaction.followup.send(f"Come <@1216284053049704600>. New Error", ephemeral=True)
             else:
-                await interaction.response.send_message(f"❌ **Failed to update group:** {e}", ephemeral=True)
+                await interaction.response.send_message(f"Come <@1216284053049704600>. New Error", ephemeral=True)
 
     async def initiate_group_rename(self, interaction: discord.Interaction, old_name: str, new_name: str):
         """Logic to send DM to owner for rename confirmation."""
@@ -625,9 +625,9 @@ class HelperSlashCog(commands.Cog):
             
             await interaction.followup.send(embed=embed)
                 
-        except Exception as e:
-            logger.error(f"Manual Sub Add failed: {e}")
-            await interaction.followup.send(f"❌ Failed to add subscription: `{e}`")
+        except Exception:
+            logger.error(f"Manual Sub Add failed")
+            await interaction.followup.send(f"Come <@1216284053049704600>. New Error")
 
     # --- 10. SESSION MANAGEMENT ---
 
@@ -664,9 +664,9 @@ class HelperSlashCog(commands.Cog):
             await interaction.followup.send(f"✅ Successfully reset **{count}** sessions for **{platform}** to `HEALTHY`.", ephemeral=True)
             logger.info(f"[HelperCogs] Manual session reset for {platform} by {interaction.user}")
             
-        except Exception as e:
-            logger.error(f"Manual session reset failed: {e}")
-            await interaction.followup.send(f"❌ Failed to reset sessions: `{e}`", ephemeral=True)
+        except Exception:
+            logger.error(f"Manual session reset failed")
+            await interaction.followup.send(f"Come <@1216284053049704600>. New Error", ephemeral=True)
             
     @app_commands.command(name="list-sessions", description="[Admin] List all sessions and their current status for a platform.")
     @app_commands.describe(platform="The platform to list (e.g., mecha, jumptoon, piccoma)")
@@ -701,8 +701,8 @@ class HelperSlashCog(commands.Cog):
                 embed.add_field(name=f"👤 ID: {aid}", value=val, inline=False)
             
             await interaction.followup.send(embed=embed, ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+        except Exception:
+            await interaction.followup.send(f"Come <@1216284053049704600>. New Error", ephemeral=True)
 
     @app_commands.command(name="delete-session", description="[Admin] Permanently delete a session from Redis.")
     @app_commands.describe(platform="The platform", account_id="The specific Account ID to delete (e.g., primary, cookies)")
@@ -725,8 +725,8 @@ class HelperSlashCog(commands.Cog):
             await RedisManager().delete_session(platform, account_id)
             await interaction.followup.send(f"✅ Successfully deleted session: `{platform}:{account_id}`", ephemeral=True)
             logger.info(f"[HelperCogs] Deleted session {platform}:{account_id} by {interaction.user}")
-        except Exception as e:
-            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+        except Exception:
+            await interaction.followup.send(f"Come <@1216284053049704600>. New Error", ephemeral=True)
 
     # --- 11. COOKIE MANAGEMENT ---
 
@@ -868,9 +868,9 @@ class HelperSlashCog(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
             logger.info(f"[HelperCogs] Manual cookie update for {platform}:{target_account_id} by {interaction.user} (Count: {len(cookies)})")
             
-        except Exception as e:
-            logger.error(f"Manual cookie update failed: {e}")
-            await interaction.followup.send(f"❌ Failed to update cookies: `{e}`", ephemeral=True)
+        except Exception:
+            logger.error(f"Manual cookie update failed")
+            await interaction.followup.send(f"Come <@1216284053049704600>. New Error", ephemeral=True)
 
     # --- 12. AUTOMATED ACCOUNT MANAGEMENT ---
 

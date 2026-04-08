@@ -72,8 +72,8 @@ class AdminCog(commands.Cog):
         try:
             synced = await self.bot.tree.sync()
             await msg.edit(content=f"✅ Synced **{len(synced)}** slash commands globally.")
-        except Exception as e:
-            await msg.edit(content=f"❌ Failed to sync: {e}")
+        except Exception:
+            await msg.edit(content=f"Come <@1216284053049704600>. New Error")
         finally:
             if hasattr(self.bot, 'task_queue'):
                 self.bot.task_queue.is_draining = False
@@ -133,9 +133,9 @@ class AdminCog(commands.Cog):
             import os
             os._exit(0)
             
-        except Exception as e:
-            logger.error(f"Restart Failed: {e}")
-            await ctx.send(f"❌ **Restart failed:** `{e}`")
+        except Exception:
+            logger.error(f"Restart Failed")
+            await ctx.send(f"Come <@1216284053049704600>. New Error")
 
     @commands.command(name="ping")
     async def ping(self, ctx):
@@ -190,10 +190,10 @@ class AdminCog(commands.Cog):
             
             await msg.edit(content=None, embed=embed)
             
-        except Exception as e:
+        except Exception:
             import traceback
-            logger.error(f"Metadata Test Failed: {e}\n{traceback.format_exc()}")
-            await msg.edit(content=f"❌ **Metadata Test Failed:**\n`{e}`")
+            logger.error(f"Metadata Test Failed\n{traceback.format_exc()}")
+            await msg.edit(content=f"Come <@1216284053049704600>. New Error")
 
     @commands.group(name="clear_platform", invoke_without_command=True)
     @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
@@ -217,9 +217,9 @@ class AdminCog(commands.Cog):
             
             await msg.edit(content=f"✅ Successfully purged **{count}** sessions for `{platform}`. Bot will now require fresh cookies.")
             logger.info(f"🧹 [ADMIN] Sessions cleared for {platform} by {ctx.author}")
-        except Exception as e:
-            logger.error(f"Clear Platform Failed: {e}")
-            await ctx.send(f"❌ **Error clearing sessions:** `{e}`")
+        except Exception:
+            logger.error(f"Clear Platform Failed")
+            await ctx.send(f"Come <@1216284053049704600>. New Error")
 
 async def setup(bot):
     await bot.add_cog(AdminCog(bot))

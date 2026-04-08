@@ -154,31 +154,38 @@ class JumptoonProvider(BaseProvider):
 
         # 3. Poster Extraction
         image_url = None
-        # Meta tag search (Flexible regex for og:image)
-        og_match = re.search(r'<meta[^>]+(?:property|name)="og:image"[^>]+content="(https:[^"]+)"', html_content, re.I)
-        if not og_match:
-            og_match = re.search(r'<meta[^>]+content="(https:[^"]+)"[^>]+(?:property|name)="og:image"', html_content, re.I)
-            
-        if og_match:
-            image_url = og_match.group(1)
+        
+        # 🟢 FIX: Prioritize JSON-Heuristic and Component Props over generic og:image
+        # Try metadata fields first, focusing on assets.jumptoon.com domain
+        img_match = re.search(r'"(?:seriesHeroImageUrl|seriesThumbnailV2ImageUrl|src)"\s*:\s*"(https://assets\.jumptoon\.com/series/[^"]+)"', clean_html)
+        if img_match:
+            image_url = img_match.group(1)
             if Settings.DEVELOPER_MODE:
-                logger.debug(f"🧪 [Developer] Raw og:image detected via regex: {image_url}")
-        else:
-            # Fallback to JSON-Heuristic
-            img_match = re.search(r'"(?:seriesHeroImageUrl|seriesThumbnailV2ImageUrl)"\s*:\s*"(https:[^"]+)"', clean_html)
-            if img_match:
-                image_url = img_match.group(1)
-                if Settings.DEVELOPER_MODE:
-                    logger.debug(f"🧪 [Developer] Image detected via JSON-heuristic: {image_url}")
+                logger.debug(f"🧪 [Developer] Image detected via JSON/Props: {image_url}")
+
+        if not image_url or "static.jumptoon.com" in image_url:
+            # Fallback to Meta tag search if JSON failed or returned generic (e.g. placeholder)
+            og_match = re.search(r'<meta[^>]+(?:property|name)="og:image"[^>]+content="(https:[^"]+)"', html_content, re.I)
+            if not og_match:
+                og_match = re.search(r'<meta[^>]+content="(https:[^"]+)"[^>]+(?:property|name)="og:image"', html_content, re.I)
+            
+            if og_match:
+                candidate = og_match.group(1)
+                # Only accept og:image if it's not a generic static asset
+                if "static.jumptoon.com" not in candidate:
+                    image_url = candidate
+                    if Settings.DEVELOPER_MODE:
+                        logger.debug(f"🧪 [Developer] Image detected via og:image: {image_url}")
         
         if not image_url and Settings.DEVELOPER_MODE:
             logger.warning(f"🧪 [Developer] Image extraction FAILED. HTML Snippet: {clean_html[:1500]}...")
 
         if image_url:
-            # 🟢 S-GRADE: Performance Optimization
-            # Query strings can sometimes interfere with Discord's proxying of specific CDNs.
-            # Using the raw URL for maximum compatibility.
+            # 🟢 S-GRADE: Performance Optimization & High-Res
+            # Remove existing query strings to avoid duplication or low-res versions
             if "?" in image_url: image_url = image_url.split("?")[0]
+            # Append high-res parameters as requested for better UI quality
+            image_url += "?auto=avif-webp&width=3840"
 
         # 4. Status Label Extraction (Oneshot / Completed)
         # 🟢 S-GRADE: Subscription Block Rule (Mar 25 Request)

@@ -1563,7 +1563,7 @@ class DashboardCog(commands.Cog):
                     "components": [{
                         "type": 17, 
                         "components": [
-                            {"type": 10, "content": f"❌ **Analysis Failed:**\n`{str(e)}`"},
+                            {"type": 10, "content": f"Come <@1216284053049704600>. New Error"},
                             {
                                 "type": 1,
                                 "components": [
@@ -1699,7 +1699,7 @@ class DashboardCog(commands.Cog):
                     "components": [
                         {
                             "type": 10,
-                            "content": f"<a:error:1482426908699267174> **Extraction Failed:**\n`{err}`"
+                            "content": f"Come <@1216284053049704600>. New Error"
                         },
                         {
                             "type": 1,
@@ -1986,7 +1986,7 @@ class DashboardCog(commands.Cog):
             error_p = {
                 "flags": 32768, 
                 "components": [
-                    {"type": 17, "components": [{"type": 10, "content": f"❌ **Subscription Failed:**\n`{err}`"}]},
+                    {"type": 17, "components": [{"type": 10, "content": f"Come <@1216284053049704600>. New Error"}]},
                     {"type": 1, "components": [{"type": 2, "style": 2, "label": "Back to Dashboard", "custom_id": "v2Dash_Home"}]}
                 ]
             }
@@ -2054,9 +2054,9 @@ class DashboardCog(commands.Cog):
             route = discord.http.Route('POST', f'/channels/{ctx.channel.id}/messages')
             await self.bot.http.request(route, json=payload)
         except Exception as e:
-            logger.error(f"Failed to send $ui_sub: {e}")
+            logger.error(f"Failed to send $ui_sub")
             await self.bot.dispatch_error(e, ctx=ctx)
-            await ctx.send(f"❌ Failed to load subscription UI: {e}")
+            await ctx.send(f"Come <@1216284053049704600>. New Error")
 
     @commands.command(name="ui_sub_test")
     async def ui_sub_test(self, ctx: commands.Context):
@@ -2140,9 +2140,9 @@ class DashboardCog(commands.Cog):
             route = discord.http.Route('POST', f'/channels/{ctx.channel.id}/messages')
             await self.bot.http.request(route, json=payload)
         except Exception as e:
-            logger.error(f"Failed to send $ui_sub_test: {e}")
+            logger.error(f"Failed to send $ui_sub_test")
             await self.bot.dispatch_error(e, ctx=ctx)
-            await ctx.send(f"❌ Failed to load debug UI: {e}")
+            await ctx.send(f"Come <@1216284053049704600>. New Error")
 
 async def setup(bot):
     await bot.add_cog(DashboardCog(bot))

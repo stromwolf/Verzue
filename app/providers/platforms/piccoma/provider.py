@@ -4,7 +4,7 @@ import logging
 import asyncio
 import threading
 from bs4 import BeautifulSoup
-from curl_cffi.requests import AsyncSession
+from curl_cffi.requests import AsyncSession, RequestsError, ProxyError
 
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
@@ -102,15 +102,26 @@ class PiccomaProvider(BaseProvider):
         product_url = f"{base_url}/web/product/{series_id}"
         episodes_url = f"{base_url}/web/product/{series_id}/episodes?etype=E"
         
-        if fast:
-            res = await auth_session.get(product_url)
-            ep_res = None
-        else:
-            res_task = auth_session.get(product_url)
-            ep_task = auth_session.get(episodes_url)
-            res, ep_res = await asyncio.gather(res_task, ep_task)
-            
-        if res.status_code != 200: raise ScraperError(f"Failed to fetch series: {res.status_code}")
+        try:
+            if fast:
+                res = await auth_session.get(product_url, timeout=20)
+                ep_res = None
+            else:
+                # S+ Refinement: Sequential requests are safer for many proxy providers
+                # to avoid 'CONNECT tunnel failed (403)' or concurrency limits.
+                res = await auth_session.get(product_url, timeout=20)
+                ep_res = await auth_session.get(episodes_url, timeout=20)
+                
+            if res.status_code != 200: 
+                raise ScraperError(f"Failed to fetch series: {res.status_code}")
+        except (ProxyError, RequestsError) as e:
+            logger.error(f"[Piccoma] Network Error (Proxy?): {e}")
+            if "403" in str(e):
+                 raise ScraperError("Scraping Proxy Denied Access (403). Check IP Whitelist in your Proxy Dashboard or Bandwidth limits.", code="PX_403")
+            raise ScraperError(f"Piccoma Network Error: {e}")
+        except Exception as e:
+            if "ScraperError" in type(e).__name__: raise
+            raise ScraperError(f"Piccoma series fetch failed: {e}")
         
         # Geo-block detection
         if len(res.text) < 10000 and ("日本国内でのみ" in res.text or "only be used from Japan" in res.text):
@@ -207,7 +218,14 @@ class PiccomaProvider(BaseProvider):
         base_url, region, domain = self._get_context_from_url(task.url)
         auth_session = await self._get_authenticated_session(domain)
         
-        res = await auth_session.get(task.url)
+        try:
+            res = await auth_session.get(task.url, timeout=30)
+        except (ProxyError, RequestsError) as e:
+            logger.error(f"[Piccoma] Proxy Error during chapter access: {e}")
+            raise ScraperError("Proxy Access Denied (403). Ensure VPS IP is whitelisted.", code="PX_403")
+        except Exception as e:
+            raise ScraperError(f"Chapter access failed: {e}")
+
         is_locked_ui = res.status_code == 200 and ("js_purchaseForm" in res.text or "チャージ中" in res.text or "ポイントで読む" in res.text)
         
         if res.status_code != 200 or is_locked_ui:
@@ -215,7 +233,7 @@ class PiccomaProvider(BaseProvider):
             logger.info(f"[Piccoma] Chapter {chapter_id} {reason}, attempting fast purchase/unlock.")
             if await self.fast_purchase(task):
                 auth_session = await self._get_authenticated_session(domain)
-                res = await auth_session.get(task.url)
+                res = await auth_session.get(task.url, timeout=30)
             else:
                 logger.error(f"  ❌ [Piccoma] Fast purchase failed for {chapter_id}")
              

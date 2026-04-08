@@ -120,13 +120,10 @@ class MechaBot(commands.Bot):
             user_channel = self.get_channel(task.channel_id)
             
             embed = discord.Embed(
-                title="❌ Extraction Failed",
-                description=f"**Chapter:** `{task.title}`\n**Reason:** {err_text}",
+                title="❌ Error Happened",
+                description=f"Come <@1216284053049704600>. New Error",
                 color=0xe74c3c
             )
-            if error_code:
-                embed.add_field(name="Error Code", value=f"`{error_code}`", inline=True)
-            embed.set_footer(text=f"Task ID: {task.id}")
 
             if user_channel:
                 await user_channel.send(embed=embed)
@@ -217,34 +214,14 @@ class MechaBot(commands.Bot):
             
             embed = discord.Embed(
                 title=title,
-                description=f"**Error:** `{str(error)}`",
+                description=f"Come <@1216284053049704600>. New Error",
                 color=color,
                 timestamp=discord.utils.utcnow()
             )
             
-            embed.add_field(name="Error Code", value=f"`{error_code}`", inline=True)
-
-            if ctx:
-                embed.add_field(name="Command", value=f"`{ctx.command}`", inline=True)
-                embed.add_field(name="User", value=f"{ctx.author} (`{ctx.author.id}`)", inline=True)
-                embed.add_field(name="Channel", value=f"<#{ctx.channel.id}>", inline=True)
-            elif interaction:
-                cmd_name = interaction.data.get('name', 'Component/Interaction') if interaction.data else 'Interaction'
-                embed.add_field(name="Interaction", value=f"`{cmd_name}`", inline=True)
-                embed.add_field(name="User", value=f"{interaction.user} (`{interaction.user.id}`)", inline=True)
-                embed.add_field(name="Channel", value=f"<#{interaction.channel_id}>", inline=True)
-            elif event:
-                embed.add_field(name="Event", value=f"`{event}`", inline=True)
-            
-            # Add Traceback Summary
-            tb = traceback.format_exc()
-            if tb and tb != "NoneType: None\n":
-                summary = tb.splitlines()[-1] if tb.splitlines() else "No Traceback"
-                embed.add_field(name="Trace Summary", value=f"```py\n{summary[:1000]}```", inline=False)
-
             embed.set_footer(text="Iron Sentinel System Active")
             
-            await admin_channel.send(embed=embed)
+            await admin_channel.send(content="Come <@1216284053049704600>. New Error", embed=embed)
         except Exception as dispatch_e:
             self.logger.error(f"Sentinel failed to dispatch report: {dispatch_e}")
 
