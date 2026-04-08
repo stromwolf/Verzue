@@ -5,7 +5,7 @@ import math
 import asyncio
 import random
 import time
-from curl_cffi.requests import AsyncSession, RequestsError
+from app.providers.curl_compat import AsyncSession, RequestsError, ProxyError
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.core.exceptions import ScraperError

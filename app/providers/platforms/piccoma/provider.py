@@ -4,7 +4,7 @@ import logging
 import asyncio
 import threading
 from bs4 import BeautifulSoup
-from curl_cffi.requests import AsyncSession, RequestsError, ProxyError
+from app.providers.curl_compat import AsyncSession, RequestsError, ProxyError
 
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService

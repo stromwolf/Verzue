@@ -1,6 +1,6 @@
 import logging
 import random
-from curl_cffi.requests import AsyncSession, ProxyError, RequestsError
+from app.providers.curl_compat import AsyncSession, ProxyError, RequestsError
 from app.services.session_service import SessionService
 from app.services.login_service import LoginService
 from app.core.exceptions import ScraperError
