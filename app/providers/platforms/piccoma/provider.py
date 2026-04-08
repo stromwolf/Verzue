@@ -128,7 +128,7 @@ class PiccomaProvider(BaseProvider):
             raise ScraperError("Piccoma geo-blocked: This service can only be accessed from Japan. Use a Japan VPN or proxy.")
         
         await self.session_service.record_session_success("piccoma")
-        soup = BeautifulSoup(res.text, 'lxml' if 'lxml' in str(BeautifulSoup.DEFAULT_BUILDER) else 'html.parser')
+        soup = BeautifulSoup(res.text, 'html.parser')
         
         title_elem = soup.select_one('h1.PCM-productTitle')
         title = title_elem.text.strip() if title_elem else f"Piccoma_{series_id}"
@@ -162,7 +162,7 @@ class PiccomaProvider(BaseProvider):
 
         # 4. Chapter Extraction
         all_chapters = []
-        ep_soup = soup if (fast or not ep_res) else BeautifulSoup(ep_res.text, 'lxml' if 'lxml' in str(BeautifulSoup.DEFAULT_BUILDER) else 'html.parser')
+        ep_soup = soup if (fast or not ep_res) else BeautifulSoup(ep_res.text, 'html.parser')
 
         # Heuristic A: NEXT_DATA
         next_data_script = ep_soup.select_one('script#__NEXT_DATA__')
