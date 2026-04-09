@@ -41,7 +41,19 @@ class PiccomaPurchase:
             is_guest = bool(soup.select_one('.PCM-headerLogin, a[href*="/acc/signin"]'))
             if is_guest:
                 logger.error("🛑 [Piccoma Identity] Browser shows LOGIN button. Session is guest or expired!")
-                await self.provider.session_service.record_session_failure("piccoma")
+                try:
+                    if hasattr(self.provider.session_service, "record_session_failure"):
+                        await self.provider.session_service.record_session_failure("piccoma")
+                    elif hasattr(self.provider.session_service, "report_session_failure"):
+                        active = await self.provider.session_service.get_active_session("piccoma")
+                        if active and active.get("account_id"):
+                            await self.provider.session_service.report_session_failure(
+                                "piccoma",
+                                active.get("account_id"),
+                                reason="Purchase flow saw login page"
+                            )
+                except Exception as e:
+                    logger.warning(f"[Piccoma][DEV-TRACE] Failed to report purchase-session failure: {e}")
                 return False
 
             # --- CSRF EXTRACTION (Multi-Source Search) ---
