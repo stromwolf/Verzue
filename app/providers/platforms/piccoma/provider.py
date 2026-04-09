@@ -219,12 +219,54 @@ class PiccomaProvider(BaseProvider):
         auth_session = await self._get_authenticated_session(domain)
         
         try:
+            # DEV-TRACE: Log non-sensitive cookie identity for viewer request diagnostics.
+            cookie_audit = []
+            for c in getattr(auth_session.cookies, "jar", []):
+                cookie_audit.append({
+                    "name": getattr(c, "name", None),
+                    "domain": getattr(c, "domain", None),
+                    "path": getattr(c, "path", None),
+                    "expires": getattr(c, "expires", None),
+                    "has_value": bool(getattr(c, "value", None))
+                })
+            logger.debug(
+                f"[Piccoma][DEV-TRACE] Viewer cookie audit for {chapter_id}: "
+                f"{len(cookie_audit)} cookies loaded."
+            )
             res = await auth_session.get(task.url, timeout=30)
         except (ProxyError, RequestsError) as e:
             logger.error(f"[Piccoma] Proxy Error during chapter access: {e}")
             raise ScraperError("Proxy Access Denied (403). Ensure VPS IP is whitelisted.", code="PX_403")
         except Exception as e:
             raise ScraperError(f"Chapter access failed: {e}")
+
+        final_url = str(getattr(res, "url", task.url))
+        redirect_chain = []
+        for h in getattr(res, "history", []) or []:
+            redirect_chain.append({
+                "status": getattr(h, "status_code", None),
+                "url": str(getattr(h, "url", "")),
+                "location": h.headers.get("Location") if hasattr(h, "headers") else None
+            })
+
+        signin_markers = (
+            "/web/acc/signin" in final_url
+            or "ログイン｜ピッコマ" in res.text
+            or "PCM-loginMenu" in res.text
+            or "/acc/signin?next_url=" in res.text
+            or "PCM-headerLogin" in res.text
+        )
+        has_next_data = 'id="__NEXT_DATA__"' in res.text or "script#__NEXT_DATA__" in res.text
+        has_purchase_form = "js_purchaseForm" in res.text
+        has_charging = "チャージ中" in res.text
+        has_points_read = "ポイントで読む" in res.text
+
+        logger.info(
+            f"[Piccoma][DEV-TRACE] Viewer fetch outcome for {chapter_id}: "
+            f"status={res.status_code}, final_url={final_url}, redirects={len(redirect_chain)}, "
+            f"len={len(res.text)}, signin={signin_markers}, next_data={has_next_data}, "
+            f"purchase_form={has_purchase_form}, charging={has_charging}, points_read={has_points_read}"
+        )
 
         is_locked_ui = res.status_code == 200 and ("js_purchaseForm" in res.text or "チャージ中" in res.text or "ポイントで読む" in res.text)
         
@@ -246,7 +288,24 @@ class PiccomaProvider(BaseProvider):
         pdata = self._extract_pdata_heuristic(res.text)
         if not pdata:
             logger.error(f"[Piccoma] Manifest extraction FAILED for {chapter_id}.")
-            self._dump_diagnostic_data(f"manifest_fail_{chapter_id}", res.text)
+            self._dump_diagnostic_data(
+                f"manifest_fail_{chapter_id}",
+                res.text,
+                metadata={
+                    "request_url": task.url,
+                    "final_url": final_url,
+                    "status_code": res.status_code,
+                    "response_length": len(res.text),
+                    "content_type": res.headers.get("Content-Type"),
+                    "signin_markers": signin_markers,
+                    "has_next_data": has_next_data,
+                    "has_purchase_form": has_purchase_form,
+                    "has_charging_marker": has_charging,
+                    "has_points_read_marker": has_points_read,
+                    "redirect_chain": redirect_chain,
+                    "cookie_audit": cookie_audit
+                }
+            )
             raise ScraperError(f"Could not extract chapter manifest for {chapter_id}.")
 
         images = pdata.get('img', pdata.get('contents', []))
