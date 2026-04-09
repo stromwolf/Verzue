@@ -103,7 +103,7 @@ class PiccomaLoginHandler:
             await asyncio.sleep(1.0)
             await session.get(f"{base_url}/web", headers=headers)
             await asyncio.sleep(0.5)
-            await session.get(f"{base_url}/web/product/favorite", headers=headers)
+            favorite_res = await session.get(f"{base_url}/web/product/favorite", headers=headers)
             await asyncio.sleep(0.5)
 
             is_success = False
@@ -155,13 +155,27 @@ class PiccomaLoginHandler:
                                 p_val = p_match.group(1)
                                 has_pksid = True
                                 cookies.append({"name": "pksid", "value": p_val, "domain": ".piccoma.com", "path": "/"})
-                
-                if cookies and has_pksid:
+
+                favorite_final_url = str(getattr(favorite_res, "url", ""))
+                favorite_text = favorite_res.text or ""
+                favorite_signin = (
+                    "/web/acc/signin" in favorite_final_url
+                    or "ログイン｜ピッコマ" in favorite_text
+                    or "PCM-loginMenu" in favorite_text
+                    or "/acc/signin?next_url=" in favorite_text
+                    or "PCM-headerLogin" in favorite_text
+                )
+
+                if cookies and has_pksid and (favorite_res.status_code == 200) and not favorite_signin:
                     await self.service.session_service.update_session_cookies("piccoma", account_id, cookies)
                     logger.info(f"✅ Automated login successful for Piccoma ({email}) with pksid.")
                     return True
                 else:
-                    logger.error(f"🛑 [Piccoma] Login returned success but pksid is MISSING. (Cookies: {len(cookies)})")
+                    logger.error(
+                        f"🛑 [Piccoma] Login considered invalid after handshake: "
+                        f"cookies={len(cookies)}, has_pksid={has_pksid}, "
+                        f"favorite_status={favorite_res.status_code}, favorite_signin={favorite_signin}"
+                    )
                     return False
             else:
                 reason = "Rerendered login page" if rerendered else f"HTTP {post_res.status_code}"
