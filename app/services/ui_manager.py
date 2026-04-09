@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from .redis_manager import RedisManager
 
 logger = logging.getLogger("UIManager")
@@ -15,6 +16,7 @@ class UIManager:
             cls._instance.is_running = False
             cls._instance.loop = None
             cls._instance.locks = {} # Per-request locks to serialize edits
+            cls._instance._queue_log_stats = {} # req_id -> {"count": int, "last_ts": float}
         return cls._instance
 
     def request_update(self, req_id: str, view: any):
@@ -23,7 +25,20 @@ class UIManager:
         Can be called from blocking threads (BatchController) safely.
         """
         if self.loop and self.loop.is_running():
-            logger.debug(f"Queuing UI update for R-ID: {req_id}")
+            now = time.time()
+            stat = self._queue_log_stats.get(req_id, {"count": 0, "last_ts": 0.0})
+            stat["count"] += 1
+
+            # Log first events, then sample every 10 events, or once every 5 seconds.
+            should_log = (
+                stat["count"] <= 3
+                or stat["count"] % 10 == 0
+                or (now - stat["last_ts"]) >= 5.0
+            )
+            if should_log:
+                logger.debug(f"Queuing UI update for R-ID: {req_id} (count={stat['count']})")
+                stat["last_ts"] = now
+            self._queue_log_stats[req_id] = stat
             self.loop.call_soon_threadsafe(self.queue.put_nowait, (req_id, view))
         else:
             logger.warning(f"UIManager loop not ready for R-ID: {req_id}")
