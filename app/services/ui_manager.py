@@ -17,6 +17,7 @@ class UIManager:
             cls._instance.loop = None
             cls._instance.locks = {} # Per-request locks to serialize edits
             cls._instance._queue_log_stats = {} # req_id -> {"count": int, "last_ts": float}
+            cls._instance._edit_inflight = set() # req_ids currently being edited
         return cls._instance
 
     def request_update(self, req_id: str, view: any):
@@ -103,8 +104,14 @@ class UIManager:
 
     async def _serialized_edit(self, req_id, view):
         """Ensures only one edit is in flight per request."""
+        if req_id in self._edit_inflight:
+            return
         async with self.locks[req_id]:
-            await self._safe_edit(view, req_id)
+            self._edit_inflight.add(req_id)
+            try:
+                await self._safe_edit(view, req_id)
+            finally:
+                self._edit_inflight.discard(req_id)
 
     async def _safe_edit(self, view, req_id: str):
         try:
