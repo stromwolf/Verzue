@@ -218,6 +218,40 @@ class PiccomaProvider(BaseProvider):
         base_url, region, domain = self._get_context_from_url(task.url)
         auth_session = await self._get_authenticated_session(domain)
         
+        async def _fetch_viewer_with_trace(session):
+            _res = await session.get(task.url, timeout=30)
+            _final_url = str(getattr(_res, "url", task.url))
+            _redirect_chain = []
+            for _h in getattr(_res, "history", []) or []:
+                _redirect_chain.append({
+                    "status": getattr(_h, "status_code", None),
+                    "url": str(getattr(_h, "url", "")),
+                    "location": _h.headers.get("Location") if hasattr(_h, "headers") else None
+                })
+
+            _signin_markers = (
+                "/web/acc/signin" in _final_url
+                or "ログイン｜ピッコマ" in _res.text
+                or "PCM-loginMenu" in _res.text
+                or "/acc/signin?next_url=" in _res.text
+                or "PCM-headerLogin" in _res.text
+            )
+            _has_next_data = 'id="__NEXT_DATA__"' in _res.text or "script#__NEXT_DATA__" in _res.text
+            _has_purchase_form = "js_purchaseForm" in _res.text
+            _has_charging = "チャージ中" in _res.text
+            _has_points_read = "ポイントで読む" in _res.text
+
+            return (
+                _res,
+                _final_url,
+                _redirect_chain,
+                _signin_markers,
+                _has_next_data,
+                _has_purchase_form,
+                _has_charging,
+                _has_points_read,
+            )
+
         try:
             # DEV-TRACE: Log non-sensitive cookie identity for viewer request diagnostics.
             cookie_audit = []
@@ -233,33 +267,21 @@ class PiccomaProvider(BaseProvider):
                 f"[Piccoma][DEV-TRACE] Viewer cookie audit for {chapter_id}: "
                 f"{len(cookie_audit)} cookies loaded."
             )
-            res = await auth_session.get(task.url, timeout=30)
+            (
+                res,
+                final_url,
+                redirect_chain,
+                signin_markers,
+                has_next_data,
+                has_purchase_form,
+                has_charging,
+                has_points_read,
+            ) = await _fetch_viewer_with_trace(auth_session)
         except (ProxyError, RequestsError) as e:
             logger.error(f"[Piccoma] Proxy Error during chapter access: {e}")
             raise ScraperError("Proxy Access Denied (403). Ensure VPS IP is whitelisted.", code="PX_403")
         except Exception as e:
             raise ScraperError(f"Chapter access failed: {e}")
-
-        final_url = str(getattr(res, "url", task.url))
-        redirect_chain = []
-        for h in getattr(res, "history", []) or []:
-            redirect_chain.append({
-                "status": getattr(h, "status_code", None),
-                "url": str(getattr(h, "url", "")),
-                "location": h.headers.get("Location") if hasattr(h, "headers") else None
-            })
-
-        signin_markers = (
-            "/web/acc/signin" in final_url
-            or "ログイン｜ピッコマ" in res.text
-            or "PCM-loginMenu" in res.text
-            or "/acc/signin?next_url=" in res.text
-            or "PCM-headerLogin" in res.text
-        )
-        has_next_data = 'id="__NEXT_DATA__"' in res.text or "script#__NEXT_DATA__" in res.text
-        has_purchase_form = "js_purchaseForm" in res.text
-        has_charging = "チャージ中" in res.text
-        has_points_read = "ポイントで読む" in res.text
 
         logger.info(
             f"[Piccoma][DEV-TRACE] Viewer fetch outcome for {chapter_id}: "
@@ -267,6 +289,35 @@ class PiccomaProvider(BaseProvider):
             f"len={len(res.text)}, signin={signin_markers}, next_data={has_next_data}, "
             f"purchase_form={has_purchase_form}, charging={has_charging}, points_read={has_points_read}"
         )
+
+        if signin_markers:
+            logger.warning(
+                f"[Piccoma] Viewer returned SIGNIN page for chapter {chapter_id}. "
+                "Marking session unhealthy and retrying once with a fresh authenticated session."
+            )
+            await self.session_service.record_session_failure("piccoma")
+            auth_session = await self._get_authenticated_session(domain)
+            (
+                res,
+                final_url,
+                redirect_chain,
+                signin_markers,
+                has_next_data,
+                has_purchase_form,
+                has_charging,
+                has_points_read,
+            ) = await _fetch_viewer_with_trace(auth_session)
+            logger.info(
+                f"[Piccoma][DEV-TRACE] Viewer retry outcome for {chapter_id}: "
+                f"status={res.status_code}, final_url={final_url}, redirects={len(redirect_chain)}, "
+                f"len={len(res.text)}, signin={signin_markers}, next_data={has_next_data}, "
+                f"purchase_form={has_purchase_form}, charging={has_charging}, points_read={has_points_read}"
+            )
+            if signin_markers:
+                raise ScraperError(
+                    f"Piccoma auth failure: viewer returned signin page for chapter {chapter_id}. "
+                    "Session is invalid or not accepted for viewer access."
+                )
 
         is_locked_ui = res.status_code == 200 and ("js_purchaseForm" in res.text or "チャージ中" in res.text or "ポイントで読む" in res.text)
         
