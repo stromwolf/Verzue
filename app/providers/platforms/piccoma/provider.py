@@ -309,6 +309,11 @@ class PiccomaProvider(BaseProvider):
             except Exception as e:
                 logger.warning(f"[Piccoma][DEV-TRACE] Failed to record session failure telemetry: {e}")
             auth_session = await self._get_authenticated_session(domain)
+            try:
+                logger.info(f"[Piccoma] Running inline identity ritual before viewer retry for chapter {chapter_id}.")
+                await self.run_ritual(auth_session, base_url)
+            except Exception as e:
+                logger.warning(f"[Piccoma][DEV-TRACE] Inline identity ritual failed before retry: {e}")
             (
                 res,
                 final_url,
