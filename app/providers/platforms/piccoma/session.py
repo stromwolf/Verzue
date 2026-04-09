@@ -1,5 +1,4 @@
 import logging
-import random
 from app.providers.curl_compat import AsyncSession, ProxyError, RequestsError
 from app.services.session_service import SessionService
 from app.services.login_service import LoginService
@@ -27,13 +26,9 @@ class PiccomaSession:
         
         session_obj = await session_service.get_active_session("piccoma")
         
-        profiles = {
-            "chrome120": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "chrome116": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
-            "safari15_5": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15"
-        }
-        impersonation = random.choice(list(profiles.keys()))
-        ua = profiles[impersonation]
+        # Keep a stable fingerprint for Piccoma to reduce auth/session flapping
+        impersonation = "chrome120"
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         
         async_session = AsyncSession(impersonate=impersonation, proxies={"http": Settings.get_proxy(), "https": Settings.get_proxy()})
         
