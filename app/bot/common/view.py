@@ -628,6 +628,7 @@ class UniversalDashboard:
             logger.error(f"[{self.req_id}] ❌ Background full scan failed: {e}")
 
     async def monitor_tasks(self):
+        last_state_snapshot = None
         while self.phases["download"] != "done":
             if self.active_tasks:
 
@@ -640,8 +641,26 @@ class UniversalDashboard:
                 if self.phases["analyze"] == "done" and self.phases["purchase"] == "done":
                     self.phases["download"] = "done"
                     self.last_interaction_time = time.time()
-            
-            self.trigger_refresh()
+
+            # Only request UI refresh when state changes, to avoid noisy idle queue loops.
+            state_snapshot = (
+                self.phases.get("analyze"),
+                self.phases.get("purchase"),
+                self.phases.get("download"),
+                tuple(
+                    (
+                        t.chapter_str,
+                        t.status.value,
+                        bool(getattr(t, "share_link", None))
+                    )
+                    for t in self.active_tasks
+                ),
+                getattr(self, "sub_status", "")
+            )
+            if state_snapshot != last_state_snapshot:
+                self.trigger_refresh()
+                last_state_snapshot = state_snapshot
+
             if self.phases["download"] == "done":
                 # 🟢 SEND NOTIFICATION: Always ping when done
                 if self.interaction:
