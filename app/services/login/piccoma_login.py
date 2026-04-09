@@ -103,7 +103,9 @@ class PiccomaLoginHandler:
             await asyncio.sleep(1.0)
             await session.get(f"{base_url}/web", headers=headers)
             await asyncio.sleep(0.5)
-            favorite_res = await session.get(f"{base_url}/web/product/favorite", headers=headers)
+            # /web/product/favorite may return 404 despite valid login on some accounts.
+            # Probe a stable authenticated mypage route instead.
+            favorite_res = await session.get(f"{base_url}/web/mypage/bookshelf", headers=headers)
             await asyncio.sleep(0.5)
 
             is_success = False
