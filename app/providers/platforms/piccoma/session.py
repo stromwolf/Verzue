@@ -109,12 +109,26 @@ class PiccomaSession:
             return async_session
 
     async def is_session_valid(self, session: AsyncSession) -> bool:
-        """Stateless validation: Check if redirected on the current session's base."""
+        """Stateless validation with guest/signin detection."""
         try:
-            res = await session.get("https://piccoma.com/web/product/favorite", timeout=15, allow_redirects=False)
-            valid = res.status_code == 200
+            res = await session.get("https://piccoma.com/web/product/favorite", timeout=15)
+            final_url = str(getattr(res, "url", ""))
+            text = res.text or ""
+            signin = (
+                "/web/acc/signin" in final_url
+                or "ログイン｜ピッコマ" in text
+                or "PCM-loginMenu" in text
+                or "/acc/signin?next_url=" in text
+                or "PCM-headerLogin" in text
+            )
+            valid = (res.status_code == 200) and not signin
             if valid:
                 await self.provider.session_service.record_session_success("piccoma")
+            else:
+                logger.warning(
+                    f"[Piccoma Identity] Session validation failed: "
+                    f"status={res.status_code}, final_url={final_url}, signin={signin}"
+                )
             return valid
         except Exception: 
             return False
