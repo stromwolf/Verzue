@@ -295,7 +295,19 @@ class PiccomaProvider(BaseProvider):
                 f"[Piccoma] Viewer returned SIGNIN page for chapter {chapter_id}. "
                 "Marking session unhealthy and retrying once with a fresh authenticated session."
             )
-            await self.session_service.record_session_failure("piccoma")
+            try:
+                if hasattr(self.session_service, "record_session_failure"):
+                    await self.session_service.record_session_failure("piccoma")
+                elif hasattr(self.session_service, "report_session_failure"):
+                    active = await self.session_service.get_active_session("piccoma")
+                    if active and active.get("account_id"):
+                        await self.session_service.report_session_failure(
+                            "piccoma",
+                            active.get("account_id"),
+                            reason="Viewer returned signin page"
+                        )
+            except Exception as e:
+                logger.warning(f"[Piccoma][DEV-TRACE] Failed to record session failure telemetry: {e}")
             auth_session = await self._get_authenticated_session(domain)
             (
                 res,
