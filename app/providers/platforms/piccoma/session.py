@@ -111,7 +111,9 @@ class PiccomaSession:
     async def is_session_valid(self, session: AsyncSession) -> bool:
         """Stateless validation with guest/signin detection."""
         try:
-            res = await session.get("https://piccoma.com/web/product/favorite", timeout=15)
+            # /web/product/favorite can return 404 on some accounts/routes even when authenticated.
+            # Use a stable mypage route for auth validation.
+            res = await session.get("https://piccoma.com/web/mypage/bookshelf", timeout=15)
             final_url = str(getattr(res, "url", ""))
             text = res.text or ""
             signin = (
