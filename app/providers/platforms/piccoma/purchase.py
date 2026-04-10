@@ -95,6 +95,10 @@ class PiccomaPurchase:
                     data=v2_body,
                 )
                 if r.status_code != 200:
+                    logger.info(
+                        f"[Piccoma] v2/{kind}/use HTTP {r.status_code} for {series_id}/{episode_id} "
+                        f"(body prefix: {r.text[:200]!r})"
+                    )
                     continue
                 vh = self.provider._build_browser_headers(referer=episode_page_url)
                 viewer_res = await self.provider._safe_request(
@@ -103,7 +107,12 @@ class PiccomaPurchase:
                 if self.provider._extract_pdata_heuristic(viewer_res.text):
                     logger.info(f"✅ [Piccoma] v2/{kind}/use unlocked episode {episode_id} (viewer manifest present).")
                     return True
-            except Exception:
+                logger.info(
+                    f"[Piccoma] v2/{kind}/use returned 200 but viewer still has no manifest for {episode_id} "
+                    f"(viewer len={len(viewer_res.text)})"
+                )
+            except Exception as ex:
+                logger.info(f"[Piccoma] v2/{kind}/use attempt failed: {ex}")
                 continue
         return False
 
@@ -130,7 +139,7 @@ class PiccomaPurchase:
             soup = BeautifulSoup(res.text, 'html.parser')
 
             # --- 🟢 IDENTITY AUDIT (avoid false positives: large pages embed "PCM-headerLogin" in JS) ---
-            if self.helpers.piccoma_html_indicates_guest_shell(str(res.url), res.text):
+            if self.provider.helpers.piccoma_html_indicates_guest_shell(str(res.url), res.text):
                 logger.error(
                     "🛑 [Piccoma Identity] Episodes page looks like a logged-out / sign-in shell. "
                     "Session is guest or expired!"
