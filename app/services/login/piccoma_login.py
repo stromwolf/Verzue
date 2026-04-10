@@ -10,6 +10,27 @@ from config.settings import Settings
 
 logger = logging.getLogger("LoginService.Piccoma")
 
+
+def _piccoma_response_denies_auth(res) -> bool:
+    """True if response clearly indicates guest / sign-in required."""
+    u = str(getattr(res, "url", "") or "")
+    t = res.text or ""
+    if "/web/acc/signin" in u or "/acc/signin?" in u:
+        return True
+    if "ログイン｜ピッコマ" in t:
+        return True
+    if "PCM-headerLogin" in t:
+        return True
+    return False
+
+
+def _piccoma_probe_confirms_auth(res) -> bool:
+    """200 OK and no explicit guest/signin markers."""
+    if res.status_code != 200:
+        return False
+    return not _piccoma_response_denies_auth(res)
+
+
 class PiccomaLoginHandler:
     def __init__(self, service):
         self.service = service
@@ -101,11 +122,11 @@ class PiccomaLoginHandler:
             # --- Identity Handshake ---
             logger.info("🎭 [Identity Handshake] Warming up session...")
             await asyncio.sleep(1.0)
-            await session.get(f"{base_url}/web", headers=headers)
+            web_res = await session.get(f"{base_url}/web/", headers=headers)
             await asyncio.sleep(0.5)
-            # /web/product/favorite may return 404 despite valid login on some accounts.
-            # Probe a stable authenticated mypage route instead.
-            favorite_res = await session.get(f"{base_url}/web/mypage/bookshelf", headers=headers)
+            shelf_res = await session.get(f"{base_url}/web/mypage/bookshelf", headers=headers)
+            await asyncio.sleep(0.3)
+            hist_res = await session.get(f"{base_url}/web/mypage/history", headers=headers)
             await asyncio.sleep(0.5)
 
             is_success = False
@@ -158,25 +179,27 @@ class PiccomaLoginHandler:
                                 has_pksid = True
                                 cookies.append({"name": "pksid", "value": p_val, "domain": ".piccoma.com", "path": "/"})
 
-                favorite_final_url = str(getattr(favorite_res, "url", ""))
-                favorite_text = favorite_res.text or ""
-                favorite_signin = (
-                    "/web/acc/signin" in favorite_final_url
-                    or "ログイン｜ピッコマ" in favorite_text
-                    or "PCM-loginMenu" in favorite_text
-                    or "/acc/signin?next_url=" in favorite_text
-                    or "PCM-headerLogin" in favorite_text
+                auth_ok = (
+                    _piccoma_probe_confirms_auth(web_res)
+                    or _piccoma_probe_confirms_auth(shelf_res)
+                    or _piccoma_probe_confirms_auth(hist_res)
+                )
+                # Mypage routes may 404 for some accounts; /web/ 200 + pksid + no guest markers is enough.
+                if not auth_ok and has_pksid and web_res.status_code == 200:
+                    auth_ok = not _piccoma_response_denies_auth(web_res)
+
+                probe_summary = (
+                    f"web={web_res.status_code}, shelf={shelf_res.status_code}, hist={hist_res.status_code}"
                 )
 
-                if cookies and has_pksid and (favorite_res.status_code == 200) and not favorite_signin:
+                if cookies and has_pksid and auth_ok:
                     await self.service.session_service.update_session_cookies("piccoma", account_id, cookies)
-                    logger.info(f"✅ Automated login successful for Piccoma ({email}) with pksid.")
+                    logger.info(f"✅ Automated login successful for Piccoma ({email}) with pksid ({probe_summary}).")
                     return True
                 else:
                     logger.error(
                         f"🛑 [Piccoma] Login considered invalid after handshake: "
-                        f"cookies={len(cookies)}, has_pksid={has_pksid}, "
-                        f"favorite_status={favorite_res.status_code}, favorite_signin={favorite_signin}"
+                        f"cookies={len(cookies)}, has_pksid={has_pksid}, auth_ok={auth_ok}, probes=({probe_summary})"
                     )
                     return False
             else:
