@@ -38,14 +38,14 @@ class PiccomaProvider(BaseProvider):
         self.session_service = SessionService()
         self.login_service = LoginService()
         
-        # S-Grade: Chrome 145 baseline headers (2026 standard)
-        self.default_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+        # S-Grade: Chrome 142 baseline headers (Server Compatibility)
+        self.default_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
         self.default_headers = {
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
             'Cache-Control': 'no-cache',
             'Pragma': 'no-cache',
-            "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="145", "Google Chrome";v="145"',
+            "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="142", "Google Chrome";v="142"',
             "Sec-Ch-Ua-Mobile": "?0",
             "Sec-Ch-Ua-Platform": '"Windows"',
             "Upgrade-Insecure-Requests": "1"

@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+
+<html xml:lang="ja" lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="format-detection" content="telephone=no">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    
+    <link rel="canonical" href="https://piccoma.com/web/acc/signin">
+    
+    <title>ログイン｜ピッコマ</title>
+    <link rel="stylesheet" href="/static/web/css/pcm_web_v57.0.css?1775712806">
+    <link rel="stylesheet" href="/static/web/css/account/pcm_web_account_v11.0.css?1775712806">
+    
+        <!-- YDN_IOS -->
+    <script async src="https://s.yimg.jp/images/listing/tool/cv/ytag.js"></script>
+    <script>
+    window.yjDataLayer = window.yjDataLayer || [];
+    function ytag() { yjDataLayer.push(arguments); }
+    ytag({"type":"ycl_cookie", "config":{"ycl_use_non_cookie_storage":true}});
+    </script>
+    <!-- YDN_IOS -->
+    
+
+    <!-- ▼ フランスピッコマSEO対応 ▼ -->
+    <link rel="alternate" href="https://piccoma.com/web" hreflang="ja-JP" />
+    <link rel="alternate" href="https://piccoma.com/fr" hreflang="fr-FR" />
+    <link rel="alternate" href="https://piccoma.com/web" hrefLang="x-default" />
+    <!-- ▲ フランスピッコマSEO対応 ▲ -->
+</head>
+
+<body class="PCM-acc PCM-loginMenu">
+
+<!-- ▼ sub header[dev/ejs/common/_header_sub.ejs] ▼ -->
+<header class="PCM-headerSub ">
+    <div class="PCM-headerSubInner">
+        <p class="PCM-headerSubInner_btnBack">
+            <a href="#" class="js_historyBack">
+                <img src="/static/web/img/common/arrow_left.png">
+            </a>
+        </p>
+        <h1>
+        
+            <h1><img src="/static/web/img/common/piccoma_logo_v2.0.svg" class="PCM-piccomaSvgLogo"></h1>
+        
+        </h1>
+    </div>
+</header>
+<!-- ▲ sub header[dev/ejs/common/_header_sub.ejs] ▲ -->
+
+<div class="PCM-main" id="js_main">
+    <article class="PCM-contentBody" id="js_contentBody">
+        <header class="PCM-accHeader">
+            <h2>ログイン</h2>
+        </header>
+        
+        <section class="PCM-loginMenuList">
+            <ul>
+                <li class="PCM-login_em">
+                    <p class="PCM-lastLogin_title PCM-prop_lastLogin">前回のログイン</p>
+                    <p class="PCM-emailLoginButton">
+                        <a href="/web/acc/email/signin?next_url=/web/viewer/s/178510/5532867">
+                            <i class="PCM-account_emailIcon"></i>
+                            <span class="PCM-userIcon" id="js_loginUserIcon"></span>
+                            <span class="PCM-login_type" id="js_lastLoginEmail">メールアドレス</span>
+                        </a>
+                    </p>
+                    <div class="PCM-lastLogin_reset PCM-prop_lastLogin">
+                        <a href="#" class="js_deleteLastLoginInfo">前回のログイン情報をリセット</a>
+                    </div>
+                </li>
+                <li class="PCM-login_li">
+                    <p class="PCM-lastLogin_title PCM-prop_lastLogin">前回のログイン</p>
+                    <p class="PCM-lineLoginButton">
+                        <a href="/web/acc/line/signin?next_url=/web/viewer/s/178510/5532867">
+                            <i class="icon-line" aria-hidden="true"></i>
+                            <span class="PCM-login_type">LINE</span>
+                        </a>
+                    </p>
+                    <div class="PCM-lastLogin_reset PCM-prop_lastLogin">
+                        <a href="#" class="js_deleteLastLoginInfo">前回のログイン情報をリセット</a>
+                    </div>
+                </li>
+                <li class="PCM-login_go">
+                    <p class="PCM-lastLogin_title PCM-prop_lastLogin">前回のログイン</p>
+                    <p class="PCM-googleLoginButton">
+                        <a href="/web/acc/google/signin?next_url=/web/viewer/s/178510/5532867">
+                            <i class="icon-google" aria-hidden="true"></i>
+                            <span class="PCM-login_type">Google</span>
+                        </a>
+                    </p>
+                    <div class="PCM-lastLogin_reset PCM-prop_lastLogin">
+                        <a href="#" class="js_deleteLastLoginInfo">前回のログイン情報をリセット</a>
+                    </div>
+                </li>
+                <li class="PCM-login_ap">
+                    <p class="PCM-lastLogin_title PCM-prop_lastLogin">前回のログイン</p>
+                    <p class="PCM-appleLoginButton">
+                        <a href="/web/acc/apple/signin?next_url=/web/viewer/s/178510/5532867">
+                            <i class="icon-appleinc" aria-hidden="true"></i>
+                            <span class="PCM-login_type">Apple</span>
+                        </a>
+                    </p>
+                    <div class="PCM-lastLogin_reset PCM-prop_lastLogin">
+                        <a href="#" class="js_deleteLastLoginInfo">前回のログイン情報をリセット</a>
+                    </div>
+                </li>
+                <li class="PCM-login_fb">
+                    <p class="PCM-lastLogin_title PCM-prop_lastLogin">前回のログイン</p>
+                    <p class="PCM-facebookLoginButton">
+                        <a href="/web/acc/facebook/signin?next_url=/web/viewer/s/178510/5532867">
+                            <i class="icon-facebook-white" aria-hidden="true"></i>
+                            <span class="PCM-login_type">Facebook</span>
+                        </a>
+                    </p>
+                    <div class="PCM-lastLogin_reset PCM-prop_lastLogin">
+                        <a href="#" class="js_deleteLastLoginInfo">前回のログイン情報をリセット</a>
+                    </div>
+                </li>
+                <li class="PCM-login_x">
+                    <p class="PCM-lastLogin_title PCM-prop_lastLogin">前回のログイン</p>
+                    <p class="PCM-xLoginButton">
+                        <a href="/web/acc/twitter/signin?next_url=/web/viewer/s/178510/5532867">
+                            <i class="icon-x-white" aria-hidden="true"></i>
+                            <span class="PCM-login_type">X</span>
+                        </a>
+                    </p>
+                    <div class="PCM-lastLogin_reset PCM-prop_lastLogin">
+                        <a href="#" class="js_deleteLastLoginInfo">前回のログイン情報をリセット</a>
+                    </div>
+                </li>
+            </ul>
+        </section>
+        <section class="PCM-loginMenu_subSec">
+            <div class="PCM-loginMenu_txtWithLine"><span>アカウントをお持ちでない方は</span></div>
+            <!--<p class="PCM-loginMenu_desc">アプリをダウンロードの上アカウント登録を行ってください</p>-->
+            <p class="PCM-loginMenu_subBtn">
+                <a href="/web/acc/register"><span>かんたん無料登録</span></a>
+            </p>
+        </section>
+        <section class="js_is_next_kuji">
+            <div class="PCM-note">
+                <ul class="PCM-account_descriptionList">
+                    <li>ピッコマくじの利用には、ピッコマアカウントでログインが必要です。</li>
+                    <li>アカウントをお持ちではない方は「かんたん無料登録」をクリックすると、アプリをお持ちの場合はアプリが起動して登録に進みます。アプリをお持ちでない場合は、そのままウェブでご登録いただけます。</li>
+                </ul>
+            </div>
+        </section>
+    </article>
+    
+<!-- ▼ sub footer[dev/common/ejs/_footer_sub.ejs] ▼ -->
+<footer class="PCM-footerSub">
+    <div class="PCM-footerCopyRight">
+        <address>
+            <a href="http://www.kakaopiccoma.com" target="_blank"><i class="icon-copyright" aria-hidden="true"></i><small>Kakao piccoma Corp.</small></a>
+        </address>
+    </div>
+</footer>
+<!-- ▲ sub footer[dev/common/ejs/_footer_sub.ejs] ▲ -->
+</div>
+
+
+<!-- ▼ 共通JS[dev/ejs/common/_js.ejs] ▼ -->
+<script>
+    var _init_ = {
+        'login': false,
+        'os': 'PC',
+        'storeURL': {
+            'I': 'https://itunes.apple.com/jp/app/apple-store/id1091496983?pt=1522890&ct=web_home',
+            'A': 'https://play.google.com/store/apps/details?id=jp.kakao.piccoma&referrer=utm_source%3Dpiccoma_W%26utm_medium%3Dhome%26utm_campaign%3Dweb_home'
+        },
+        'popup_share': {
+            'line': {
+                'url': 'http://line.me/R/msg/text/?%0ahttps://piccoma.com/web/acc/signin'
+            },
+            'facebook': {
+                'url': 'http://www.facebook.com/share.php?u=https://piccoma.com/web/acc/signin'
+            },
+            'twitter': {
+                'url': 'http://twitter.com/share?text=%23ピッコマ&url=https://piccoma.com/web/acc/signin'
+            },
+            'copy':{
+                'url': 'null'
+            }
+        },
+
+
+    
+        'NewUserPaybackBonus' : false,
+    
+    
+
+
+    }
+</script>
+<script src="/static/web/js/pcm_web_v30.0.js?1775712806"></script>
+<!-- ▲ 共通JS[dev/ejs/common/_js.ejs] ▲ -->
+
+<script src="/static/web/js/account/pcm_web_account_v13.0.js?1775712806"></script>
+
+<!-- ▼ Google Tag Manager[dev/ejs/common/_google_tm.ejs] ▼ -->
+<noscript><iframe src="//www.googletagmanager.com/ns.html?id=GTM-PTX25Z"
+    height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+        new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+        j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+    '//www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+    })(window,document,'script','dataLayer','GTM-PTX25Z');</script>
+<!-- ▲ Google Tag Manager[dev/ejs/common/_google_tm.ejs] ▲ -->
+
+</body>
+</html>
