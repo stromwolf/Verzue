@@ -96,7 +96,10 @@ class PiccomaPurchase:
                 )
                 if r.status_code != 200:
                     continue
-                viewer_res = await self.provider._safe_request(auth_session, "GET", viewer_url)
+                vh = self.provider._build_browser_headers(referer=episode_page_url)
+                viewer_res = await self.provider._safe_request(
+                    auth_session, "GET", viewer_url, headers=vh
+                )
                 if self.provider._extract_pdata_heuristic(viewer_res.text):
                     logger.info(f"✅ [Piccoma] v2/{kind}/use unlocked episode {episode_id} (viewer manifest present).")
                     return True
@@ -125,11 +128,13 @@ class PiccomaPurchase:
             episode_page_url = f"{base_url}/web/product/{series_id}/episodes?etype=E"
             res = await self.provider._safe_request(auth_session, "GET", episode_page_url)
             soup = BeautifulSoup(res.text, 'html.parser')
-            
-            # --- 🟢 IDENTITY AUDIT ---
-            is_guest = bool(soup.select_one('.PCM-headerLogin, a[href*="/acc/signin"]'))
-            if is_guest:
-                logger.error("🛑 [Piccoma Identity] Browser shows LOGIN button. Session is guest or expired!")
+
+            # --- 🟢 IDENTITY AUDIT (avoid false positives: large pages embed "PCM-headerLogin" in JS) ---
+            if self.helpers.piccoma_html_indicates_guest_shell(str(res.url), res.text):
+                logger.error(
+                    "🛑 [Piccoma Identity] Episodes page looks like a logged-out / sign-in shell. "
+                    "Session is guest or expired!"
+                )
                 try:
                     if hasattr(self.provider.session_service, "record_session_failure"):
                         await self.provider.session_service.record_session_failure("piccoma")

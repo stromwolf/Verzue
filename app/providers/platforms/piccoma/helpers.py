@@ -31,6 +31,39 @@ class PiccomaHelpers:
             raise ScraperError("Piccoma France (.fr) is not supported at this time. Please use a Piccoma Japan (.com) link.")
         return "https://piccoma.com", "jp", ".piccoma.com"
 
+    def session_has_pksid(self, auth_session) -> bool:
+        """True when the jar has a non-empty pksid session cookie."""
+        try:
+            jar = getattr(auth_session, "cookies", None)
+            if jar is not None and hasattr(jar, "get"):
+                if jar.get("pksid"):
+                    return True
+            for c in getattr(jar, "jar", []) or []:
+                if getattr(c, "name", None) == "pksid" and getattr(c, "value", None):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def piccoma_html_indicates_guest_shell(self, final_url: str, html: str) -> bool:
+        """
+        High-confidence logged-out / sign-in HTML. Do not use bare 'PCM-headerLogin' on large pages:
+        Smartoon bundles embed that string and cause false 'guest' detections.
+        """
+        u = final_url or ""
+        if "/web/acc/signin" in u or "/acc/email/signin" in u:
+            return True
+        t = html or ""
+        if "ログイン｜ピッコマ" in t:
+            return True
+        if "PCM-loginMenu" in t:
+            return True
+        if "/acc/signin?next_url=" in t:
+            return True
+        if len(t) < 70000 and "PCM-headerLogin" in t:
+            return True
+        return False
+
     def viewer_redirected_to_product_page(self, viewer_url: str, response_final_url: str) -> bool:
         """True when a viewer URL was requested but the session landed on a series product page (paywall / not unlocked)."""
         if not viewer_url or not re.search(r"/web/viewer/(?:s/)?\d+/\d+", viewer_url):

@@ -223,8 +223,11 @@ class PiccomaProvider(BaseProvider):
         base_url, region, domain = self._get_context_from_url(task.url)
         auth_session = await self._get_authenticated_session(domain)
         
+        episodes_referer = f"{base_url}/web/product/{series_id}/episodes?etype=E"
+        viewer_nav_headers = self._build_browser_headers(referer=episodes_referer)
+
         async def _fetch_viewer_with_trace(session):
-            _res = await session.get(task.url, timeout=30)
+            _res = await session.get(task.url, timeout=30, headers=viewer_nav_headers)
             _final_url = str(getattr(_res, "url", task.url))
             _redirect_chain = []
             for _h in getattr(_res, "history", []) or []:
@@ -234,13 +237,7 @@ class PiccomaProvider(BaseProvider):
                     "location": _h.headers.get("Location") if hasattr(_h, "headers") else None
                 })
 
-            _signin_markers = (
-                "/web/acc/signin" in _final_url
-                or "ログイン｜ピッコマ" in _res.text
-                or "PCM-loginMenu" in _res.text
-                or "/acc/signin?next_url=" in _res.text
-                or "PCM-headerLogin" in _res.text
-            )
+            _signin_markers = self.helpers.piccoma_html_indicates_guest_shell(_final_url, _res.text)
             _has_next_data = 'id="__NEXT_DATA__"' in _res.text or "script#__NEXT_DATA__" in _res.text
             _has_purchase_form = "js_purchaseForm" in _res.text
             _has_charging = "チャージ中" in _res.text
@@ -353,7 +350,7 @@ class PiccomaProvider(BaseProvider):
             logger.info(f"[Piccoma] Chapter {chapter_id} {reason}, attempting fast purchase/unlock.")
             if await self.fast_purchase(task):
                 auth_session = await self._get_authenticated_session(domain)
-                res = await auth_session.get(task.url, timeout=30)
+                res = await auth_session.get(task.url, timeout=30, headers=viewer_nav_headers)
                 final_url = str(getattr(res, "url", task.url))
             else:
                 logger.error(f"  ❌ [Piccoma] Fast purchase failed for {chapter_id}")

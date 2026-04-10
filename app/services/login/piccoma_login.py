@@ -15,11 +15,16 @@ def _piccoma_response_denies_auth(res) -> bool:
     """True if response clearly indicates guest / sign-in required."""
     u = str(getattr(res, "url", "") or "")
     t = res.text or ""
-    if "/web/acc/signin" in u or "/acc/signin?" in u:
+    if "/web/acc/signin" in u or "/acc/email/signin" in u or "/acc/signin?" in u:
         return True
     if "ログイン｜ピッコマ" in t:
         return True
-    if "PCM-headerLogin" in t:
+    if "PCM-loginMenu" in t:
+        return True
+    if "/acc/signin?next_url=" in t:
+        return True
+    # Large episode/viewer HTML includes this class name inside JS — only treat as login shell when small
+    if len(t) < 70000 and "PCM-headerLogin" in t:
         return True
     return False
 

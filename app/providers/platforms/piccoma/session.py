@@ -119,9 +119,13 @@ class PiccomaSession:
         def denies_auth(res) -> bool:
             u = str(getattr(res, "url", "") or "")
             t = res.text or ""
-            if "/web/acc/signin" in u or "/acc/signin?" in u:
+            if "/web/acc/signin" in u or "/acc/email/signin" in u or "/acc/signin?" in u:
                 return True
-            if "ログイン｜ピッコマ" in t or "PCM-headerLogin" in t:
+            if "ログイン｜ピッコマ" in t:
+                return True
+            if "PCM-loginMenu" in t:
+                return True
+            if len(t) < 70000 and "PCM-headerLogin" in t:
                 return True
             return False
 

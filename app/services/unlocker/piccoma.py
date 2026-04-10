@@ -1,21 +1,23 @@
+import re
 from .base import BaseUnlocker
 
 class PiccomaUnlocker(BaseUnlocker):
     async def _is_viewer_accessible(self, task) -> bool:
         """Checks whether chapter viewer is already readable without purchase API."""
         try:
-            _, _, domain = self.provider._get_context_from_url(task.url)
+            base_url, _, domain = self.provider._get_context_from_url(task.url)
             auth_session = await self.provider._get_authenticated_session(domain)
-            res = await auth_session.get(task.url, timeout=30)
+            m = re.search(r"/web/viewer/(?:s/)?(\d+)/(\d+)", task.url)
+            ref = (
+                f"{base_url}/web/product/{m.group(1)}/episodes?etype=E"
+                if m
+                else f"{base_url}/web/"
+            )
+            vh = self.provider._build_browser_headers(referer=ref)
+            res = await auth_session.get(task.url, timeout=30, headers=vh)
             final_url = str(getattr(res, "url", task.url))
 
-            signin = (
-                "/web/acc/signin" in final_url
-                or "ログイン｜ピッコマ" in res.text
-                or "PCM-loginMenu" in res.text
-                or "/acc/signin?next_url=" in res.text
-            )
-            if signin:
+            if self.provider.helpers.piccoma_html_indicates_guest_shell(final_url, res.text):
                 return False
 
             if self.provider.helpers.viewer_redirected_to_product_page(task.url, final_url):
@@ -54,7 +56,7 @@ class PiccomaUnlocker(BaseUnlocker):
                 raise Exception("Piccoma wait-free unlock failed via API (no valid endpoint response).")
             if wf is False:
                 raise Exception(
-                    "Piccoma coin unlock failed via API (known paywall chapter; server did not accept legacy purchase URLs)."
+                    "Piccoma unlock failed (session/CSRF or v2/coin|point API did not unlock the chapter)."
                 )
             raise Exception("Piccoma unlock failed via API.")
                 
