@@ -1,6 +1,7 @@
 import re
 import json
 import logging
+import hashlib
 import asyncio
 import urllib.parse
 from bs4 import BeautifulSoup
@@ -150,11 +151,8 @@ class PiccomaPurchase:
 
     def _calculate_security_hash(self, episode_id: str) -> str:
         """
-        S-Grade Security Hash (Placeholder).
-        NOTE: The original definition of this method was not found in the monolithic provider.
-        This is a critical TODO for the Piccoma V3.0 release.
+        X-Security-Hash / X-Hash-Code for purchase and wait-free API calls.
+        See docs/piccoma_wait_free_unlock.md (sha256(episode_id + salt), hex digest).
         """
-        # TODO: Implement the actual hashing logic once original source is recovered.
-        # This currently acts as a return-empty hook to maintain call safety.
-        logger.warning(f"⚠️ [Piccoma Security] _calculate_security_hash called for {episode_id} but implementation is missing!")
-        return ""
+        seed = f"{episode_id}fh_SpJ#a4LuNa6t8"
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()
