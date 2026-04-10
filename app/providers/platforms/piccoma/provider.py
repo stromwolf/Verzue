@@ -336,14 +336,20 @@ class PiccomaProvider(BaseProvider):
                     "Session is invalid or not accepted for viewer access."
                 )
 
-        is_locked_ui = res.status_code == 200 and ("js_purchaseForm" in res.text or "チャージ中" in res.text or "ポイントで読む" in res.text)
-        
+        is_locked_ui = res.status_code == 200 and (
+            "js_purchaseForm" in res.text
+            or "チャージ中" in res.text
+            or "ポイントで読む" in res.text
+            or self.helpers.viewer_redirected_to_product_page(task.url, final_url)
+        )
+
         if res.status_code != 200 or is_locked_ui:
             reason = f"HTTP {res.status_code}" if res.status_code != 200 else "Locked UI detected"
             logger.info(f"[Piccoma] Chapter {chapter_id} {reason}, attempting fast purchase/unlock.")
             if await self.fast_purchase(task):
                 auth_session = await self._get_authenticated_session(domain)
                 res = await auth_session.get(task.url, timeout=30)
+                final_url = str(getattr(res, "url", task.url))
             else:
                 logger.error(f"  ❌ [Piccoma] Fast purchase failed for {chapter_id}")
              
@@ -355,6 +361,11 @@ class PiccomaProvider(BaseProvider):
         # Manifest discovery
         pdata = self._extract_pdata_heuristic(res.text)
         if not pdata:
+            if self.helpers.viewer_redirected_to_product_page(task.url, final_url):
+                raise ScraperError(
+                    f"Piccoma: chapter {chapter_id} is not unlocked; viewer redirected to the series product page "
+                    f"({final_url}). Coin/wait-free API unlock failed or this episode is not available for this account."
+                )
             logger.error(f"[Piccoma] Manifest extraction FAILED for {chapter_id}.")
             self._dump_diagnostic_data(
                 f"manifest_fail_{chapter_id}",

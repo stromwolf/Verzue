@@ -1,6 +1,7 @@
 import logging
 import os
 import random
+import re
 import time
 import asyncio
 import urllib.parse
@@ -29,6 +30,15 @@ class PiccomaHelpers:
         if "fr.piccoma" in url or "/fr" in url:
             raise ScraperError("Piccoma France (.fr) is not supported at this time. Please use a Piccoma Japan (.com) link.")
         return "https://piccoma.com", "jp", ".piccoma.com"
+
+    def viewer_redirected_to_product_page(self, viewer_url: str, response_final_url: str) -> bool:
+        """True when a viewer URL was requested but the session landed on a series product page (paywall / not unlocked)."""
+        if not viewer_url or not re.search(r"/web/viewer/(?:s/)?\d+/\d+", viewer_url):
+            return False
+        clean = (response_final_url or "").split("?", 1)[0].rstrip("/")
+        if "/web/viewer" in clean:
+            return False
+        return "/web/product/" in clean
 
     def _is_fake_404(self, status: int, text: str, headers: dict, url: str = "") -> bool:
         """S-Grade: Detects 'trap' 404 pages (status 200 but 404 content, or redirect to 404)."""

@@ -18,6 +18,9 @@ class PiccomaUnlocker(BaseUnlocker):
             if signin:
                 return False
 
+            if self.provider.helpers.viewer_redirected_to_product_page(task.url, final_url):
+                return False
+
             is_locked_ui = (
                 "js_purchaseForm" in res.text
                 or "チャージ中" in res.text
