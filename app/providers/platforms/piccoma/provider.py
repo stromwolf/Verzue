@@ -407,4 +407,30 @@ class PiccomaProvider(BaseProvider):
 
         await asyncio.gather(*(process_one(img, i) for i, img in enumerate(valid_images)))
         progress.finish()
+
+        # Flush any cookies Piccoma rotated during the task back to Redis,
+        # so the next task starts with a valid pksid and avoids a redundant login.
+        try:
+            session_cookies = []
+            for c in auth_session.cookies.jar:
+                name = getattr(c, "name", None)
+                if name:
+                    session_cookies.append({
+                        "name": name,
+                        "value": getattr(c, "value", ""),
+                        "domain": getattr(c, "domain", ".piccoma.com"),
+                        "path": getattr(c, "path", "/"),
+                        "expires": getattr(c, "expires", None),
+                    })
+            has_pksid = any(c["name"] == "pksid" and c["value"] for c in session_cookies)
+            if session_cookies and has_pksid:
+                active = await self.session_service.get_active_session("piccoma")
+                aid = active.get("account_id", "primary") if active else "primary"
+                await self.session_service.update_session_cookies("piccoma", aid, session_cookies)
+                logger.info(f"[Piccoma] Session cookies persisted after task ({len(session_cookies)} cookies, pksid present).")
+            else:
+                logger.warning("[Piccoma] Skipping post-task cookie flush: pksid missing from session.")
+        except Exception as e:
+            logger.warning(f"[Piccoma] Failed to persist session cookies after task: {e}")
+
         return output_dir
