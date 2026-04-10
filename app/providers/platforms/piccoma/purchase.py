@@ -49,6 +49,7 @@ class PiccomaPurchase:
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
             "Content-Type": "application/x-www-form-urlencoded",
+            "X-Requested-With": "XMLHttpRequest",
             "Origin": base_url,
             "Referer": referer,
             'Sec-Ch-Ua': '"Chromium";v="120", "Google Chrome";v="120", "Not_A Brand";v="24"',
@@ -118,6 +119,19 @@ class PiccomaPurchase:
         for kind in ("point", "coin"):
             try:
                 r = await _post_v2(kind, csrf_token)
+                if r.status_code in (401, 403):
+                    self.provider._dump_diagnostic_data(
+                        f"v2_forbidden_{kind}_{series_id}_{episode_id}",
+                        r.text or "",
+                        metadata={
+                            "url": str(getattr(r, "url", "")),
+                            "status": r.status_code,
+                            "has_pksid": self.provider.helpers.session_has_pksid(auth_session),
+                            "has_csrftoken": bool(self._read_csrf_cookie(auth_session)),
+                            "response_headers": dict(getattr(r, "headers", {}) or {}),
+                        },
+                        developer_mode=True,
+                    )
                 if r.status_code == 403 and kind == "point":
                     logger.info(
                         "[Piccoma] v2/point/use returned 403 — refreshing episodes page to rotate csrftoken, retry once"
