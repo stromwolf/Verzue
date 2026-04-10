@@ -16,6 +16,94 @@ class PiccomaPurchase:
     def __init__(self, provider):
         self.provider = provider
 
+    def _csrf_token_for_requests(self, auth_session, page_csrf: str | None, middleware_csrf: str | None) -> str | None:
+        token = page_csrf or middleware_csrf
+        if token:
+            return token
+        try:
+            jar = getattr(auth_session, "cookies", None)
+            if jar is not None and hasattr(jar, "get"):
+                t = jar.get("csrftoken") or jar.get("csrf_token")
+                if t:
+                    return t
+            for c in getattr(jar, "jar", []) or []:
+                name = getattr(c, "name", None)
+                if name and name.lower() in ("csrftoken", "csrf_token"):
+                    val = getattr(c, "value", None)
+                    if val:
+                        return val
+        except Exception:
+            pass
+        return None
+
+    async def _try_v2_point_coin_unlock(
+        self,
+        auth_session,
+        base_url: str,
+        episode_page_url: str,
+        series_id: str,
+        episode_id: str,
+        viewer_url: str,
+        csrf_token: str | None,
+    ) -> bool:
+        """
+        Current Piccoma web unlock (from browser HAR): POST /web/user/access, then
+        POST /web/v2/{coin|point}/use/{product_id}/{episode_id} with form is_discount_campaign=N
+        and header x-csrftoken. Legacy /web/episode/* routes return 404.
+        """
+        if not csrf_token:
+            logger.debug("[Piccoma] No CSRF for v2 unlock; skipping /web/v2/point|coin/use.")
+            return False
+
+        headers = self.provider._build_browser_headers(referer=episode_page_url)
+        headers.update({
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": base_url,
+            "x-csrftoken": csrf_token,
+            "X-CSRFToken": csrf_token,
+        })
+
+        access_form = {
+            "product_id": str(series_id),
+            "episode_id": str(episode_id),
+            "referrer_type": "",
+            "current_episode_id": "",
+        }
+        try:
+            await self.provider._safe_request(
+                auth_session,
+                "POST",
+                f"{base_url}/web/user/access",
+                trap_dump=False,
+                headers=dict(headers),
+                data=access_form,
+            )
+        except Exception:
+            pass
+
+        v2_body = {"is_discount_campaign": "N"}
+        for kind in ("coin", "point"):
+            url = f"{base_url}/web/v2/{kind}/use/{series_id}/{episode_id}"
+            try:
+                r = await self.provider._safe_request(
+                    auth_session,
+                    "POST",
+                    url,
+                    trap_dump=False,
+                    headers=dict(headers),
+                    data=v2_body,
+                )
+                if r.status_code != 200:
+                    continue
+                viewer_res = await self.provider._safe_request(auth_session, "GET", viewer_url)
+                if self.provider._extract_pdata_heuristic(viewer_res.text):
+                    logger.info(f"✅ [Piccoma] v2/{kind}/use unlocked episode {episode_id} (viewer manifest present).")
+                    return True
+            except Exception:
+                continue
+        return False
+
     async def fast_purchase(self, task) -> bool:
         """
         S-Grade Unified Purchase: Detects and handles Coin, Point, and Wait-Free chapters.
@@ -77,7 +165,13 @@ class PiccomaPurchase:
                     csrf_token = csrf_token or n_data.get('props', {}).get('pageProps', {}).get('csrfToken')
                 except: pass
 
-            # 2. Security Hash Calculation
+            csrf_any = self._csrf_token_for_requests(auth_session, csrf_token, csrf_middleware_token)
+            if await self._try_v2_point_coin_unlock(
+                auth_session, base_url, episode_page_url, series_id, episode_id, task.url, csrf_any
+            ):
+                return True
+
+            # 2. Security Hash Calculation (legacy / wait-free discovery)
             sec_hash = self._calculate_security_hash(episode_id)
 
             # 3. Endpoints by chapter type (wait-free vs coin/point — do not hit wait-free URLs for pure paywall chapters)
@@ -127,7 +221,7 @@ class PiccomaPurchase:
                                 kwargs = {"data": payload}
                                 
                             headers.update({
-                                "X-CSRF-Token": csrf_token or csrf_middleware_token,
+                                "X-CSRF-Token": csrf_any or csrf_token or csrf_middleware_token,
                                 "X-Requested-With": "XMLHttpRequest",
                                 "X-Security-Hash": sec_hash,
                                 "X-Hash-Code": sec_hash
@@ -146,7 +240,7 @@ class PiccomaPurchase:
                                         logger.info(f"✨ [Piccoma API] Discovery loop found valid endpoint: {endpoint} ({encoding})")
                                         # Verification Part 2: Final Manifest Check (Mandatory)
                                         viewer_res = await self.provider._safe_request(auth_session, "GET", task.url)
-                                        if self.provider._extract_pdata(viewer_res.text):
+                                        if self.provider._extract_pdata_heuristic(viewer_res.text):
                                             logger.info(f"✅ [Piccoma] Discovery Matrix Success! Chapter {episode_id} is functionally UNLOCKED.")
                                             return True
                                 except: pass
@@ -159,8 +253,8 @@ class PiccomaPurchase:
                 )
             elif wf is False:
                 logger.error(
-                    f"❌ [Piccoma] No coin/purchase API path for episode {episode_id}; "
-                    "legacy /web/episode/purchase and /web/episode/use return 404 — unlock may require an updated endpoint."
+                    f"❌ [Piccoma] Unlock failed for episode {episode_id} "
+                    "(tried /web/v2/coin|point/use and legacy routes)."
                 )
             else:
                 logger.error(f"❌ [Piccoma] Discovery matrix exhausted for episode {episode_id}.")
