@@ -40,26 +40,27 @@ class PiccomaHelpers:
             return False
         return "/web/product/" in clean
 
-    def _is_fake_404(self, status: int, text: str, headers: dict, url: str = "") -> bool:
+    def _is_fake_404(self, status: int, text: str, headers: dict, url: str = "", quiet: bool = False) -> bool:
         """S-Grade: Detects 'trap' 404 pages (status 200 but 404 content, or redirect to 404)."""
         content_type = headers.get('Content-Type', '').lower()
-        
+        log = logger.debug if quiet else logger.warning
+
         if status == 404:
-            logger.warning(f"🛑 [Piccoma Identity] Hard 404 detected at {url}")
+            log(f"🛑 [Piccoma Identity] Hard 404 detected at {url}")
             return True
 
         if 'text/html' not in content_type:
             return False
-            
+
         low_text = text.lower()
         indicators = ["404", "見つかりません", "not found", "error", "ご利用いただけません", "アクセス制限", "access denied"]
-        
+
         if status == 200 and len(text) < 18000:
             for ind in indicators:
                 if ind in low_text:
-                    logger.warning(f"🛑 [Piccoma Identity] Trap Triggered: HTTP {status}, length {len(text)}, found trigger '{ind}' at {url}")
+                    log(f"🛑 [Piccoma Identity] Trap Triggered: HTTP {status}, length {len(text)}, found trigger '{ind}' at {url}")
                     return True
-                    
+
         return False
 
     def _dump_diagnostic_data(self, label: str, content: str, metadata: dict = None, developer_mode: bool = True):
@@ -87,7 +88,15 @@ class PiccomaHelpers:
         except Exception as e:
             logger.error(f"Failed to dump diagnostic data: {e}")
 
-    async def _safe_request(self, session: AsyncSession, method: str, url: str, developer_mode: bool = True, **kwargs) -> any:
+    async def _safe_request(
+        self,
+        session: AsyncSession,
+        method: str,
+        url: str,
+        developer_mode: bool = True,
+        trap_dump: bool = True,
+        **kwargs,
+    ) -> any:
         """S-Grade: Wraps request with manual redirect handling and trap detection."""
         kwargs["allow_redirects"] = False
         
@@ -123,12 +132,12 @@ class PiccomaHelpers:
                 if i > 0:
                     logger.debug(f"✅ [Piccoma Identity] Followed to: {current_url} ({res.status_code}, {len(res.text)} bytes, {elapsed:.2f}s)")
                 
-                if self._is_fake_404(res.status_code, res.text, res.headers, url=current_url):
-                    if developer_mode:
+                if self._is_fake_404(res.status_code, res.text, res.headers, url=current_url, quiet=not trap_dump):
+                    if developer_mode and trap_dump:
                         req_headers = dict(res.request.headers) if hasattr(res, 'request') else "N/A"
                         self._dump_diagnostic_data(f"trap_detected_{int(time.time())}", res.text, {
-                            "url": current_url, 
-                            "status": res.status_code, 
+                            "url": current_url,
+                            "status": res.status_code,
                             "headers": dict(res.headers),
                             "request_headers": req_headers
                         }, developer_mode=developer_mode)

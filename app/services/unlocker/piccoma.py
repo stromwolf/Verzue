@@ -49,7 +49,14 @@ class PiccomaUnlocker(BaseUnlocker):
                 update_progress(90, "Coin Purchase Successful")
                 return True
             
-            raise Exception("Piccoma coin purchase failed via API")
+            wf = getattr(task, "piccoma_wait_free", None)
+            if wf is True:
+                raise Exception("Piccoma wait-free unlock failed via API (no valid endpoint response).")
+            if wf is False:
+                raise Exception(
+                    "Piccoma coin unlock failed via API (known paywall chapter; server did not accept legacy purchase URLs)."
+                )
+            raise Exception("Piccoma unlock failed via API.")
                 
         except Exception as e:
             self.logger.error(f"Worker {context_id} Piccoma purchase failed: {e}")

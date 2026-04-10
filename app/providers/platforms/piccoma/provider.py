@@ -178,6 +178,7 @@ class PiccomaProvider(BaseProvider):
                         'id': cid, 'title': c_title, 'notation': c_title,
                         'url': f"{task_viewer_prefix}/{series_id}/{cid}",
                         'is_locked': not ep.get('is_free', False) and not ep.get('is_wait_free', False),
+                        'is_wait_free': bool(ep.get('is_wait_free', False)),
                         'is_new': ep.get('is_new', False)
                     })
             except: pass
@@ -196,13 +197,17 @@ class PiccomaProvider(BaseProvider):
                 
                 title_tag = item.select_one('p.PCM-epList_title, span.PCM-epList_title, .PCM-epList_title')
                 c_title = title_tag.get_text(strip=True) if title_tag else f"Episode {cid}"
+                row_text = item.get_text()
+                is_wait_free_row = bool(item.select_one('.PCM-icon_waitfree')) or (
+                    '待てば' in row_text and ('￥0' in row_text or '¥0' in row_text)
+                )
                 is_locked = bool(item.select_one('.PCM-epList_lock, .PCM-icon_lock, .PCM-icon_waitfree, .PCM-icon_clock'))
                 if not is_locked:
-                    is_locked = any(kw in item.get_text() for kw in ["待てば￥0", "¥0"]) is False and "無料" not in item.get_text()
-                
+                    is_locked = any(kw in row_text for kw in ["待てば￥0", "¥0"]) is False and "無料" not in row_text
+
                 all_chapters.append({
                     'id': cid, 'title': c_title, 'notation': c_title, 'url': f"{task_viewer_prefix}/{series_id}/{cid}",
-                    'is_locked': is_locked, 'is_new': "NEW" in item.get_text().upper()
+                    'is_locked': is_locked, 'is_wait_free': is_wait_free_row, 'is_new': "NEW" in row_text.upper()
                 })
 
         try: all_chapters.sort(key=lambda x: int(x['id']))

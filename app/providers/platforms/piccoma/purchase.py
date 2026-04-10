@@ -79,15 +79,23 @@ class PiccomaPurchase:
 
             # 2. Security Hash Calculation
             sec_hash = self._calculate_security_hash(episode_id)
-            
-            # 3. Discovery Matrix: Multi-endpoint, Multi-encoding, Multi-keys
+
+            # 3. Endpoints by chapter type (wait-free vs coin/point — do not hit wait-free URLs for pure paywall chapters)
+            wf = getattr(task, "piccoma_wait_free", None)
+            waitfree_paths = ["/web/episode/waitfree/use", "/web/api/v2/episode/waitfree/use"]
+            coin_paths = ["/web/episode/purchase", "/web/episode/use"]
+            if wf is True:
+                endpoints = waitfree_paths + coin_paths
+                logger.info(f"[Piccoma] Unlock strategy: wait-free chapter — trying wait-free APIs first, then coin fallbacks.")
+            elif wf is False:
+                endpoints = coin_paths
+                logger.info(f"[Piccoma] Unlock strategy: coin/point chapter — skipping wait-free-only API paths.")
+            else:
+                endpoints = coin_paths + waitfree_paths
+                logger.info(f"[Piccoma] Unlock strategy: unknown episode flags — coin paths first, then wait-free.")
+
+            # 4. Discovery Matrix: Multi-endpoint, Multi-encoding, Multi-keys
             # -----------------------------------------------------------
-            endpoints = [
-                "/web/api/v2/episode/waitfree/use", 
-                "/web/episode/waitfree/use", 
-                "/web/episode/use", 
-                "/web/episode/purchase"
-            ]
             encodings = ["JSON", "FORM"]
             key_sets = [
                 {"ep": "episodeId", "prod": "productId", "csrft": "csrfToken"},
@@ -126,7 +134,9 @@ class PiccomaPurchase:
                             })
                             
                             logger.debug(f"🔍 [Piccoma Discovery] Trial: {endpoint} ({encoding}, {keys['ep']})")
-                            purchase_res = await self.provider._safe_request(auth_session, "POST", purchase_url, headers=headers, **kwargs)
+                            purchase_res = await self.provider._safe_request(
+                                auth_session, "POST", purchase_url, trap_dump=False, headers=headers, **kwargs
+                            )
                             
                             # Success verification Part 1: API Response
                             if purchase_res.status_code == 200:
@@ -142,7 +152,18 @@ class PiccomaPurchase:
                                 except: pass
                         except Exception: continue
 
-            logger.error(f"❌ [Piccoma] Discovery Matrix Exhausted: No Wait-Free path found for episode {episode_id}")
+            if wf is True:
+                logger.error(
+                    f"❌ [Piccoma] No working wait-free (or fallback) unlock path for episode {episode_id}; "
+                    "Piccoma may have changed API routes."
+                )
+            elif wf is False:
+                logger.error(
+                    f"❌ [Piccoma] No coin/purchase API path for episode {episode_id}; "
+                    "legacy /web/episode/purchase and /web/episode/use return 404 — unlock may require an updated endpoint."
+                )
+            else:
+                logger.error(f"❌ [Piccoma] Discovery matrix exhausted for episode {episode_id}.")
             return False
 
         except Exception as e:

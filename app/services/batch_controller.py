@@ -246,12 +246,14 @@ class BatchController:
             chapter_str = ch.get('notation') or ch.get('number_text') or str(idx + 1)
             title_val = ch.get('title', '')
 
+        piccoma_wait_free = ch.get('is_wait_free') if service == "Piccoma" else None
+
         return ChapterTask(
             id=idx+1, title=title_val, chapter_str=chapter_str,
             url=ch_url, series_title=title, requester_id=interaction.user.id, channel_id=interaction.channel_id,
             guild_id=interaction.guild.id if interaction.guild else 0, guild_name=interaction.guild.name if interaction.guild else "DM",
             scan_group=group, series_id_key=str(sid), episode_id=str(ch.get('id', '')), episode_number=str(ch.get('number', '')), is_smartoon=True, req_id=req_id,
-            service=service
+            service=service, piccoma_wait_free=piccoma_wait_free
         )
 
     def _create_local_tasks(self, idxs, chs, title, url, group, interaction, sid, req_id):

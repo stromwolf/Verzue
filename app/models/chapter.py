@@ -35,6 +35,8 @@ class ChapterTask:
     waiters: list = None # List of (req_id, view_ref) pairs waiting for this task
 
     is_smartoon: bool = False
+    # Piccoma: from episode list API/HTML — False = coin/point only, True = 待てば¥0 style, None = unknown
+    piccoma_wait_free: Optional[bool] = None
     pre_created_folder_id: Optional[str] = None
     final_folder_name: Optional[str] = None
     main_folder_id: Optional[str] = None
