@@ -27,8 +27,8 @@ class PiccomaSession:
         session_obj = await session_service.get_active_session("piccoma")
         
         # Keep a stable fingerprint for Piccoma to reduce auth/session flapping
-        impersonation = "chrome120"
-        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        impersonation = "chrome142"
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
         
         async_session = AsyncSession(impersonate=impersonation, proxies={"http": Settings.get_proxy(), "https": Settings.get_proxy()})
         

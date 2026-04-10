@@ -44,22 +44,37 @@ class PiccomaPurchase:
     def _v2_xhr_headers(self, base_url: str, referer: str, csrf_token: str) -> dict:
         """Match browser HAR: fetch to same origin (Sec-Fetch-*, Sec-Ch-Ua), not navigation headers."""
         ua = self.provider.default_user_agent
+        chrome_major = None
+        try:
+            m = re.search(r"Chrome/(\d+)\.", ua)
+            if m:
+                chrome_major = m.group(1)
+        except Exception:
+            chrome_major = None
+
+        # In HAR, `sec-ch-ua` major matches the real UA. Some WAFs dislike mismatches.
+        if chrome_major:
+            sec_ch_ua = f'"Chromium";v="{chrome_major}", "Not-A.Brand";v="24", "Google Chrome";v="{chrome_major}"'
+        else:
+            sec_ch_ua = '"Chromium", "Not-A.Brand";v="24", "Google Chrome"'
+
         return {
             "User-Agent": ua,
             "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+            # HAR sample: en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7,ar;q=0.6,es;q=0.5
+            "Accept-Language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7,ar;q=0.6,es;q=0.5",
             "Content-Type": "application/x-www-form-urlencoded",
             "X-Requested-With": "XMLHttpRequest",
             "Origin": base_url,
             "Referer": referer,
-            'Sec-Ch-Ua': '"Chromium";v="120", "Google Chrome";v="120", "Not_A Brand";v="24"',
+            "Sec-Ch-Ua": sec_ch_ua,
             "Sec-Ch-Ua-Mobile": "?0",
             'Sec-Ch-Ua-Platform': '"Windows"',
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
             "x-csrftoken": csrf_token,
-            "X-CSRFToken": csrf_token,
+            "priority": "u=1, i",
         }
 
     async def _try_v2_point_coin_unlock(
