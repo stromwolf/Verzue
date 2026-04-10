@@ -16,25 +16,50 @@ class PiccomaPurchase:
     def __init__(self, provider):
         self.provider = provider
 
-    def _csrf_token_for_requests(self, auth_session, page_csrf: str | None, middleware_csrf: str | None) -> str | None:
-        token = page_csrf or middleware_csrf
-        if token:
-            return token
+    def _read_csrf_cookie(self, auth_session) -> str | None:
+        """csrftoken cookie value — Django expects POST header to match this."""
         try:
             jar = getattr(auth_session, "cookies", None)
             if jar is not None and hasattr(jar, "get"):
                 t = jar.get("csrftoken") or jar.get("csrf_token")
                 if t:
-                    return t
+                    return str(t)
             for c in getattr(jar, "jar", []) or []:
                 name = getattr(c, "name", None)
                 if name and name.lower() in ("csrftoken", "csrf_token"):
                     val = getattr(c, "value", None)
                     if val:
-                        return val
+                        return str(val)
         except Exception:
             pass
         return None
+
+    def _csrf_token_for_requests(self, auth_session, page_csrf: str | None, middleware_csrf: str | None) -> str | None:
+        """Prefer cookie over meta/page CSRF so X-Csrftoken matches what Piccoma/Django validates."""
+        cookie_csrf = self._read_csrf_cookie(auth_session)
+        if cookie_csrf:
+            return cookie_csrf
+        return page_csrf or middleware_csrf
+
+    def _v2_xhr_headers(self, base_url: str, referer: str, csrf_token: str) -> dict:
+        """Match browser HAR: fetch to same origin (Sec-Fetch-*, Sec-Ch-Ua), not navigation headers."""
+        ua = self.provider.default_user_agent
+        return {
+            "User-Agent": ua,
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": base_url,
+            "Referer": referer,
+            'Sec-Ch-Ua': '"Chromium";v="120", "Google Chrome";v="120", "Not_A Brand";v="24"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "x-csrftoken": csrf_token,
+            "X-CSRFToken": csrf_token,
+        }
 
     async def _try_v2_point_coin_unlock(
         self,
@@ -55,14 +80,8 @@ class PiccomaPurchase:
             logger.debug("[Piccoma] No CSRF for v2 unlock; skipping /web/v2/point|coin/use.")
             return False
 
-        headers = self.provider._build_browser_headers(referer=episode_page_url)
-        headers.update({
-            "Accept": "application/json, text/plain, */*",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Origin": base_url,
-            "x-csrftoken": csrf_token,
-            "X-CSRFToken": csrf_token,
-        })
+        def hdr(csrf: str) -> dict:
+            return self._v2_xhr_headers(base_url, episode_page_url, csrf)
 
         access_form = {
             "product_id": str(series_id),
@@ -76,31 +95,44 @@ class PiccomaPurchase:
                 "POST",
                 f"{base_url}/web/user/access",
                 trap_dump=False,
-                headers=dict(headers),
+                headers=dict(hdr(csrf_token)),
                 data=access_form,
             )
         except Exception:
             pass
 
         v2_body = {"is_discount_campaign": "N"}
-        for kind in ("coin", "point"):
-            url = f"{base_url}/web/v2/{kind}/use/{series_id}/{episode_id}"
+        vh = self.provider._build_browser_headers(referer=episode_page_url)
+
+        async def _post_v2(kind: str, csrf: str):
+            return await self.provider._safe_request(
+                auth_session,
+                "POST",
+                f"{base_url}/web/v2/{kind}/use/{series_id}/{episode_id}",
+                trap_dump=False,
+                headers=dict(hdr(csrf)),
+                data=v2_body,
+            )
+
+        # HAR used point/use; coin/use often 404 for Smartoon — try point first
+        for kind in ("point", "coin"):
             try:
-                r = await self.provider._safe_request(
-                    auth_session,
-                    "POST",
-                    url,
-                    trap_dump=False,
-                    headers=dict(headers),
-                    data=v2_body,
-                )
+                r = await _post_v2(kind, csrf_token)
+                if r.status_code == 403 and kind == "point":
+                    logger.info(
+                        "[Piccoma] v2/point/use returned 403 — refreshing episodes page to rotate csrftoken, retry once"
+                    )
+                    await self.provider._safe_request(auth_session, "GET", episode_page_url)
+                    csrf2 = self._read_csrf_cookie(auth_session) or csrf_token
+                    if csrf2 != csrf_token:
+                        logger.debug("[Piccoma] CSRF cookie updated after refresh.")
+                    r = await _post_v2(kind, csrf2)
                 if r.status_code != 200:
                     logger.info(
                         f"[Piccoma] v2/{kind}/use HTTP {r.status_code} for {series_id}/{episode_id} "
                         f"(body prefix: {r.text[:200]!r})"
                     )
                     continue
-                vh = self.provider._build_browser_headers(referer=episode_page_url)
                 viewer_res = await self.provider._safe_request(
                     auth_session, "GET", viewer_url, headers=vh
                 )
@@ -220,7 +252,7 @@ class PiccomaPurchase:
                                 keys["ep"]: int(episode_id),
                                 keys["prod"]: int(series_id),
                                 "hash": sec_hash,
-                                keys["csrft"]: csrf_token if "middleware" not in keys["csrft"] else csrf_middleware_token
+                                keys["csrft"]: csrf_any if "middleware" not in keys["csrft"] else csrf_middleware_token
                             }
                             # Cleanup: don't send None
                             payload = {k: v for k, v in payload.items() if v is not None}
