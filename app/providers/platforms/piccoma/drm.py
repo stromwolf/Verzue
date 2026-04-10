@@ -133,7 +133,7 @@ class PiccomaDRM:
         res.raise_for_status()
         out_path = f"{out_dir}/page_{idx:03d}.png"
         
-        is_valid_seed = seed and (seed.isupper() or all(not c.islower() for c in seed))
+        is_valid_seed = bool(seed)
 
         if is_valid_seed:
             if not Canvas:
