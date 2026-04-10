@@ -147,7 +147,7 @@ class PiccomaDRM:
                         img_io = BytesIO(res.content)
                         final_seed = self._dd_transform(seed) if seed.isupper() else seed
                         canvas = Canvas(img_io, (50, 50), final_seed)
-                        return canvas.export(mode="scramble", format="png").getvalue()
+                        return canvas.export(mode="unscramble", format="png").getvalue()
                 
                 content = await asyncio.to_thread(unscramble)
                 with open(out_path, "wb") as f: f.write(content)
