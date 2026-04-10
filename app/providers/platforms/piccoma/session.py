@@ -109,28 +109,44 @@ class PiccomaSession:
             return async_session
 
     async def is_session_valid(self, session: AsyncSession) -> bool:
-        """Stateless validation with guest/signin detection."""
+        """Stateless validation: any authed 200 probe, or /web/ 200 without guest markers."""
+        probe_urls = (
+            "https://piccoma.com/web/",
+            "https://piccoma.com/web/mypage/bookshelf",
+            "https://piccoma.com/web/mypage/history",
+        )
+
+        def denies_auth(res) -> bool:
+            u = str(getattr(res, "url", "") or "")
+            t = res.text or ""
+            if "/web/acc/signin" in u or "/acc/signin?" in u:
+                return True
+            if "ログイン｜ピッコマ" in t or "PCM-headerLogin" in t:
+                return True
+            return False
+
+        def confirms(res) -> bool:
+            return res.status_code == 200 and not denies_auth(res)
+
         try:
-            # /web/product/favorite can return 404 on some accounts/routes even when authenticated.
-            # Use a stable mypage route for auth validation.
-            res = await session.get("https://piccoma.com/web/mypage/bookshelf", timeout=15)
-            final_url = str(getattr(res, "url", ""))
-            text = res.text or ""
-            signin = (
-                "/web/acc/signin" in final_url
-                or "ログイン｜ピッコマ" in text
-                or "PCM-loginMenu" in text
-                or "/acc/signin?next_url=" in text
-                or "PCM-headerLogin" in text
-            )
-            valid = (res.status_code == 200) and not signin
-            if valid:
+            last_res = None
+            for url in probe_urls:
+                res = await session.get(url, timeout=15)
+                last_res = res
+                if confirms(res):
+                    await self.provider.session_service.record_session_success("piccoma")
+                    return True
+
+            web_res = await session.get("https://piccoma.com/web/", timeout=15)
+            if confirms(web_res):
                 await self.provider.session_service.record_session_success("piccoma")
-            else:
-                logger.warning(
-                    f"[Piccoma Identity] Session validation failed: "
-                    f"status={res.status_code}, final_url={final_url}, signin={signin}"
-                )
-            return valid
-        except Exception: 
+                return True
+
+            final_url = str(getattr(last_res, "url", "")) if last_res else ""
+            logger.warning(
+                f"[Piccoma Identity] Session validation failed after probes: "
+                f"last_status={getattr(last_res, 'status_code', None)}, last_url={final_url}"
+            )
+            return False
+        except Exception:
             return False
