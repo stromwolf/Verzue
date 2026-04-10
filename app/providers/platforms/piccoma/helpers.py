@@ -60,7 +60,7 @@ class PiccomaHelpers:
             return True
         if "/acc/signin?next_url=" in t:
             return True
-        if len(t) < 70000 and "PCM-headerLogin" in t:
+        if len(t) < 85000 and "PCM-headerLogin" in t:
             return True
         return False
 
@@ -191,7 +191,7 @@ class PiccomaHelpers:
             ["/", "/web/genre/comic", "/web/product/list?list_type=T&sort_type=N"], 
             ["/", "/web/search/result?word={word}"],
             ["/web/genre/smartoon", "/web/product/list?list_type=T&sort_type=H"], 
-            ["/web/mypage/history", "/web/mypage/bookshelf"] 
+            ["/web/history", "/web/bookshelf"] 
         ]
         
         keywords = ["ファンタジー", "アクション", "令嬢", "恋愛", "異世界", "冒険"]

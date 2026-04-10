@@ -27,8 +27,8 @@ class PiccomaSession:
         session_obj = await session_service.get_active_session("piccoma")
         
         # Keep a stable fingerprint for Piccoma to reduce auth/session flapping
-        impersonation = "chrome142"
-        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+        impersonation = "chrome145"
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
         
         async_session = AsyncSession(impersonate=impersonation, proxies={"http": Settings.get_proxy(), "https": Settings.get_proxy()})
         
@@ -71,8 +71,11 @@ class PiccomaSession:
                 value = str(value) if value is not None else None
                 
                 if name and value is not None:
-                    if name.lower() in ['pksid', 'csrftoken', 'csrf_token']:
+                    if name.lower() in ['pksid']:
                         c_domain = ".piccoma.com"
+                        c_path = "/"
+                    elif name.lower() in ['csrftoken', 'csrf_token', 'snexid']:
+                        c_domain = "piccoma.com"
                         c_path = "/"
                     else:
                         c_domain = c.get('domain') or region_domain
@@ -112,8 +115,8 @@ class PiccomaSession:
         """Stateless validation: any authed 200 probe, or /web/ 200 without guest markers."""
         probe_urls = (
             "https://piccoma.com/web/",
-            "https://piccoma.com/web/mypage/bookshelf",
-            "https://piccoma.com/web/mypage/history",
+            "https://piccoma.com/web/bookshelf",
+            "https://piccoma.com/web/history",
         )
 
         def denies_auth(res) -> bool:

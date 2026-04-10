@@ -51,10 +51,10 @@ class PiccomaLoginHandler:
         
         proxy_url = Settings.get_proxy()
         proxies = {"http": proxy_url, "https": proxy_url}
-        # Use Chrome 120 baseline
-        async with AsyncSession(impersonate="chrome120", proxies=proxies) as session:
+        # Use Chrome 145 baseline (2026 standard)
+        async with AsyncSession(impersonate="chrome145", proxies=proxies) as session:
             session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
             })
             
             await asyncio.sleep(1.0)
@@ -129,9 +129,9 @@ class PiccomaLoginHandler:
             await asyncio.sleep(1.0)
             web_res = await session.get(f"{base_url}/web/", headers=headers)
             await asyncio.sleep(0.5)
-            shelf_res = await session.get(f"{base_url}/web/mypage/bookshelf", headers=headers)
+            shelf_res = await session.get(f"{base_url}/web/bookshelf", headers=headers)
             await asyncio.sleep(0.3)
-            hist_res = await session.get(f"{base_url}/web/mypage/history", headers=headers)
+            hist_res = await session.get(f"{base_url}/web/history", headers=headers)
             await asyncio.sleep(0.5)
 
             is_success = False

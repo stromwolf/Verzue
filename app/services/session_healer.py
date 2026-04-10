@@ -105,10 +105,14 @@ class SessionHealer:
 
         # Use an AsyncSession to run the ritual
         from curl_cffi.requests import AsyncSession
-        async with AsyncSession(impersonate="chrome120") as session:
+        async with AsyncSession(impersonate="chrome145") as session:
             # Inject cookies
             for c in session_obj.get("cookies", []):
                 session.cookies.set(c['name'], c['value'], domain=c.get('domain', ''))
+            
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+            })
             
             logger.info(f"🎭 Running S-Grade Ritual for {platform}:{account_id}...")
             await provider.run_ritual(session)
