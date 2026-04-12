@@ -5,6 +5,8 @@ import asyncio
 import os
 import threading
 import urllib.parse
+import urllib.request
+import tempfile
 from bs4 import BeautifulSoup
 from io import BytesIO
 
@@ -15,12 +17,63 @@ except ImportError:
 
 logger = logging.getLogger("PiccomaDRM")
 
+BRIDGE_TEMPLATE = """
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import path from 'path';
+
+const seed = process.argv[2];
+const drmPath = process.argv[3];
+
+if (!seed || !drmPath) process.exit(1);
+
+try {
+    const origFunction = globalThis.Function;
+    globalThis.Function = new Proxy(origFunction, {
+        construct(target, args) {
+            const fn = new target(...args);
+            return new Proxy(fn, {
+                apply(target, thisArg, argList) {
+                    const result = target.apply(thisArg, argList);
+                    return result === undefined ? globalThis : result;
+                }
+            });
+        }
+    });
+
+    if (!globalThis.btoa) {
+        globalThis.btoa = s => Buffer.from(s, 'binary').toString('base64');
+        globalThis.atob = s => Buffer.from(s, 'base64').toString('binary');
+    }
+
+    class Window {}
+    globalThis.Window = Window;
+    Object.setPrototypeOf(globalThis, Window.prototype);
+    globalThis.location = { toString: () => 'https://piccoma.com/' };
+
+    const wasmBuffer = fs.readFileSync(path.join(drmPath, 'diamond_bg.wasm'));
+    const diamondJsPath = path.resolve(path.join(drmPath, 'diamond.js'));
+    
+    const { initSync, dd } = await import('file://' + (process.platform === 'win32' ? '/' : '') + diamondJsPath.replace(/\\\\/g, '/'));
+    initSync(wasmBuffer);
+
+    const result = dd(seed);
+    process.stdout.write(result);
+    process.exit(0);
+} catch (err) {
+    process.stderr.write((err.stack || err.message) + '\\n');
+    process.exit(1);
+}
+"""
+
 class PiccomaDRM:
     def __init__(self, provider):
         self.provider = provider
         self.logger = logger
         # S-GRADE: Thread-safe lock to prevent pycasso's global state race condition
         self.unscramble_lock = threading.Lock()
+        self._drm_assets_lock = asyncio.Lock()
+        self._assets_ready = False
 
     def _extract_pdata(self, html: str) -> dict | None:
         """S-Grade: Heuristic extraction of pData (image manifest) from Piccoma viewer page."""
@@ -41,33 +94,77 @@ class PiccomaDRM:
         except Exception: pass
         return None
 
+    async def _ensure_drm_assets(self):
+        """Autonomous DRM asset extraction from Piccoma CDN."""
+        async with self._drm_assets_lock:
+            if self._assets_ready:
+                return True
+                
+            drm_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../data/drm"))
+            os.makedirs(drm_dir, exist_ok=True)
+            
+            js_path = os.path.join(drm_dir, "diamond.js")
+            wasm_path = os.path.join(drm_dir, "diamond_bg.wasm")
+            
+            if os.path.exists(js_path) and os.path.exists(wasm_path):
+                self._assets_ready = True
+                return True
+                
+            self.logger.info("🛡️ [Piccoma DRM] Assets missing. Autonomously fetching from Piccoma CDN...")
+            try:
+                base_url = "https://piccoma.com/static/web/js/viewer/wasm/"
+                def download(filename, target):
+                    url = base_url + filename
+                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req) as response, open(target, 'wb') as out_file:
+                        out_file.write(response.read())
+                        
+                await asyncio.to_thread(download, "diamond.js", js_path)
+                await asyncio.to_thread(download, "diamond_bg.wasm", wasm_path)
+                
+                self.logger.info("✅ [Piccoma DRM] Assets successfully cached to data/drm/")
+                self._assets_ready = True
+                return True
+            except Exception as e:
+                self.logger.error(f"❌ [Piccoma DRM] Autonomous fetch failed: {e}")
+                return False
+
     async def _dd_transform(self, seed: str) -> str:
         """
         Transforms the seed using the Diamond DRM WASM module via Node.js bridge.
-        S-Grade: Async execution to prevent event-loop blocking.
+        S-Grade: Autonomous asset fetching and dynamic bridge execution.
         """
-        try:
-            # Paths to bridge and node
-            # Correct pathing: 4 levels up from app/providers/platforms/piccoma
-            bridge_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../piccoma_wasm_bridge.js"))
-            
-            # Run the bridge asynchronously
-            proc = await asyncio.create_subprocess_exec(
-                "node", bridge_path, seed,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await proc.communicate()
-            
-            if proc.returncode == 0:
-                transformed_seed = stdout.decode().strip()
-                if transformed_seed:
-                    self.logger.info(f"Seed transform success: {seed} -> {transformed_seed}")
-                    return transformed_seed
-            
-            self.logger.warning(f"Seed transform failed: {stderr.decode().strip()}")
+        if not await self._ensure_drm_assets():
             return seed
+
+        try:
+            drm_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../data/drm"))
+            
+            # Create a temporary bridge script
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.mjs', delete=False) as tf:
+                tf.write(BRIDGE_TEMPLATE)
+                temp_bridge = tf.name
+
+            try:
+                # Run the bridge asynchronously
+                proc = await asyncio.create_subprocess_exec(
+                    "node", temp_bridge, seed, drm_dir,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                
+                stdout, stderr = await proc.communicate()
+                
+                if proc.returncode == 0:
+                    transformed_seed = stdout.decode().strip()
+                    if transformed_seed:
+                        return transformed_seed
+                
+                self.logger.warning(f"Seed transform failed: {stderr.decode().strip()}")
+                return seed
+            finally:
+                if os.path.exists(temp_bridge):
+                    os.remove(temp_bridge)
             
         except Exception as e:
             self.logger.error(f"Error during seed transform: {e}")
