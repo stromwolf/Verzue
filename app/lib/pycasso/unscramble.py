@@ -14,10 +14,13 @@ class Canvas:
         self.img = Image.open(img)
         self.slice_width, self.slice_height = slice_size
         self.seed = seed
+        
+        # S-Grade: Pull dimensions directly from the Image object to avoid property race
+        width, height = self.img.size
         self.canvas = Image.new(
             mode="RGBA",
-            size=(self.img_width, self.img_height),
-            color=(255,255,255)
+            size=(width, height),
+            color=(255, 255, 255)
         )
 
         if slice_size == 0:
@@ -78,8 +81,7 @@ class Canvas:
                 t = slices[i]['y']
             if t != slices[i]['y']:
                 return i
-                break
-        return i if (self.img_height % self.slice_height) == 0 else i + 1
+        return len(slices)
 
     def get_group(self, slices):
         this = {}
