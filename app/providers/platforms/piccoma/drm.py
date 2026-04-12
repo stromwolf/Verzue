@@ -172,8 +172,7 @@ class PiccomaDRM:
                 def unscramble():
                     with self.unscramble_lock:
                         img_io = BytesIO(res.content)
-                        final_seed = self._dd_transform(seed)
-                        canvas = Canvas(img_io, (50, 50), final_seed)
+                        canvas = Canvas(img_io, (50, 50), seed)
                         return canvas.export(mode="unscramble", format="png").getvalue()
                 
                 content = await asyncio.to_thread(unscramble)
