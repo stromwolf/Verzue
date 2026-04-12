@@ -122,16 +122,38 @@ class PiccomaLoginHandler:
             }
             
             logger.info(f"[Piccoma] Sending login request for {email}...")
-            post_res = await session.post(login_page_url, data=payload, headers=headers, allow_redirects=True)
+            post_res = await session.post(login_page_url, data=payload, headers=headers, allow_redirects=False)
             
+            # --- Cookie Interception ---
+            # Piccoma often sets pksid on the initial 302 redirect response.
+            found_pksid_on_post = False
+            sc_headers = post_res.headers.get_list('Set-Cookie') if hasattr(post_res.headers, 'get_list') else post_res.headers.get('Set-Cookie', "").split(",")
+            for sc in sc_headers:
+                if "pksid=" in sc:
+                    p_match = re.search(r'pksid=([^; ]+)', sc)
+                    if p_match:
+                        p_val = p_match.group(1)
+                        logger.info("🔑 [Piccoma] Intercepted pksid on initial POST response.")
+                        session.cookies.set("pksid", p_val, domain=".piccoma.com", path="/")
+                        found_pksid_on_post = True
+
+            # If it's a redirect, follow it manually to see where we land
+            if post_res.status_code in [302, 301]:
+                next_loc = post_res.headers.get('Location')
+                if next_loc:
+                    if not next_loc.startswith('http'):
+                        next_loc = f"{base_url}{next_loc}"
+                    logger.debug(f"📡 [Piccoma] Following login redirect: {next_loc}")
+                    post_res = await session.get(next_loc, headers=headers)
+
             # --- Identity Handshake ---
             logger.info("🎭 [Identity Handshake] Warming up session...")
             await asyncio.sleep(1.0)
-            web_res = await session.get(f"{base_url}/web/", headers=headers)
+            web_res = await session.get(f"{base_url}/web/", headers=headers, timeout=15)
             await asyncio.sleep(0.5)
-            shelf_res = await session.get(f"{base_url}/web/bookshelf", headers=headers)
+            shelf_res = await session.get(f"{base_url}/web/bookshelf", headers=headers, timeout=15)
             await asyncio.sleep(0.3)
-            hist_res = await session.get(f"{base_url}/web/history", headers=headers)
+            hist_res = await session.get(f"{base_url}/web/history", headers=headers, timeout=15)
             await asyncio.sleep(0.5)
 
             is_success = False
@@ -185,13 +207,17 @@ class PiccomaLoginHandler:
                                 cookies.append({"name": "pksid", "value": p_val, "domain": ".piccoma.com", "path": "/"})
 
                 auth_ok = (
-                    _piccoma_probe_confirms_auth(web_res)
-                    or _piccoma_probe_confirms_auth(shelf_res)
+                    _piccoma_probe_confirms_auth(shelf_res)
                     or _piccoma_probe_confirms_auth(hist_res)
                 )
-                # Mypage routes may 404 for some accounts; /web/ 200 + pksid + no guest markers is enough.
+                
+                # S-Grade: If shelf/history fail (404), but web=200 and has_pksid is set, 
+                # we perform one last strict check on the 'web' page content.
                 if not auth_ok and has_pksid and web_res.status_code == 200:
-                    auth_ok = not _piccoma_response_denies_auth(web_res)
+                    # Look for logout links or profile indicators instead of just 'not denies_auth'
+                    html = web_res.text
+                    is_logged_in_html = "/acc/signout" in html or "PCM-header_user" in html or "本棚" in html
+                    auth_ok = is_logged_in_html
 
                 probe_summary = (
                     f"web={web_res.status_code}, shelf={shelf_res.status_code}, hist={hist_res.status_code}"

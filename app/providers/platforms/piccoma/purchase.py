@@ -106,17 +106,16 @@ class PiccomaPurchase:
             "referrer_type": "",
             "current_episode_id": "",
         }
-        try:
-            await self.provider._safe_request(
-                auth_session,
-                "POST",
-                f"{base_url}/web/user/access",
-                trap_dump=False,
-                headers=dict(hdr(csrf_token)),
-                data=access_form,
-            )
-        except Exception:
-            pass
+        # V2 Handshake: This call often triggers an 'Auth Kick' if the session is stale.
+        # We MUST NOT swallow ScraperErrors (auth redirects) here.
+        await self.provider._safe_request(
+            auth_session,
+            "POST",
+            f"{base_url}/web/user/access",
+            trap_dump=False,
+            headers=dict(hdr(csrf_token)),
+            data=access_form,
+        )
 
         v2_body = {"is_discount_campaign": "N"}
         vh = self.provider._build_browser_headers(referer=episode_page_url)
