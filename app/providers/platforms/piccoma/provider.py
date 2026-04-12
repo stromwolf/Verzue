@@ -176,12 +176,18 @@ class PiccomaProvider(BaseProvider):
                 for ep in ep_list:
                     cid = str(ep.get('id'))
                     c_title = ep.get('title', f"Episode {cid}")
+                    
+                    # Piccoma sometimes uses snake_case, sometimes camelCase in NEXT_DATA
+                    p_is_free = ep.get('is_free', ep.get('isFree', False))
+                    p_is_wait_free = ep.get('is_wait_free', ep.get('isWaitFree', False))
+                    p_is_new = ep.get('is_new', ep.get('isNew', False))
+
                     all_chapters.append({
                         'id': cid, 'title': c_title, 'notation': c_title,
                         'url': f"{task_viewer_prefix}/{series_id}/{cid}",
-                        'is_locked': not ep.get('is_free', False) and not ep.get('is_wait_free', False),
-                        'is_wait_free': bool(ep.get('is_wait_free', False)),
-                        'is_new': ep.get('is_new', False)
+                        'is_locked': not p_is_free and not p_is_wait_free,
+                        'is_wait_free': bool(p_is_wait_free),
+                        'is_new': bool(p_is_new)
                     })
             except: pass
 

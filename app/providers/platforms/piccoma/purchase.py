@@ -86,14 +86,15 @@ class PiccomaPurchase:
         episode_id: str,
         viewer_url: str,
         csrf_token: str | None,
+        wf: bool | None = None,
     ) -> bool:
         """
         Current Piccoma web unlock (from browser HAR): POST /web/user/access, then
-        POST /web/v2/{coin|point}/use/{product_id}/{episode_id} with form is_discount_campaign=N
+        POST /web/v2/{coin|point|waitfree}/use/{product_id}/{episode_id} with form is_discount_campaign=N
         and header x-csrftoken. Legacy /web/episode/* routes return 404.
         """
         if not csrf_token:
-            logger.debug("[Piccoma] No CSRF for v2 unlock; skipping /web/v2/point|coin/use.")
+            logger.debug("[Piccoma] No CSRF for v2 unlock; skipping /web/v2/.../use.")
             return False
 
         def hdr(csrf: str) -> dict:
@@ -130,8 +131,15 @@ class PiccomaPurchase:
                 data=v2_body,
             )
 
-        # HAR used point/use; coin/use often 404 for Smartoon — try point first
-        for kind in ("point", "coin"):
+        # Build priority list for V2 endpoints
+        if wf is True:
+            kinds = ("waitfree", "point", "coin")
+        elif wf is False:
+            kinds = ("point", "coin")
+        else:
+            kinds = ("waitfree", "point", "coin")
+
+        for kind in kinds:
             try:
                 r = await _post_v2(kind, csrf_token)
                 if r.status_code in (401, 403):
@@ -147,9 +155,9 @@ class PiccomaPurchase:
                         },
                         developer_mode=True,
                     )
-                if r.status_code == 403 and kind == "point":
+                if r.status_code == 403 and kind in ("point", "waitfree"):
                     logger.info(
-                        "[Piccoma] v2/point/use returned 403 — refreshing episodes page to rotate csrftoken, retry once"
+                        f"[Piccoma] v2/{kind}/use returned 403 — refreshing episodes page to rotate csrftoken, retry once"
                     )
                     await self.provider._safe_request(auth_session, "GET", episode_page_url)
                     csrf2 = self._read_csrf_cookie(auth_session) or csrf_token
@@ -241,8 +249,12 @@ class PiccomaPurchase:
                 except: pass
 
             csrf_any = self._csrf_token_for_requests(auth_session, csrf_token, csrf_middleware_token)
+            
+            # --- 🟢 Wait-Free / Type Audit ---
+            wf = getattr(task, "piccoma_wait_free", None)
+
             if await self._try_v2_point_coin_unlock(
-                auth_session, base_url, episode_page_url, series_id, episode_id, task.url, csrf_any
+                auth_session, base_url, episode_page_url, series_id, episode_id, task.url, csrf_any, wf=wf
             ):
                 return True
 
@@ -250,7 +262,6 @@ class PiccomaPurchase:
             sec_hash = self._calculate_security_hash(episode_id)
 
             # 3. Endpoints by chapter type (wait-free vs coin/point — do not hit wait-free URLs for pure paywall chapters)
-            wf = getattr(task, "piccoma_wait_free", None)
             waitfree_paths = ["/web/episode/waitfree/use", "/web/api/v2/episode/waitfree/use"]
             coin_paths = ["/web/episode/purchase", "/web/episode/use"]
             if wf is True:
