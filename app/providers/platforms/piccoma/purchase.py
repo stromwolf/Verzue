@@ -133,11 +133,11 @@ class PiccomaPurchase:
 
         # Build priority list for V2 endpoints
         if wf is True:
-            kinds = ("waitfree", "point", "coin")
+            kinds = ["waitfree", "point", "coin"]
         elif wf is False:
-            kinds = ("point", "coin")
+            kinds = ["point", "coin", "waitfree"] # Still try waitfree as a ghost-failure fallback
         else:
-            kinds = ("waitfree", "point", "coin")
+            kinds = ["waitfree", "point", "coin"]
 
         for kind in kinds:
             try:
@@ -181,6 +181,9 @@ class PiccomaPurchase:
                     f"(viewer len={len(viewer_res.text)})"
                 )
             except Exception as ex:
+                if "sign-in" in str(ex).lower() or "session rejected" in str(ex).lower():
+                    logger.warning(f"[Piccoma] V2 {kind} unlock triggered an auth-kick. Aborting loop to heal session.")
+                    raise ex
                 logger.info(f"[Piccoma] v2/{kind}/use attempt failed: {ex}")
                 continue
         return False
@@ -268,11 +271,11 @@ class PiccomaPurchase:
                 endpoints = waitfree_paths + coin_paths
                 logger.info(f"[Piccoma] Unlock strategy: wait-free chapter — trying wait-free APIs first, then coin fallbacks.")
             elif wf is False:
-                endpoints = coin_paths
-                logger.info(f"[Piccoma] Unlock strategy: coin/point chapter — skipping wait-free-only API paths.")
+                endpoints = coin_paths + waitfree_paths # S-Grade Fallback: Try wait-free if coin paths fail
+                logger.info(f"[Piccoma] Unlock strategy: coin/point chapter — trying coin APIs first, then wait-free fallbacks.")
             else:
-                endpoints = coin_paths + waitfree_paths
-                logger.info(f"[Piccoma] Unlock strategy: unknown episode flags — coin paths first, then wait-free.")
+                endpoints = waitfree_paths + coin_paths
+                logger.info(f"[Piccoma] Unlock strategy: unknown episode flags — trying all discovery paths.")
 
             # 4. Discovery Matrix: Multi-endpoint, Multi-encoding, Multi-keys
             # -----------------------------------------------------------

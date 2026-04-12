@@ -206,10 +206,19 @@ class PiccomaProvider(BaseProvider):
                 title_tag = item.select_one('p.PCM-epList_title, span.PCM-epList_title, .PCM-epList_title')
                 c_title = title_tag.get_text(strip=True) if title_tag else f"Episode {cid}"
                 row_text = item.get_text()
-                is_wait_free_row = bool(item.select_one('.PCM-icon_waitfree')) or (
+                # S-Grade: Robust Wait-Free detection (Check classes + specific icon images)
+                is_wait_free_row = bool(item.select_one('.PCM-icon_waitfree, .PCM-epList_status_waitfree')) or (
                     '待てば' in row_text and ('￥0' in row_text or '¥0' in row_text)
                 )
-                is_locked = bool(item.select_one('.PCM-epList_lock, .PCM-icon_lock, .PCM-icon_waitfree, .PCM-icon_clock'))
+                if not is_wait_free_row:
+                    # Check alt/alt-text of images as a deep fallback
+                    for img in item.select('img'):
+                        alt = img.get('alt', '')
+                        if '待てば' in alt and ('￥0' in alt or '¥0' in alt):
+                            is_wait_free_row = True
+                            break
+
+                is_locked = bool(item.select_one('.PCM-epList_lock, .PCM-icon_lock, .PCM-icon_waitfree, .PCM-icon_clock, .PCM-epList_status_waitfree'))
                 if not is_locked:
                     is_locked = any(kw in row_text for kw in ["待てば￥0", "¥0"]) is False and "無料" not in row_text
 

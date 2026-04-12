@@ -86,9 +86,9 @@ class PiccomaHelpers:
             return False
 
         low_text = text.lower()
-        indicators = ["404", "見つかりません", "not found", "error", "ご利用いただけません", "アクセス制限", "access denied"]
+        indicators = ["404", "見つかりません", "not found", "error", "ご利用いただけません", "アクセス制限", "access denied", "ログイン", "signin", "register"]
 
-        if status == 200 and len(text) < 18000:
+        if status == 200 and len(text) < 25000:
             for ind in indicators:
                 if ind in low_text:
                     log(f"🛑 [Piccoma Identity] Trap Triggered: HTTP {status}, length {len(text)}, found trigger '{ind}' at {url}")
@@ -175,6 +175,11 @@ class PiccomaHelpers:
                             "request_headers": req_headers
                         }, developer_mode=developer_mode)
                     raise ScraperError(f"Block/Trap page detected at {current_url}")
+                
+                # S-Grade: Ensure we didn't land on a sign-in page after redirects
+                if self.piccoma_html_indicates_guest_shell(current_url, res.text):
+                    logger.warning(f"🛑 [Piccoma Identity] Auth Kick Detected: {current_url} looks like a sign-in shell.")
+                    raise ScraperError(f"Session rejected; redirected to sign-in at {current_url}")
                     
                 return res
             except ScraperError:
