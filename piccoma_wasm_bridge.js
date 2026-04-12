@@ -37,6 +37,9 @@ try {
     // Make globalThis itself pass the instanceof check
     Object.setPrototypeOf(globalThis, Window.prototype);
 
+    // Mock Location to prevent crashes when WASM looks for global context
+    globalThis.location = { toString: () => 'https://piccoma.com/' };
+
     const wasmBuffer = fs.readFileSync(path.join(__dirname, 'diamond_bg.wasm'));
 
     const { initSync, dd } = await import('./diamond.js');

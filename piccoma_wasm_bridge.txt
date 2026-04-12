@@ -1,0 +1,86 @@
+
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import path from 'path';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+async function main() {
+    const seed = process.argv[2];
+    if (!seed) process.exit(1);
+
+    try {
+        const mockWin = {
+            location: { 
+                href: 'https://piccoma.com/web/viewer/s/71365/6214975',
+                origin: 'https://piccoma.com',
+                protocol: 'https:',
+                host: 'piccoma.com',
+                hostname: 'piccoma.com',
+                pathname: '/web/viewer/s/71365/6214975'
+            },
+            navigator: { 
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                platform: 'Win32'
+            },
+            document: { 
+                createElement: () => ({}),
+                documentElement: {},
+                body: {}
+            },
+            screen: { width: 1920, height: 1080 },
+            performance: { now: () => Date.now() },
+            btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+        };
+        mockWin.window = mockWin;
+        mockWin.self = mockWin;
+
+        const proxyHandler = {
+            get(target, prop) {
+                if (!(prop in target) && typeof prop === 'string') {
+                    // process.stderr.write(`[DEBUG] Accessed missing prop: ${prop}\n`);
+                }
+                return target[prop];
+            }
+        };
+        const proxiedWin = new Proxy(mockWin, proxyHandler);
+
+        Object.defineProperties(globalThis, {
+            window: { value: proxiedWin, configurable: true },
+            self: { value: proxiedWin, configurable: true },
+            location: { value: mockWin.location, configurable: true },
+            navigator: { value: mockWin.navigator, configurable: true },
+            document: { value: mockWin.document, configurable: true },
+            btoa: { value: mockWin.btoa, configurable: true },
+            performance: { value: mockWin.performance, configurable: true },
+            screen: { value: mockWin.screen, configurable: true },
+            Window: { value: class {}, configurable: true }
+        });
+
+        const { default: init, dd } = await import('./diamond.js');
+        const wasmPath = path.join(__dirname, 'diamond_bg.wasm');
+        const wasmBuffer = fs.readFileSync(wasmPath);
+        
+        const wasmExports = await init(wasmBuffer).catch(e => {
+            process.stderr.write(`Init Error: ${e.message}\n`);
+            return e.exports;
+        });
+        
+        if (wasmExports) {
+            // process.stderr.write(`Exports: ${Object.keys(wasmExports).join(', ')}\n`);
+        }
+        
+        const result = dd(seed);
+        if (result) {
+            process.stdout.write(result);
+            process.exit(0);
+        } else {
+            throw new Error("Empty result");
+        }
+    } catch (err) {
+        process.stderr.write(err.stack || err.message + "\n");
+        process.exit(1);
+    }
+}
+
+main();

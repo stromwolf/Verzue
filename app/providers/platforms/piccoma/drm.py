@@ -41,32 +41,32 @@ class PiccomaDRM:
         except Exception: pass
         return None
 
-    def _dd_transform(self, seed: str) -> str:
+    async def _dd_transform(self, seed: str) -> str:
         """
         Transforms the seed using the Diamond DRM WASM module via Node.js bridge.
+        S-Grade: Async execution to prevent event-loop blocking.
         """
         try:
-            import subprocess
-            import os
-            
             # Paths to bridge and node
+            # Correct pathing: 4 levels up from app/providers/platforms/piccoma
             bridge_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../piccoma_wasm_bridge.js"))
             
-            # Run the bridge
-            result = subprocess.run(
-                ["node", bridge_path, seed],
-                capture_output=True,
-                text=True,
-                check=False
+            # Run the bridge asynchronously
+            proc = await asyncio.create_subprocess_exec(
+                "node", bridge_path, seed,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
             )
             
-            if result.returncode == 0:
-                transformed_seed = result.stdout.strip()
+            stdout, stderr = await proc.communicate()
+            
+            if proc.returncode == 0:
+                transformed_seed = stdout.decode().strip()
                 if transformed_seed:
                     self.logger.info(f"Seed transform success: {seed} -> {transformed_seed}")
                     return transformed_seed
             
-            self.logger.warning(f"Seed transform failed: {result.stderr.strip()}")
+            self.logger.warning(f"Seed transform failed: {stderr.decode().strip()}")
             return seed
             
         except Exception as e:
@@ -171,10 +171,12 @@ class PiccomaDRM:
                 return
 
             try:
+                final_seed = await self._dd_transform(seed)
+                
                 def unscramble():
                     with self.unscramble_lock:
                         img_io = BytesIO(res.content)
-                        canvas = Canvas(img_io, (50, 50), seed)
+                        canvas = Canvas(img_io, (50, 50), final_seed)
                         return canvas.export(mode="unscramble", format="png").getvalue()
                 
                 content = await asyncio.to_thread(unscramble)
