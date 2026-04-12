@@ -18,6 +18,7 @@ logger = logging.getLogger("PiccomaDRM")
 class PiccomaDRM:
     def __init__(self, provider):
         self.provider = provider
+        self.logger = logger
         # S-GRADE: Thread-safe lock to prevent pycasso's global state race condition
         self.unscramble_lock = threading.Lock()
 
@@ -39,6 +40,38 @@ class PiccomaDRM:
                         return json.loads(html[brace_start:i+1])
         except Exception: pass
         return None
+
+    def _dd_transform(self, seed: str) -> str:
+        """
+        Transforms the seed using the Diamond DRM WASM module via Node.js bridge.
+        """
+        try:
+            import subprocess
+            import os
+            
+            # Paths to bridge and node
+            bridge_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../piccoma_wasm_bridge.js"))
+            
+            # Run the bridge
+            result = subprocess.run(
+                ["node", bridge_path, seed],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            
+            if result.returncode == 0:
+                transformed_seed = result.stdout.strip()
+                if transformed_seed:
+                    self.logger.info(f"Seed transform success: {seed} -> {transformed_seed}")
+                    return transformed_seed
+            
+            self.logger.warning(f"Seed transform failed: {result.stderr.strip()}")
+            return seed
+            
+        except Exception as e:
+            self.logger.error(f"Error during seed transform: {e}")
+            return seed
 
     def _extract_pdata_heuristic(self, html_text):
         """S+ Refinement: DRM Heuristic Recovery."""
@@ -86,41 +119,35 @@ class PiccomaDRM:
             
         return None
 
-    def _dd_transform(self, input_string: str) -> str:
-        """S+ Mirrors pyccoma's dd() seed parity manipulator."""
-        result_bytearray = bytearray()
-        for index, byte in enumerate(bytes(input_string, 'utf-8')):
-            if index < 3:
-                byte = byte + (1 - 2 * (byte % 2))
-            elif 2 < index < 6 or index == 8:
-                pass
-            elif index < 10:
-                byte = byte + (1 - 2 * (byte % 2))
-            elif 12 < index < 15 or index == 16:
-                byte = byte + (1 - 2 * (byte % 2))
-            elif index == len(input_string[:-1]) or index == len(input_string[:-2]):
-                byte = byte + (1 - 2 * (byte % 2))
-            else:
-                pass
-            result_bytearray.append(byte)
-        return str(result_bytearray, 'utf-8')
 
     def _calculate_seed(self, url, region):
-        """Precise mirror of pyccoma 0.7.2's get_seed() JS logic."""
-        path_only = url.split('?')[0].rstrip('/')
-        segments = [s for s in path_only.split('/') if s]
-        
-        if region == "fr":
-            parsed = urllib.parse.urlparse(url)
-            qs = urllib.parse.parse_qs(parsed.query)
-            chk_raw = qs.get('q', [''])[0]
-        else:
-            if segments and segments[-1].lower().endswith(('.png', '.jpg', '.webp', '.jpeg')):
-                chk_raw = segments[-2] if len(segments) >= 2 else ""
-            else:
-                chk_raw = segments[-1] if segments else ""
+        """Mirror of Piccoma viewer get_checksum + get_seed JS logic.
 
-        return str(chk_raw)
+        Steps (matching viewer source exactly):
+          1. get_checksum: split base URL by '/', take last segment (incl. extension)
+          2. get_seed: digit-sum expires, right-rotate checksum by (sum % len)
+        """
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query)
+
+        if region == "fr":
+            checksum = qs.get('q', [''])[0]
+        else:
+            path_only = parsed.path.rstrip('/')
+            segments = [s for s in path_only.split('/') if s]
+            checksum = segments[-1] if segments else ""
+
+        if not checksum:
+            return ""
+
+        expires = qs.get('expires', [''])[0]
+        if expires:
+            digit_sum = sum(int(d) for d in expires if d.isdigit())
+            shift = digit_sum % len(checksum)
+            if shift:
+                checksum = checksum[-shift:] + checksum[:-shift]
+
+        return checksum
 
     async def _download_robust(self, session, img_data, idx, out_dir, region):
         """S+ Verbatim 100% Mirror of pyccoma's Scraper.download logic."""
@@ -145,7 +172,7 @@ class PiccomaDRM:
                 def unscramble():
                     with self.unscramble_lock:
                         img_io = BytesIO(res.content)
-                        final_seed = self._dd_transform(seed) if seed.isupper() else seed
+                        final_seed = self._dd_transform(seed)
                         canvas = Canvas(img_io, (50, 50), final_seed)
                         return canvas.export(mode="unscramble", format="png").getvalue()
                 
