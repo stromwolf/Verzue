@@ -50,7 +50,7 @@ class PiccomaDRM:
             import os
             
             # Paths to bridge and node
-            bridge_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../piccoma_wasm_bridge.js"))
+            bridge_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../piccoma_wasm_bridge.js"))
             
             # Run the bridge
             result = subprocess.run(
