@@ -133,7 +133,7 @@ class Canvas:
                 for i in range(0, len(slices[g])):
                     shuffle_ind.append(i)
                 if mode == 'unscramble':
-                    shuffle_ind = unshuffle(shuffle_ind, self.seed)
+                    shuffle_ind = shuffle(shuffle_ind, self.seed)
                 if mode == 'scramble':
                     shuffle_ind = shuffle(shuffle_ind, self.seed)
 
