@@ -124,7 +124,9 @@ class PiccomaDRM:
         """Mirror of Piccoma viewer get_checksum + get_seed JS logic.
 
         Steps (matching viewer source exactly):
-          1. get_checksum: split base URL by '/', take last segment (incl. extension)
+          1. get_checksum: split base URL by '/', take SECOND-to-last segment
+             JS: url.split('/').slice(-2)[0]
+             e.g. //pcm.kakaocdn.net/.../WRDNKD40TMLSEIMSI@YMMD/i00001.jpg -> 'WRDNKD40TMLSEIMSI@YMMD'
           2. get_seed: digit-sum expires, right-rotate checksum by (sum % len)
         """
         parsed = urllib.parse.urlparse(url)
@@ -135,7 +137,7 @@ class PiccomaDRM:
         else:
             path_only = parsed.path.rstrip('/')
             segments = [s for s in path_only.split('/') if s]
-            checksum = segments[-1] if segments else ""
+            checksum = segments[-2] if len(segments) >= 2 else segments[-1] if segments else ""
 
         if not checksum:
             return ""

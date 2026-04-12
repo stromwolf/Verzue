@@ -5,8 +5,8 @@ After decoding all base64 strings and resolving the array rotation,
 here are the key functions:
 
 get_checksum(url):
-    return url.split('/').slice(-1)[0]
-    # Gets the LAST path segment of the URL (before query string)
+    return url.split('/').slice(-2)[0]
+    # Gets the SECOND-TO-LAST path segment of the URL (the scramble key hash, NOT the filename)
 
 get_seed(checksum, expires):
     sum = expires.split('').reduce((acc, d) => acc + parseInt(d), 0)
@@ -32,8 +32,12 @@ a DIFFERENT code path (e.g., the React viewer pcm_web_viewer_react).
 
 # Now let's test what happens when we DON'T run dd() on the seed
 def get_checksum_jp(url_path):
-    """For JP Piccoma: last path segment before query."""
-    return url_path.rstrip('/').split('/')[-1]
+    """For JP Piccoma: second-to-last path segment (the scramble key hash).
+    JS: url.split('/').slice(-2)[0]
+    e.g. .../WRDNKD40TMLSEIMSI@YMMD/i00001.jpg -> 'WRDNKD40TMLSEIMSI@YMMD'
+    """
+    parts = [s for s in url_path.rstrip('/').split('/') if s]
+    return parts[-2] if len(parts) >= 2 else parts[-1] if parts else ""
 
 def get_checksum_fr(query_params):
     """For FR Piccoma: 'q' query parameter."""
