@@ -51,7 +51,6 @@ class PiccomaSession:
                 )
                 session_obj = None
 
-        newly_logged_in = False
         if not session_obj:
             async with session_service.get_refresh_lock("piccoma"):
                 session_obj = await session_service.get_active_session("piccoma")
@@ -70,7 +69,6 @@ class PiccomaSession:
                     login_success = await login_service.auto_login("piccoma")
 
                     if login_success:
-                        newly_logged_in = True
                         session_obj = await session_service.get_active_session(
                             "piccoma"
                         )
@@ -106,13 +104,22 @@ class PiccomaSession:
 
                     async_session.cookies.set(name, value, domain=c_domain, path=c_path)
 
-            if len(async_session.cookies) < 8 or newly_logged_in:
-                reason = "Thin session" if not newly_logged_in else "Fresh login maturation"
+            if len(async_session.cookies) < 8:
                 logger.info(
-                    f"🛡️ [Piccoma Identity] {reason} triggered ({len(async_session.cookies)} cookies). Maturing profile..."
+                    f"🛡️ [Piccoma Identity] 'Thin' session detected ({len(async_session.cookies)} cookies). Maturing profile..."
                 )
                 try:
-                    await async_session.get("https://piccoma.com/web/", timeout=15)
+                    nav_headers = self.provider.helpers.get_navigation_headers()
+                    maturation_res = await async_session.get("https://piccoma.com/web/", headers=nav_headers, timeout=15)
+                    
+                    # S+ Safety Guard: If Piccoma pushes the maturation request to sign-in,
+                    # DO NOT extract or persist the resulting guest cookies.
+                    if self.provider.helpers.piccoma_html_indicates_guest_shell(str(maturation_res.url), maturation_res.text):
+                        logger.warning(
+                            "⚠️ [Piccoma Identity] Maturation visit triggered an Auth Kick. Discarding maturation results to protect session."
+                        )
+                        return async_session
+
                     matured_cookies = []
                     # S+ Identity Handshake Capture
                     for c in async_session.cookies.jar:
@@ -181,8 +188,9 @@ class PiccomaSession:
 
         try:
             last_res = None
+            nav_headers = self.provider.helpers.get_navigation_headers()
             for url in probe_urls:
-                res = await session.get(url, timeout=15)
+                res = await session.get(url, headers=nav_headers, timeout=15)
                 last_res = res
                 if confirms(res):
                     await self.provider.session_service.record_session_success(

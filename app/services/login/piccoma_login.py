@@ -115,15 +115,7 @@ class PiccomaLoginHandler:
             }
             
             # S-Grade: Separate Navigation vs XHR headers
-            page_headers = {
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                "Referer": login_page_url,
-                "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-                "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="142", "Google Chrome";v="142"',
-                "Sec-Ch-Ua-Mobile": "?0",
-                "Sec-Ch-Ua-Platform": '"Windows"',
-                "Upgrade-Insecure-Requests": "1"
-            }
+            page_headers = self.service.provider.helpers.get_navigation_headers(referer=login_page_url)
             
             xhr_headers = page_headers.copy()
             xhr_headers.update({

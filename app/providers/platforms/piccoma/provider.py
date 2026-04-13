@@ -40,20 +40,13 @@ class PiccomaProvider(BaseProvider):
         
         # S-Grade: Chrome 142 baseline headers (Server Compatibility)
         self.default_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
-        self.default_headers = {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
-            "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="142", "Google Chrome";v="142"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
-            "Upgrade-Insecure-Requests": "1"
-        }
+        # Initialization order: Helpers first to provide headers
+        self.helpers = PiccomaHelpers(self)
+        self.default_headers = self.helpers.get_navigation_headers()
+        
         self._download_semaphore = asyncio.Semaphore(10)
         
-        # Initialize sub-modules
-        self.helpers = PiccomaHelpers(self)
+        # Initialize survivors
         self.session_manager = PiccomaSession(self)
         self.drm = PiccomaDRM(self)
         self.purchase = PiccomaPurchase(self)
@@ -438,13 +431,19 @@ class PiccomaProvider(BaseProvider):
                         "expires": getattr(c, "expires", None),
                     })
             has_pksid = any(c["name"] == "pksid" and c["value"] for c in session_cookies)
-            if session_cookies and has_pksid:
+            
+            # S+ Safety Guard: Check if the session landed on a sign-in or guest shell during the task.
+            # We use the final response (res) from the task to check.
+            is_logged_out = self.helpers.piccoma_html_indicates_guest_shell(str(getattr(res, "url", "")), res.text)
+            
+            if session_cookies and has_pksid and not is_logged_out:
                 active = await self.session_service.get_active_session("piccoma")
                 aid = active.get("account_id", "primary") if active else "primary"
                 await self.session_service.update_session_cookies("piccoma", aid, session_cookies)
                 logger.info(f"[Piccoma] Session cookies persisted after task ({len(session_cookies)} cookies, pksid present).")
             else:
-                logger.warning("[Piccoma] Skipping post-task cookie flush: pksid missing from session.")
+                reason = "pksid missing" if not has_pksid else "session triggered auth-kick during task"
+                logger.warning(f"[Piccoma] Skipping post-task cookie flush: {reason}.")
         except Exception as e:
             logger.warning(f"[Piccoma] Failed to persist session cookies after task: {e}")
 

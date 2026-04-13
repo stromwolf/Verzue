@@ -15,6 +15,21 @@ class PiccomaHelpers:
     def __init__(self, provider):
         self.provider = provider
 
+    def get_navigation_headers(self, referer: str = None) -> dict:
+        """S-Grade: Perfect navigation/page-load headers (Chrome 142)."""
+        headers = {
+            "User-Agent": self.provider.default_user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+            "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="142", "Google Chrome";v="142"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Upgrade-Insecure-Requests": "1"
+        }
+        if referer:
+            headers["Referer"] = referer
+        return headers
+
     def _format_poster_url(self, url: str | None) -> str | None:
         """S+ Refinement: Unified poster formatting logic for Discord embeds via wsrv.nl proxy."""
         if not url: return None
@@ -211,12 +226,8 @@ class PiccomaHelpers:
                 
                 full_url = f"{base_url}{rel_url}"
                 # S-Grade: Ensure navigation headers (no XHR) during ritual
-                ritual_headers = dict(session.headers)
-                ritual_headers.pop("X-Requested-With", None)
-                ritual_headers.pop("Content-Type", None)
-                ritual_headers["Upgrade-Insecure-Requests"] = "1"
-                ritual_headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
-
+                ritual_headers = self.get_navigation_headers()
+                
                 # Use basic request for ritual to avoid infinite recursion if safe_request calls ritual
                 await session.get(full_url, headers=ritual_headers, allow_redirects=True, timeout=15)
                 
