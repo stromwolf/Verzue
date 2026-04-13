@@ -239,7 +239,7 @@ class PiccomaLoginHandler:
                 else:
                     logger.error(
                         f"🛑 [Piccoma] Login considered invalid after handshake: "
-                        f"cookies={len(cookies)}, has_pksid={has_pksid}, auth_ok={auth_ok}, probes=({probe_summary})"
+                        f"cookies={len(cookies)}, has_pksid={has_pksid}, auth_ok={auth_ok}, probes=({outcome_summary})"
                     )
                     return False
             else:
