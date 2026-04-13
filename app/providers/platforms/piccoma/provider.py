@@ -7,8 +7,6 @@ from bs4 import BeautifulSoup
 from app.providers.curl_compat import AsyncSession, RequestsError, ProxyError
 
 from app.providers.base import BaseProvider
-from app.services.session_service import SessionService
-from app.services.login_service import LoginService
 from app.core.exceptions import ScraperError
 from config.settings import Settings
 
@@ -35,6 +33,9 @@ class PiccomaProvider(BaseProvider):
     _unscramble_lock = threading.Lock()
 
     def __init__(self):
+        from app.services.session_service import SessionService
+        from app.services.login_service import LoginService
+        
         self.session_service = SessionService()
         self.login_service = LoginService()
         

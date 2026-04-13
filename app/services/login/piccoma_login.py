@@ -7,7 +7,6 @@ import re
 from curl_cffi.requests import AsyncSession
 from app.core.exceptions import ScraperError
 from config.settings import Settings
-from app.providers.platforms.piccoma.helpers import PiccomaHelpers
 
 logger = logging.getLogger("LoginService.Piccoma")
 
@@ -43,6 +42,7 @@ class PiccomaLoginHandler:
 
     async def login(self, creds: dict):
         """Headless Piccoma login using curl_cffi."""
+        from app.providers.platforms.piccoma.helpers import PiccomaHelpers
         email = creds.get("email")
         password = creds.get("password")
         account_id = creds.get("account_id", "primary")
