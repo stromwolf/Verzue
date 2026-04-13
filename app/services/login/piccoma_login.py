@@ -225,13 +225,16 @@ class PiccomaLoginHandler:
                     is_logged_in_html = "/acc/signout" in html or "PCM-header_user" in html or "本棚" in html
                     auth_ok = is_logged_in_html
 
-                probe_summary = (
-                    f"web={web_res.status_code}, shelf={shelf_res.status_code}, hist={hist_res.status_code}"
-                )
+                # S-Grade: Human-Readable Outcome
+                outcome_details = []
+                outcome_details.append("Homepage: OK" if web_res.status_code == 200 else f"Homepage: {web_res.status_code}")
+                outcome_details.append("Bookshelf: OK" if shelf_res.status_code == 200 else f"Bookshelf: DENIED ({shelf_res.status_code})")
+                outcome_details.append("History: OK" if hist_res.status_code == 200 else f"History: DENIED ({hist_res.status_code})")
+                outcome_summary = " | ".join(outcome_details)
 
                 if cookies and has_pksid and auth_ok:
                     await self.service.session_service.update_session_cookies("piccoma", account_id, cookies)
-                    logger.info(f"✅ Automated login successful for Piccoma ({email}) with pksid ({probe_summary}).")
+                    logger.info(f"✅ Automated login successful for Piccoma ({email}) [{outcome_summary}].")
                     return True
                 else:
                     logger.error(

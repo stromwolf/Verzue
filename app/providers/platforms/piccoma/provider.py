@@ -254,6 +254,16 @@ class PiccomaProvider(BaseProvider):
             _has_charging = "チャージ中" in _res.text
             _has_points_read = "ポイントで読む" in _res.text
 
+            _verdict = "OK (Authenticated)"
+            if _signin_markers:
+                _verdict = f"REJECTED (Kicked to Login) -> {_final_url}"
+            elif _has_charging:
+                _verdict = "LOCKED (Wait-Free Charging)"
+            elif _has_points_read or _has_purchase_form:
+                _verdict = "LOCKED (Coins/Points Required)"
+            elif not _has_next_data and _res.status_code == 200:
+                _verdict = "ERROR (Empty Shell/WAF Block)"
+
             return (
                 _res,
                 _final_url,
@@ -263,6 +273,7 @@ class PiccomaProvider(BaseProvider):
                 _has_purchase_form,
                 _has_charging,
                 _has_points_read,
+                _verdict
             )
 
         try:
@@ -297,10 +308,8 @@ class PiccomaProvider(BaseProvider):
             raise ScraperError(f"Chapter access failed: {e}")
 
         logger.info(
-            f"[Piccoma][DEV-TRACE] Viewer fetch outcome for {chapter_id}: "
-            f"status={res.status_code}, final_url={final_url}, redirects={len(redirect_chain)}, "
-            f"len={len(res.text)}, signin={signin_markers}, next_data={has_next_data}, "
-            f"purchase_form={has_purchase_form}, charging={has_charging}, points_read={has_points_read}"
+            f"[Piccoma] Viewer Access Diagnostic for {chapter_id}: {verdict} "
+            f"(Status: {res.status_code}, Len: {len(res.text)}, Redirects: {len(redirect_chain)})"
         )
 
         if signin_markers:
@@ -336,12 +345,10 @@ class PiccomaProvider(BaseProvider):
                 has_purchase_form,
                 has_charging,
                 has_points_read,
+                verdict
             ) = await _fetch_viewer_with_trace(auth_session)
             logger.info(
-                f"[Piccoma][DEV-TRACE] Viewer retry outcome for {chapter_id}: "
-                f"status={res.status_code}, final_url={final_url}, redirects={len(redirect_chain)}, "
-                f"len={len(res.text)}, signin={signin_markers}, next_data={has_next_data}, "
-                f"purchase_form={has_purchase_form}, charging={has_charging}, points_read={has_points_read}"
+                f"[Piccoma] Viewer Retry Result for {chapter_id}: {verdict}"
             )
             if signin_markers:
                 raise ScraperError(

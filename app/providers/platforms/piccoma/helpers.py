@@ -160,11 +160,15 @@ class PiccomaHelpers:
                     if not location.startswith("http"):
                         location = urllib.parse.urljoin(current_url, location)
                     
-                    logger.info(f"📡 [Piccoma Identity] Redirect {i+1}: {res.status_code} -> {location}")
-                    
-                    if any(trap in location.lower() for trap in ["404", "blocked", "captcha", "error", "ご利用いただけません"]):
-                        logger.error(f"⚠️ [Piccoma Identity] Redirect Trap: {current_url} -> {location}")
-                        raise ScraperError(f"Redirect trap detected: -> {location}")
+                    reason = "Unknown"
+                    if any(t in location.lower() for t in ["404"]): reason = "Broken Link (404)"
+                    elif any(t in location.lower() for t in ["blocked", "captcha"]): reason = "Akamai Security Wall (Blocked/Captcha)"
+                    elif "error" in location.lower(): reason = "Server Error Response"
+                    elif "ご利用いただけません" in location.lower(): reason = "Geo-Block / Maintenance"
+
+                    if reason != "Unknown":
+                        logger.error(f"⚠️ [Piccoma Identity] Redirect Trap detected: {reason}")
+                        raise ScraperError(f"Redirect trap ({reason}): -> {location}")
                         
                     current_url = location
                     method = "GET"
