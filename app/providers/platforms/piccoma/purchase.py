@@ -103,8 +103,8 @@ class PiccomaPurchase:
         access_form = {
             "product_id": str(series_id),
             "episode_id": str(episode_id),
-            "referrer_type": "",
-            "current_episode_id": "",
+            "referrer_type": "product",
+            "current_episode_id": str(episode_id),
         }
         # V2 Handshake: This call often triggers an 'Auth Kick' if the session is stale.
         # We MUST NOT swallow ScraperErrors (auth redirects) here.
@@ -130,13 +130,13 @@ class PiccomaPurchase:
                 data=v2_body,
             )
 
-        # Build priority list for V2 endpoints
+        # Build priority list for V2 endpoints (Including "Wait-Free-More" feature)
         if wf is True:
-            kinds = ["waitfree", "point", "coin"]
+            kinds = ["waitfree", "waitfreemore", "point", "coin"]
         elif wf is False:
-            kinds = ["point", "coin", "waitfree"] # Still try waitfree as a ghost-failure fallback
+            kinds = ["point", "coin", "waitfree", "waitfreemore"] 
         else:
-            kinds = ["waitfree", "point", "coin"]
+            kinds = ["waitfree", "waitfreemore", "point", "coin"]
 
         for kind in kinds:
             try:
@@ -294,6 +294,7 @@ class PiccomaPurchase:
                                 keys["ep"]: int(episode_id),
                                 keys["prod"]: int(series_id),
                                 "hash": sec_hash,
+                                "use_type": 1 if endpoint in waitfree_paths else None,
                                 keys["csrft"]: csrf_any if "middleware" not in keys["csrft"] else csrf_middleware_token
                             }
                             # Cleanup: don't send None

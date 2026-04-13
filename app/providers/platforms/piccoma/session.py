@@ -96,7 +96,7 @@ class PiccomaSession:
                         c_domain = ".piccoma.com"
                         c_path = "/"
                     elif name.lower() in ["csrftoken", "csrf_token", "snexid"]:
-                        c_domain = "piccoma.com"
+                        c_domain = ".piccoma.com"
                         c_path = "/"
                     else:
                         c_domain = c.get("domain") or region_domain
