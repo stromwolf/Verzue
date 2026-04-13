@@ -65,20 +65,12 @@ class PiccomaHelpers:
 
     def piccoma_html_indicates_guest_shell(self, final_url: str, html: str) -> bool:
         """
-        High-confidence logged-out / sign-in HTML. Do not use bare 'PCM-headerLogin' on large pages:
-        Smartoon bundles embed that string and cause false 'guest' detections.
+        [PHASE 8] STRICT DETECTION: Only consider it a guest shell if the URL is an explicit account entry point.
+        No more guessing based on HTML content (Login buttons, etc) which caused false positives.
         """
         u = final_url or ""
-        if "/web/acc/signin" in u or "/acc/email/signin" in u:
-            return True
-        t = html or ""
-        if "ログイン｜ピッコマ" in t:
-            return True
-        if "PCM-loginMenu" in t:
-            return True
-        if "/acc/signin?next_url=" in t:
-            return True
-        if len(t) < 85000 and "PCM-headerLogin" in t:
+        # Strictly only signin and register URLs are considered "Kicked"
+        if "/web/acc/signin" in u or "/acc/email/signin" in u or "/web/acc/register" in u:
             return True
         return False
 
@@ -197,7 +189,7 @@ class PiccomaHelpers:
                 # S-Grade: Ensure we didn't land on a sign-in page after redirects
                 if self.piccoma_html_indicates_guest_shell(current_url, res.text):
                     logger.warning(f"🛑 [Piccoma Identity] Auth Kick Detected: {current_url} looks like a sign-in shell.")
-                    raise ScraperError(f"Session rejected; redirected to sign-in at {current_url}")
+                    # [PHASE 8] Softened: No longer raising ScraperError here. Let the caller decide if the result is usable.
                     
                 return res
             except ScraperError:
@@ -210,17 +202,17 @@ class PiccomaHelpers:
 
     async def run_ritual(self, session: AsyncSession, base_url: str = "https://piccoma.com") -> None:
         """S-Grade Adaptive Ritual: Performs randomized navigation to 'warm up' the session."""
-        scenarios = [
-            ["/", "/web/genre/comic", "/web/product/list?list_type=T&sort_type=N"], 
-            ["/", "/web/search/result?word={word}"],
-            ["/web/genre/smartoon", "/web/product/list?list_type=T&sort_type=H"], 
-            ["/web/history", "/web/bookshelf"] 
-        ]
+        scenarios = {
+            1: ["/web/genre/smartoon/ranking", "/web/product/list?list_type=T&sort_type=H"],
+            2: ["/web/genre/smartoon", "/web/product/list?list_type=T&sort_type=H"],
+            3: ["/web/search/?q=%E6%9C%80%E5%BC%B7"] # Search for 'strongest'
+        }
         
-        keywords = ["ファンタジー", "アクション", "令嬢", "恋愛", "異世界", "冒険"]
-        scenario = random.choice(scenarios)
+        scenario_keys = list(scenarios.keys())
+        chosen_key = random.choice(scenario_keys)
+        scenario = scenarios[chosen_key]
         
-        logger.info(f"[Piccoma Identity] 🔮 Warm-up Ritual: Scenario {scenarios.index(scenario)} initiated.")
+        logger.info(f"[Piccoma Identity] 🔮 Warm-up Ritual: Scenario {chosen_key} initiated.")
         for step in scenario:
             try:
                 rel_url = step

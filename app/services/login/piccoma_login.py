@@ -52,8 +52,8 @@ class PiccomaLoginHandler:
         
         proxy_url = Settings.get_proxy()
         proxies = {"http": proxy_url, "https": proxy_url}
-        # Use Chrome 142 baseline (Server Compatibility)
-        async with AsyncSession(impersonate="chrome142", proxies=proxies) as session:
+        # Use Chrome 120 baseline (Supported Preset)
+        async with AsyncSession(impersonate="chrome120", proxies=proxies) as session:
             session.headers.update({
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
             })
