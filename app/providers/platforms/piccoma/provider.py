@@ -300,6 +300,7 @@ class PiccomaProvider(BaseProvider):
                 has_purchase_form,
                 has_charging,
                 has_points_read,
+                verdict
             ) = await _fetch_viewer_with_trace(auth_session)
         except (ProxyError, RequestsError) as e:
             logger.error(f"[Piccoma] Proxy Error during chapter access: {e}")
