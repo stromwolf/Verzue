@@ -7,6 +7,7 @@ import re
 from curl_cffi.requests import AsyncSession
 from app.core.exceptions import ScraperError
 from config.settings import Settings
+from app.providers.platforms.piccoma.helpers import PiccomaHelpers
 
 logger = logging.getLogger("LoginService.Piccoma")
 
