@@ -114,15 +114,27 @@ class PiccomaLoginHandler:
                 "next_url": "/web"
             }
             
-            headers = {
+            # S-Grade: Separate Navigation vs XHR headers
+            page_headers = {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
                 "Referer": login_page_url,
-                "Origin": base_url,
-                "Content-Type": "application/x-www-form-urlencoded",
-                "X-Requested-With": "XMLHttpRequest"
+                "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+                "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="142", "Google Chrome";v="142"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Upgrade-Insecure-Requests": "1"
             }
             
+            xhr_headers = page_headers.copy()
+            xhr_headers.update({
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-Requested-With": "XMLHttpRequest",
+                "Origin": base_url,
+                "Accept": "application/json, text/plain, */*"
+            })
+            
             logger.info(f"[Piccoma] Sending login request for {email}...")
-            post_res = await session.post(login_page_url, data=payload, headers=headers, allow_redirects=False)
+            post_res = await session.post(login_page_url, data=payload, headers=xhr_headers, allow_redirects=False)
             
             # --- Cookie Interception ---
             # Piccoma often sets pksid on the initial 302 redirect response.
@@ -144,16 +156,17 @@ class PiccomaLoginHandler:
                     if not next_loc.startswith('http'):
                         next_loc = f"{base_url}{next_loc}"
                     logger.debug(f"📡 [Piccoma] Following login redirect: {next_loc}")
-                    post_res = await session.get(next_loc, headers=headers)
+                    post_res = await session.get(next_loc, headers=page_headers)
 
             # --- Identity Handshake ---
             logger.info("🎭 [Identity Handshake] Warming up session...")
             await asyncio.sleep(1.0)
-            web_res = await session.get(f"{base_url}/web/", headers=headers, timeout=15)
+            web_res = await session.get(f"{base_url}/web/", headers=page_headers, timeout=15)
             await asyncio.sleep(0.5)
-            shelf_res = await session.get(f"{base_url}/web/bookshelf", headers=headers, timeout=15)
+            # S-Grade: Probes must use navigation headers (no XHR)
+            shelf_res = await session.get(f"{base_url}/web/bookshelf", headers=page_headers, timeout=15)
             await asyncio.sleep(0.3)
-            hist_res = await session.get(f"{base_url}/web/history", headers=headers, timeout=15)
+            hist_res = await session.get(f"{base_url}/web/history", headers=page_headers, timeout=15)
             await asyncio.sleep(0.5)
 
             is_success = False

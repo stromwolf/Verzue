@@ -210,8 +210,15 @@ class PiccomaHelpers:
                     rel_url = step.format(word=random.choice(keywords))
                 
                 full_url = f"{base_url}{rel_url}"
+                # S-Grade: Ensure navigation headers (no XHR) during ritual
+                ritual_headers = dict(session.headers)
+                ritual_headers.pop("X-Requested-With", None)
+                ritual_headers.pop("Content-Type", None)
+                ritual_headers["Upgrade-Insecure-Requests"] = "1"
+                ritual_headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+
                 # Use basic request for ritual to avoid infinite recursion if safe_request calls ritual
-                await session.get(full_url, allow_redirects=True, timeout=15)
+                await session.get(full_url, headers=ritual_headers, allow_redirects=True, timeout=15)
                 
                 delay = max(2.5, random.gauss(6, 2))
                 logger.debug(f"[Piccoma Identity] Ritual step complete. Pausing {delay:.2f}s...")

@@ -51,6 +51,7 @@ class PiccomaSession:
                 )
                 session_obj = None
 
+        newly_logged_in = False
         if not session_obj:
             async with session_service.get_refresh_lock("piccoma"):
                 session_obj = await session_service.get_active_session("piccoma")
@@ -69,6 +70,7 @@ class PiccomaSession:
                     login_success = await login_service.auto_login("piccoma")
 
                     if login_success:
+                        newly_logged_in = True
                         session_obj = await session_service.get_active_session(
                             "piccoma"
                         )
@@ -104,9 +106,10 @@ class PiccomaSession:
 
                     async_session.cookies.set(name, value, domain=c_domain, path=c_path)
 
-            if len(async_session.cookies) < 8:
+            if len(async_session.cookies) < 8 or newly_logged_in:
+                reason = "Thin session" if not newly_logged_in else "Fresh login maturation"
                 logger.info(
-                    f"🛡️ [Piccoma Identity] 'Thin' session detected ({len(async_session.cookies)} cookies). Maturing profile..."
+                    f"🛡️ [Piccoma Identity] {reason} triggered ({len(async_session.cookies)} cookies). Maturing profile..."
                 )
                 try:
                     await async_session.get("https://piccoma.com/web/", timeout=15)
