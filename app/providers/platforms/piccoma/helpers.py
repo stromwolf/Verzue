@@ -11,14 +11,17 @@ from app.core.exceptions import ScraperError
 
 logger = logging.getLogger("PiccomaHelpers")
 
+DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+
 class PiccomaHelpers:
     def __init__(self, provider):
         self.provider = provider
 
-    def get_navigation_headers(self, referer: str = None) -> dict:
+    @staticmethod
+    def get_navigation_headers(ua: str = DEFAULT_UA, referer: str = None) -> dict:
         """S-Grade: Perfect navigation/page-load headers (Chrome 142)."""
         headers = {
-            "User-Agent": self.provider.default_user_agent,
+            "User-Agent": ua,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
             "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
             "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="142", "Google Chrome";v="142"',

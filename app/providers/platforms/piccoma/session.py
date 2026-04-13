@@ -109,7 +109,7 @@ class PiccomaSession:
                     f"🛡️ [Piccoma Identity] 'Thin' session detected ({len(async_session.cookies)} cookies). Maturing profile..."
                 )
                 try:
-                    nav_headers = self.provider.helpers.get_navigation_headers()
+                    nav_headers = PiccomaHelpers.get_navigation_headers()
                     maturation_res = await async_session.get("https://piccoma.com/web/", headers=nav_headers, timeout=15)
                     
                     # S+ Safety Guard: If Piccoma pushes the maturation request to sign-in,
@@ -188,7 +188,7 @@ class PiccomaSession:
 
         try:
             last_res = None
-            nav_headers = self.provider.helpers.get_navigation_headers()
+            nav_headers = PiccomaHelpers.get_navigation_headers()
             for url in probe_urls:
                 res = await session.get(url, headers=nav_headers, timeout=15)
                 last_res = res

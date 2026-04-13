@@ -115,7 +115,7 @@ class PiccomaLoginHandler:
             }
             
             # S-Grade: Separate Navigation vs XHR headers
-            page_headers = self.service.provider.helpers.get_navigation_headers(referer=login_page_url)
+            page_headers = PiccomaHelpers.get_navigation_headers(referer=login_page_url)
             
             xhr_headers = page_headers.copy()
             xhr_headers.update({

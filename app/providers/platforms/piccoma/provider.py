@@ -42,7 +42,7 @@ class PiccomaProvider(BaseProvider):
         self.default_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
         # Initialization order: Helpers first to provide headers
         self.helpers = PiccomaHelpers(self)
-        self.default_headers = self.helpers.get_navigation_headers()
+        self.default_headers = PiccomaHelpers.get_navigation_headers()
         
         self._download_semaphore = asyncio.Semaphore(10)
         
