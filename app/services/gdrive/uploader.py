@@ -137,7 +137,8 @@ class GDriveUploader:
         except Exception as e:
             logger.error(f"Failed to list folder {parent_id}: {e}")
             return {}
-
+    def create_folder(self, name: str, parent_id: str):
+        """Creates a folder with Shared Drive support, checking existence first."""
         if self.is_disabled: return "null-folder-id"
         existing_id = self.find_folder(name, parent_id)
         if existing_id: return existing_id
