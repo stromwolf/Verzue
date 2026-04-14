@@ -5,6 +5,9 @@ from pathlib import Path
 
 import psutil
 
+from config.settings import Settings
+Settings.ensure_dirs() # Load Secrets & Create Dirs BEFORE any other app imports
+
 from app.core.logger import setup_logging
 from app.services.gdrive.client import GDriveClient, NullGDriveClient
 from app.services.group_manager import sync_index_to_redis
@@ -16,7 +19,6 @@ from app.services.task_listener import TaskListener
 from app.tasks.manager import TaskQueue
 from app.bot.main import MechaBot
 from app.bot.helper_bot import HelperBot
-from config.settings import Settings
 
 _PID_FILE = Path("bot.pid")
 
@@ -49,8 +51,7 @@ def _acquire_pid_lock(force: bool = False) -> None:
 
 async def main() -> None:
     logger = setup_logging()
-    Settings.ensure_dirs()
-
+    
     logger.info("system.start", extra={"component": "entrypoint"})
     _acquire_pid_lock(force="--force" in sys.argv)
 
