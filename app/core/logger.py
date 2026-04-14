@@ -82,7 +82,7 @@ def setup_logging(name: str = "MechaBot"):
         sh = logging.StreamHandler(sys.stdout)
         
         # 🟢 Developer Mode: Elevate console to DEBUG if enabled
-        console_level = logging.DEBUG if Settings.DEVELOPER_MODE else logging.INFO
+        console_level = logging.DEBUG if getattr(Settings, "DEVELOPER_MODE", False) else logging.INFO
         sh.setLevel(console_level)
         
         sh.setFormatter(CustomFormatter())
