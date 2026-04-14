@@ -38,7 +38,7 @@ class HelperSlashCog(commands.Cog):
             await interaction.response.defer(ephemeral=True)
             
         is_owner = interaction.user.id == 1216284053049704600
-        is_allowed = interaction.user.id in Settings.CDN_ALLOWED_USERS
+        is_allowed = interaction.user.id in self.bot.app_state.cdn_allowed_users
         if not (is_owner or is_allowed):
             msg = "❌ **Access Denied.** You are not authorized to use admin commands."
             # Since we always defer now, we always use followup
@@ -49,8 +49,9 @@ class HelperSlashCog(commands.Cog):
     def _get_current_group(self, interaction: discord.Interaction) -> str:
         guild_id = interaction.guild.id if interaction.guild else 0
         channel_id_origin = interaction.channel.id
-        # We reuse the global dict!
-        return Settings.SERVER_MAP.get(channel_id_origin) or Settings.SERVER_MAP.get(guild_id)
+        # Use dynamic app_state instead of removed static Settings.SERVER_MAP
+        state = self.bot.app_state
+        return state.server_map.get(channel_id_origin) or state.server_map.get(guild_id)
 
     # --- 1. GROUP ADD ---
     @app_commands.command(name="add-group", description="[Admin] Register a new group profile.")
@@ -67,11 +68,11 @@ class HelperSlashCog(commands.Cog):
         clean_name = name.strip()
         clean_website = website.strip()
         
-        if clean_name in Settings.GROUP_PROFILES:
+        if clean_name in self.bot.app_state.group_profiles:
             return await interaction.response.send_message(f"⚠️ Group **{clean_name}** already exists in the registry.", ephemeral=True)
             
-        Settings.GROUP_PROFILES.add(clean_name)
-        Settings.save_group_profiles()
+        self.bot.app_state.group_profiles.add(clean_name)
+        self.bot.app_state.save_group_registry()
         
         # Create profile JSON with website
         try:
@@ -97,13 +98,13 @@ class HelperSlashCog(commands.Cog):
             for sid in ids:
                 try:
                     server_id = int(sid)
-                    Settings.SERVER_MAP[server_id] = clean_name
+                    self.bot.app_state.server_map[server_id] = clean_name
                     success_ids.append(str(server_id))
                 except ValueError:
                     continue
             
             if success_ids:
-                Settings.save_server_map()
+                self.bot.app_state.save_group_registry()
                 linked_str = f"\n🔗 **Linked Servers:** {', '.join(f'`{s}`' for s in success_ids)}"
 
         await interaction.response.send_message(f"✅ **Group Profile Created:** `{clean_name}`\n🌐 **Website:** <{clean_website}>{linked_str}\nYou can now use `/register-server` to assign more servers.")
@@ -113,7 +114,7 @@ class HelperSlashCog(commands.Cog):
         """Provides autocomplete suggestions from registered group profiles."""
         return [
             app_commands.Choice(name=g, value=g)
-            for g in sorted(Settings.GROUP_PROFILES)
+            for g in sorted(self.bot.app_state.group_profiles)
             if current.lower() in g.lower()
         ][:25]
 
@@ -131,7 +132,7 @@ class HelperSlashCog(commands.Cog):
         if not await self.interaction_check(interaction):
             return
 
-        if name not in Settings.GROUP_PROFILES:
+        if name not in self.bot.app_state.group_profiles:
             return await interaction.response.send_message(f"❌ **Unknown Group:** `{name}` is not a registered group profile.", ephemeral=True)
 
         if not website and not note and not emoji and not new_name:
@@ -158,7 +159,7 @@ class HelperSlashCog(commands.Cog):
             
             if new_name and new_name.strip() and new_name.strip() != name:
                 clean_new = new_name.strip()
-                if clean_new in Settings.GROUP_PROFILES:
+                if clean_new in self.bot.app_state.group_profiles:
                     msg += f"\n⚠️ **Rename Failed:** `{clean_new}` already exists."
                 else:
                     await self.initiate_group_rename(interaction, name, clean_new)
@@ -214,7 +215,7 @@ class HelperSlashCog(commands.Cog):
         if not await self.interaction_check(interaction):
             return
 
-        if name not in Settings.GROUP_PROFILES:
+        if name not in self.bot.app_state.group_profiles:
             return await interaction.response.send_message(f"❌ **Unknown Group:** `{name}` is not a registered group profile.", ephemeral=True)
             
         ids = [s.strip() for s in server.split(",") if s.strip()]
@@ -237,7 +238,7 @@ class HelperSlashCog(commands.Cog):
                     "❌ **Restriction.** Channel-level mapping is only permitted for Server `1419393318147719170`.", 
                     ephemeral=True
                 )
-            Settings.SERVER_MAP[target_channel_id] = name
+            self.bot.app_state.server_map[target_channel_id] = name
             target_display = f"Channel `{target_channel_id}`"
             success_ids.append(str(target_channel_id))
         else:
@@ -245,7 +246,7 @@ class HelperSlashCog(commands.Cog):
             for sid in ids:
                 try:
                     target_server_id = int(sid)
-                    Settings.SERVER_MAP[target_server_id] = name
+                    self.bot.app_state.server_map[target_server_id] = name
                     success_ids.append(sid)
                 except ValueError:
                     continue
@@ -255,7 +256,7 @@ class HelperSlashCog(commands.Cog):
             
             target_display = f"Server(s) {', '.join(f'`{s}`' for s in success_ids)}"
             
-        Settings.save_server_map()
+        self.bot.app_state.save_group_registry()
         
         embed = discord.Embed(
             title="✅ Registration Complete",
@@ -271,7 +272,7 @@ class HelperSlashCog(commands.Cog):
         if not await self.interaction_check(interaction):
             return
 
-        if not Settings.GROUP_PROFILES:
+        if not self.bot.app_state.group_profiles:
             return await interaction.response.send_message("ℹ️ No Group Profiles have been registered yet.", ephemeral=True)
 
         embed = discord.Embed(
@@ -280,13 +281,13 @@ class HelperSlashCog(commands.Cog):
             color=0x3498db
         )
 
-        for group_name in sorted(list(Settings.GROUP_PROFILES)):
+        for group_name in sorted(list(self.bot.app_state.group_profiles)):
             data = load_group(group_name)
             website = data.get("website", "*Not Set*")
             note = data.get("note")
             
             # Find linked IDs for this group
-            links = [str(tid) for tid, name in Settings.SERVER_MAP.items() if name == group_name]
+            links = [str(tid) for tid, name in self.bot.app_state.server_map.items() if name == group_name]
             links_str = ", ".join(f"`{l}`" for l in links) if links else "*None*"
 
             val = f"🌐 **Website:** {website}\n"
@@ -306,7 +307,7 @@ class HelperSlashCog(commands.Cog):
     @app_commands.describe(group_name="The name of the group profile to list subscriptions for")
     @app_commands.autocomplete(group_name=group_name_autocomplete)
     async def sub_list(self, interaction: discord.Interaction, group_name: str):
-        if group_name not in Settings.GROUP_PROFILES:
+        if group_name not in self.bot.app_state.group_profiles:
             return await interaction.response.send_message(f"❌ **Unknown Group:** `{group_name}` is not a registered group profile.", ephemeral=True)
 
         data = load_group(group_name)
@@ -344,7 +345,7 @@ class HelperSlashCog(commands.Cog):
         if not await self.interaction_check(interaction):
             return
 
-        if group not in Settings.GROUP_PROFILES:
+        if group not in self.bot.app_state.group_profiles:
             return await interaction.response.send_message(f"❌ **Unknown Group:** `{group}` is not a registered group profile.", ephemeral=True)
 
         clean_url = series.strip()
@@ -369,8 +370,8 @@ class HelperSlashCog(commands.Cog):
         if not await self.interaction_check(interaction):
             return
 
-        Settings.CDN_ALLOWED_USERS.add(user.id)
-        Settings.save_cdn_users()
+        self.bot.app_state.cdn_allowed_users.add(user.id)
+        self.bot.app_state.save_cdn_users()
         
         await interaction.response.send_message(f"✅ **Access Granted:** <@{user.id}> can now use helper bot admin commands.", ephemeral=False)
 
@@ -380,9 +381,9 @@ class HelperSlashCog(commands.Cog):
         if not await self.interaction_check(interaction):
             return
 
-        if user.id in Settings.CDN_ALLOWED_USERS:
-            Settings.CDN_ALLOWED_USERS.remove(user.id)
-            Settings.save_cdn_users()
+        if user.id in self.bot.app_state.cdn_allowed_users:
+            self.bot.app_state.cdn_allowed_users.remove(user.id)
+            self.bot.app_state.save_cdn_users()
             await interaction.response.send_message(f"🗑️ **Access Revoked:** <@{user.id}> can no longer use admin commands.", ephemeral=False)
         else:
             await interaction.response.send_message(f"⚠️ User <@{user.id}> was not in the admin list.", ephemeral=True)
@@ -392,11 +393,11 @@ class HelperSlashCog(commands.Cog):
         if not await self.interaction_check(interaction):
             return
 
-        if not Settings.CDN_ALLOWED_USERS:
+        if not self.bot.app_state.cdn_allowed_users:
             return await interaction.response.send_message("ℹ️ No users are currently in the admin list.", ephemeral=True)
 
         desc = "## Authorized Admin Users\n"
-        for user_id in Settings.CDN_ALLOWED_USERS:
+        for user_id in self.bot.app_state.cdn_allowed_users:
             desc += f"> • <@{user_id}> (`{user_id}`)\n"
 
         embed = discord.Embed(
@@ -420,7 +421,7 @@ class HelperSlashCog(commands.Cog):
             return
 
         # Validate group exists
-        if group_name not in Settings.GROUP_PROFILES:
+        if group_name not in self.bot.app_state.group_profiles:
             return await interaction.response.send_message(f"❌ **Unknown Group:** `{group_name}` is not a registered group profile.", ephemeral=True)
 
         # Validate URL against supported platforms
@@ -472,7 +473,7 @@ class HelperSlashCog(commands.Cog):
     async def initiate_group_removal(self, interaction: discord.Interaction, group_name: str):
         """Logic to send DM to owner for confirmation."""
         from app.services.group_manager import _group_filename
-        if group_name not in Settings.GROUP_PROFILES or not _group_filename(group_name).exists():
+        if group_name not in self.bot.app_state.group_profiles or not _group_filename(group_name).exists():
             msg = f"❌ **Unknown Group:** `{group_name}` does not exist."
             if interaction.response.is_done():
                 await interaction.followup.send(msg, ephemeral=True)
@@ -929,19 +930,20 @@ class GroupRemovalConfirmationView(discord.ui.View):
         success = delete_group(self.group_name)
         
         if success:
+            state = interaction.client.app_state # HelperBot inherits app_state
             # 1. Remove from Profiles Registry
-            if self.group_name in Settings.GROUP_PROFILES:
-                Settings.GROUP_PROFILES.remove(self.group_name)
-                Settings.save_group_profiles()
+            if self.group_name in state.group_profiles:
+                state.group_profiles.remove(self.group_name)
+                state.save_group_registry()
             
             # 2. Comprehensive Cleanup: SERVER_MAP
             # Remove any channel/guild mappings linked to this group
-            to_remove = [k for k, v in Settings.SERVER_MAP.items() if v == self.group_name]
+            to_remove = [k for k, v in state.server_map.items() if v == self.group_name]
             for k in to_remove:
-                del Settings.SERVER_MAP[k]
+                del state.server_map[k]
             
             if to_remove:
-                Settings.save_server_map()
+                state.save_group_registry()
                 logger.info(f"[GroupRemoval] Cleaned up {len(to_remove)} mappings from SERVER_MAP for: {self.group_name}")
 
             await interaction.response.edit_message(
@@ -982,20 +984,21 @@ class GroupRenameConfirmationView(discord.ui.View):
         
         # 1. Rename the physical file
         if rename_group_profile(self.old_name, self.new_name):
+            state = interaction.client.app_state
             # 2. Update Settings.GROUP_PROFILES
-            if self.old_name in Settings.GROUP_PROFILES:
-                Settings.GROUP_PROFILES.remove(self.old_name)
-                Settings.GROUP_PROFILES.add(self.new_name)
-                Settings.save_group_profiles()
+            if self.old_name in state.group_profiles:
+                state.group_profiles.remove(self.old_name)
+                state.group_profiles.add(self.new_name)
+                state.save_group_registry()
             
             # 3. Update Settings.SERVER_MAP
             # Re-map any ID currently pointing to old_name to new_name
-            to_update = [k for k, v in Settings.SERVER_MAP.items() if v == self.old_name]
+            to_update = [k for k, v in state.server_map.items() if v == self.old_name]
             for k in to_update:
-                Settings.SERVER_MAP[k] = self.new_name
+                state.server_map[k] = self.new_name
             
             if to_update:
-                Settings.save_server_map()
+                state.save_group_registry()
                 logger.info(f"[GroupRename] Updated {len(to_update)} mappings for: {self.old_name} → {self.new_name}")
 
             await interaction.response.edit_message(

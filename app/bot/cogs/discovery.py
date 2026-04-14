@@ -336,7 +336,7 @@ class Discovery(commands.Cog):
             first_ch = chapter_list[0]
             
             # Queue for Download
-            group_name = Settings.SERVER_MAP.get(interaction.guild_id, Settings.DEFAULT_CLIENT_NAME)
+            group_name = self.bot.app_state.server_map.get(interaction.guild_id, Settings.DEFAULT_CLIENT_NAME)
             ch_url = f"{url}/episodes/{first_ch['id']}" if platform == "jumptoon" else first_ch.get("url")
             
             # 3. Queue for Preview Preview via BatchController

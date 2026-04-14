@@ -109,7 +109,10 @@ class DashboardCog(commands.Cog):
         """Standardized payload generator for the refined V2 Dashboard."""
         guild_id = interaction.guild.id if interaction.guild else 0
         channel_id = interaction.channel.id if interaction.channel else 0
-        scan_name = Settings.SERVER_MAP.get(channel_id) or Settings.SERVER_MAP.get(guild_id) or Settings.DEFAULT_CLIENT_NAME
+        
+        # 🟢 S-GRADE: Use dynamic app_state instead of removed static Settings.SERVER_MAP
+        state = self.bot.app_state
+        scan_name = state.server_map.get(channel_id) or state.server_map.get(guild_id) or Settings.DEFAULT_CLIENT_NAME
 
         # 🟢 S-GRADE: Fetch Weeklies via helper
         weeklies_section, action_row = await self.get_weeklies_section(scan_name)
@@ -1647,8 +1650,9 @@ class DashboardCog(commands.Cog):
             
             # 🟢 TITLE OVERRIDE: Check if the group has a custom English title for this series
             guild_id = interaction.guild.id if interaction.guild else 0
-            channel_id_origin = interaction.channel.id if interaction.channel else 0
-            group_name = Settings.SERVER_MAP.get(channel_id_origin) or Settings.SERVER_MAP.get(guild_id)
+            channel_id_origin = interaction.channel.id
+            state = self.bot.app_state
+            group_name = state.server_map.get(channel_id_origin) or state.server_map.get(guild_id)
             original_title = title # Keep the one from scraper
             if group_name:
                 from app.services.group_manager import get_title_override
@@ -1863,7 +1867,7 @@ class DashboardCog(commands.Cog):
                     "type": 1,
                     "components": [{"type": 2, "style": 2, "label": "Back to Dashboard", "custom_id": "v2Dash_Home"}]
                 })
-                await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'), json=error_payload)
+                await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_payload)
                 return self._queue_auto_delete(interaction, 1800)
 
             # 3. Check Channel Occupancy (Exclusive: One Series Per Channel)
@@ -1906,7 +1910,8 @@ class DashboardCog(commands.Cog):
             # 3. Determine Group
             guild_id = interaction.guild.id if interaction.guild else 0
             origin_channel_id = interaction.channel.id if interaction.channel else 0
-            group_name = Settings.SERVER_MAP.get(origin_channel_id) or Settings.SERVER_MAP.get(guild_id)
+            state = self.bot.app_state
+            group_name = state.server_map.get(origin_channel_id) or state.server_map.get(guild_id)
 
             if not group_name:
                 error_payload = {
@@ -2014,7 +2019,9 @@ class DashboardCog(commands.Cog):
         logger.info(f"Prefix Command $ui_sub triggered by {ctx.author} in {ctx.channel}")
         guild_id = ctx.guild.id if ctx.guild else 0
         channel_id = ctx.channel.id
-        scan_name = Settings.SERVER_MAP.get(channel_id) or Settings.SERVER_MAP.get(guild_id) or Settings.DEFAULT_CLIENT_NAME
+        # Dynamic state lookup
+        state = self.bot.app_state
+        scan_name = state.server_map.get(channel_id) or state.server_map.get(guild_id) or Settings.DEFAULT_CLIENT_NAME
 
         # 1. Fetch Weeklies
         weeklies_section, action_row = await self.get_weeklies_section(scan_name)

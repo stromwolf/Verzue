@@ -1,11 +1,12 @@
 import asyncio
 import os
 import sys
+import logging
 from pathlib import Path
 
 import psutil
 
-from config.settings import Settings
+from config.settings import Settings, AppState
 Settings.ensure_dirs() # Load Secrets & Create Dirs BEFORE any other app imports
 
 from app.core.logger import setup_logging
@@ -71,6 +72,11 @@ async def main() -> None:
         sys.exit(1)
     logger.info("redis.connected")
     await sync_index_to_redis()
+    
+    # Initialize dynamic state registry
+    state = AppState()
+    state.load_state()
+    state.migrate_legacy_data()
 
     # Select Bot Identity
     bot_token = Settings.DISCORD_TOKEN
@@ -91,6 +97,7 @@ async def main() -> None:
         task_queue=queue,
         redis_brain=brain,
     )
+    bot.app_state = state
     helper_bot: HelperBot | None = None
     if Settings.HELPER_TOKEN and Settings.HELPER_TOKEN != bot_token:
         helper_bot = HelperBot(token=Settings.HELPER_TOKEN, main_bot=bot)

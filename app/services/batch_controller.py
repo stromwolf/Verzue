@@ -21,7 +21,8 @@ class BatchController:
         channel_id = interaction.channel_id if interaction.channel_id else 0
         
         # 🟢 S-GRADE MAPPING: Check channel-specific mapping first, then guild-level, then default
-        scan_group = Settings.SERVER_MAP.get(channel_id) or Settings.SERVER_MAP.get(guild_id, Settings.DEFAULT_CLIENT_NAME)
+        state = self.bot.app_state
+        scan_group = state.server_map.get(channel_id) or state.server_map.get(guild_id, Settings.DEFAULT_CLIENT_NAME)
         req_id = view_ref.req_id if view_ref else "UNKNOWN"
 
         # 🟢 S-GRADE: Inject Structured Logging Context
