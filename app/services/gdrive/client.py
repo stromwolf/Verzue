@@ -71,3 +71,15 @@ class GDriveClient:
     def get_creds(self):
         if not self.creds: self.authenticate()
         return self.creds
+
+
+class NullGDriveClient:
+    """Fallback client when GDrive is disabled or authentication fails."""
+    def __init__(self, *args, **kwargs):
+        logger.warning("🚫 Running with NullGDriveClient (Degraded Mode)")
+
+    def authenticate(self): pass
+    def get_service(self): return None
+    def get_creds(self): return None
+    @property
+    def is_null(self): return True

@@ -33,7 +33,7 @@ To bring new code from your laptop to the VPS:
 1.  **On Laptop:** `git push` your changes.
 2.  **On VPS (Run this one-liner):**
     ```bash
-    cd /opt/verzue-bot && git pull origin main && systemctl restart verzue-bot
+    cd /opt/verzue-bot && git pull origin main && systemctl restart verzue-bot && journalctl -u verzue-bot -f
     ```
 
 ---

@@ -15,21 +15,22 @@ logger = logging.getLogger("GDriveUploader")
 # - Daily Upload Limit: 750 GB
 
 class GDriveUploader:
-    def __init__(self, client: GDriveClient):
+    def __init__(self, client):
         self.client = client
-        # 🟢 SEMAPHORE: Increased to 5 as requested.
-        # Note: 3/sec is the recommended sustained limit, 5/sec may trigger 
-        # transient 403 errors which are handled by our exponential backoff.
         self._write_semaphore = threading.Semaphore(5)
+        self.is_disabled = client is None or getattr(client, "is_null", False)
 
     def find_folder(self, name: str, parent_id: str):
         """Finds ONLY folders (Shared Drive Compatible, Case-Insensitive)."""
+        if self.is_disabled: return None
         # Escape single quotes for Google Drive API query syntax
         safe_name = name.replace("'", "\\'")
         # Use exact name match for folders
         query = f"mimeType='application/vnd.google-apps.folder' and name = '{safe_name}' and '{parent_id}' in parents and trashed=false"
         try:
-            results = self.client.get_service().files().list(
+            service = self.client.get_service()
+            if not service: return None
+            results = service.files().list(
                 q=query, 
                 fields="files(id, name)", 
                 supportsAllDrives=True, 
@@ -137,8 +138,7 @@ class GDriveUploader:
             logger.error(f"Failed to list folder {parent_id}: {e}")
             return {}
 
-    def create_folder(self, name: str, parent_id: str):
-        """Creates a folder with Shared Drive support and retries."""
+        if self.is_disabled: return "null-folder-id"
         existing_id = self.find_folder(name, parent_id)
         if existing_id: return existing_id
 
@@ -163,6 +163,10 @@ class GDriveUploader:
     def upload_file(self, file_path, file_name, parent_id):
         """Uploads file with SSL-error protection and GUARANTEED file handle release."""
         import mimetypes
+        
+        if self.is_disabled or not self.client.get_service():
+            logger.warning(f"⏩ Skipping GDrive upload for {file_name} (Drive Disabled)")
+            return
         
         # 🟢 Dynamic mimetype detection
         mime_type, _ = mimetypes.guess_type(file_name)
