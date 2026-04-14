@@ -1,0 +1,975 @@
+import re
+import json
+import logging
+import math
+import asyncio
+import urllib.parse
+import os
+import random
+import threading
+import struct
+import time
+import uuid
+from bs4 import BeautifulSoup
+from curl_cffi.requests import AsyncSession
+from app.providers.base import BaseProvider
+from app.services.session_service import SessionService
+from app.services.login_service import LoginService
+from app.core.exceptions import ScraperError, MechaException
+from config.settings import Settings
+try:
+    from app.lib.pycasso import Canvas
+except ImportError:
+    Canvas = None
+
+logger = logging.getLogger("PiccomaProvider")
+
+class PiccomaProvider(BaseProvider):
+    IDENTIFIER = "piccoma"
+    BASE_URL = "https://piccoma.com"
+    SERIES_PATH = "/web/product/"
+    
+    # 🕵️ DEVELOPER MODE: Set to True to dump HTML on extraction/purchase failures
+    DEVELOPER_MODE = True
+    
+    
+    # S-GRADE: Thread-safe lock to prevent pycasso's global state race condition
+    _unscramble_lock = threading.Lock()
+
+    def __init__(self):
+        self.session_service = SessionService()
+        self.login_service = LoginService()
+        
+        # S-Grade: Chrome 120 baseline headers
+        self.default_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        self.default_headers = {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Upgrade-Insecure-Requests": "1"
+        }
+    # S-Grade Backpressure
+    self._download_semaphore = asyncio.Semaphore(10)
+
+    def _extract_pdata(self, html: str) -> dict | None:
+        """S-Grade: Heuristic extraction of pData (image manifest) from Piccoma viewer page."""
+        try:
+            match = re.search(r'var\s+pData\s*=\s*({.*?});', html, re.DOTALL)
+            if match:
+                return json.loads(match.group(1))
+            
+            # Alternative: Search for __NEXT_DATA__
+            if 'pData' in html:
+                # Find the start of the object and match braces
+                start = html.find('pData')
+                brace_start = html.find('{', start)
+                brace_count = 0
+                for i in range(brace_start, len(html)):
+                    if html[i] == '{': brace_count += 1
+                    elif html[i] == '}': brace_count -= 1
+                    if brace_count == 0:
+                        return json.loads(html[brace_start:i+1])
+        except Exception: pass
+        return None
+
+    def _build_browser_headers(self, referer: str = None) -> dict:
+        """S-Grade: Generates headers with randomized ordering to bypass WAF sequencing checks."""
+        headers = self.default_headers.copy()
+        headers["User-Agent"] = self.default_user_agent
+        if referer:
+            headers["Referer"] = referer
+        
+        # In curl_cffi, we can't easily randomize order in a dict, but we can return it 
+        # for a session. However, dict randomization in Python 3.7+ is not enough.
+        # We'll use curl_cffi's impersonation feature which handles this internally.
+        return headers
+
+    def _is_fake_404(self, status: int, text: str, headers: dict, url: str = "") -> bool:
+        """S-Grade: Detects 'trap' 404 pages (status 200 but 404 content, or redirect to 404)."""
+        content_type = headers.get('Content-Type', '').lower()
+        
+        # If status is 404, its definitely a block/missing
+        if status == 404:
+            logger.warning(f"🛑 [Piccoma Identity] Hard 404 detected at {url}")
+            return True
+
+        if 'text/html' not in content_type:
+            return False
+            
+        low_text = text.lower()
+        indicators = ["404", "見つかりません", "not found", "error", "ご利用いただけません", "アクセス制限", "access denied"]
+        
+        # If status is 200 but too small and contains indicators
+        if status == 200 and len(text) < 18000:
+            for ind in indicators:
+                if ind in low_text:
+                    logger.warning(f"🛑 [Piccoma Identity] Trap Triggered: HTTP {status}, length {len(text)}, found trigger '{ind}' at {url}")
+                    return True
+                
+        return False
+
+    async def _safe_request(self, session: AsyncSession, method: str, url: str, **kwargs) -> any:
+        """S-Grade: Wraps request with manual redirect handling and trap detection."""
+        # Ensure we don't follow redirects blindly
+        kwargs["allow_redirects"] = False
+        
+        max_redirects = 5
+        current_url = url
+        
+        for i in range(max_redirects):
+            try:
+                start_time = time.time()
+                res = await session.request(method, current_url, **kwargs)
+                elapsed = time.time() - start_time
+                
+                # Check for redirects
+                if res.status_code in [301, 302, 303, 307, 308]:
+                    location = res.headers.get("Location")
+                    if not location:
+                        break
+                    
+                    if not location.startswith("http"):
+                        location = urllib.parse.urljoin(current_url, location)
+                    
+                    logger.info(f"📡 [Piccoma Identity] Redirect {i+1}: {res.status_code} -> {location}")
+                    
+                    # Detect redirect trap
+                    if any(trap in location.lower() for trap in ["404", "blocked", "captcha", "error", "ご利用いただけません"]):
+                        logger.error(f"⚠️ [Piccoma Identity] Redirect Trap: {current_url} -> {location}")
+                        raise ScraperError(f"Redirect trap detected: -> {location}")
+                        
+                    current_url = location
+                    method = "GET" # Standard redirect behavior
+                    # Clear body data on redirect
+                    kwargs.pop("data", None)
+                    kwargs.pop("json", None)
+                    continue
+                
+                # Final result logging
+                if i > 0:
+                    logger.debug(f"✅ [Piccoma Identity] Followed to: {current_url} ({res.status_code}, {len(res.text)} bytes, {elapsed:.2f}s)")
+                
+                # Check for fake 404 content
+                if self._is_fake_404(res.status_code, res.text, res.headers, url=current_url):
+                    if self.DEVELOPER_MODE:
+                        # Log request headers as well to debug mismatches
+                        req_headers = dict(res.request.headers) if hasattr(res, 'request') else "N/A"
+                        self._dump_diagnostic_data(f"trap_detected_{int(time.time())}", res.text, {
+                            "url": current_url, 
+                            "status": res.status_code, 
+                            "headers": dict(res.headers),
+                            "request_headers": req_headers
+                        })
+                    raise ScraperError(f"Block/Trap page detected at {current_url}")
+                    
+                return res
+            except ScraperError:
+                raise
+            except Exception as e:
+                logger.warning(f"Request error on {current_url}: {e}")
+                raise ScraperError(f"Network error: {e}")
+                
+        raise ScraperError(f"Too many redirects at {url}")
+
+    async def run_ritual(self, session: AsyncSession) -> None:
+        """
+        S-Grade Adaptive Ritual: Performs randomized navigation to 'warm up' the session.
+        Mimics human-like discovery patterns to bypass threshold-based WAFs.
+        """
+        scenarios = [
+            # Scenario A: Home & Genre Browsing
+            ["/", "/web/genre/comic", "/web/product/list?list_type=T&sort_type=N"], 
+            # Scenario B: Search Simulation
+            ["/", "/web/search/result?word={word}"],
+            # Scenario C: Smartoon Focus
+            ["/web/genre/smartoon", "/web/product/list?list_type=T&sort_type=H"], 
+            # Scenario D: User Library Interaction (Simulated)
+            ["/web/mypage/history", "/web/mypage/bookshelf"] 
+        ]
+        
+        keywords = ["ファンタジー", "アクション", "令嬢", "恋愛", "異世界", "冒険"]
+        scenario = random.choice(scenarios)
+        
+        logger.info(f"[Piccoma Identity] 🔮 Warm-up Ritual: Scenario {scenarios.index(scenario)} initiated.")
+        for step in scenario:
+            try:
+                rel_url = step
+                if "{word}" in step:
+                    rel_url = step.format(word=random.choice(keywords))
+                
+                full_url = f"{self.BASE_URL}{rel_url}"
+                await self._safe_request(session, "GET", full_url)
+                
+                # Human Gaussian Latency
+                delay = max(2.5, random.gauss(6, 2))
+                logger.debug(f"[Piccoma Identity] Ritual step complete. Pausing {delay:.2f}s...")
+                await asyncio.sleep(delay)
+            except Exception as e:
+                # We log as warning since ritual failures often signal imminent block
+                logger.warning(f"⚠️ [Piccoma Identity] Ritual step '{step}' failed: {e}")
+        
+        logger.info("[Piccoma Identity] ✅ Session matured. Proceeding to target.")
+
+    def _extract_pdata_heuristic(self, html: str) -> dict:
+        """S-Grade: Heuristic manifest discovery via Next.js state or raw regex."""
+        # 🟢 Tier 1: Next.js JSON State
+        try:
+            soup = BeautifulSoup(html, 'html.parser')
+            next_data = soup.select_one('script#__NEXT_DATA__')
+            if next_data:
+                data = json.loads(next_data.string)
+                state = data.get('props', {}).get('pageProps', {}).get('initialState', {})
+                pdata = state.get('viewer', {}).get('pdata') or state.get('viewer', {}).get('episode', {}).get('pdata')
+                if pdata: return pdata
+        except: pass
+
+        # 🟢 Tier 2: Raw Regex (Durable fallback)
+        match = re.search(r'["\']?pdata["\']?\s*:\s*(\{.*?\})', html, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except: pass
+            
+        return None
+
+    def _dump_diagnostic_data(self, label: str, content: str, metadata: dict = None):
+        """S-Grade Diagnostic: Dumps HTML/State to local files for expert analysis."""
+        if not self.DEVELOPER_MODE: return
+        
+        try:
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%H%M%S")
+            # Root: tmp/piccoma_dev/
+            dump_dir = os.path.join(os.getcwd(), "tmp", "piccoma_dev")
+            os.makedirs(dump_dir, exist_ok=True)
+            
+            # 1. Save Content (HTML/JSON)
+            filename = f"{timestamp}_{label}.html"
+            filepath = os.path.join(dump_dir, filename)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
+            
+            # 2. Save Metadata (Headers/Payload)
+            if metadata:
+                meta_path = os.path.join(dump_dir, f"{timestamp}_{label}_meta.json")
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=4)
+            
+            logger.info(f"📁 [DEV-TRACE] Diagnostic dump created: tmp/piccoma_dev/{filename}")
+        except Exception as e:
+            logger.error(f"Failed to dump diagnostic data: {e}")
+
+    def _get_context_from_url(self, url: str):
+        """S+ Refinement: Stateless context derivation."""
+        if "fr.piccoma" in url or "/fr" in url:
+            # S-Grade Security: Reject .fr domains as requested
+            raise ScraperError("Piccoma France (.fr) is not supported at this time. Please use a Piccoma Japan (.com) link.")
+        return "https://piccoma.com", "jp", ".piccoma.com"
+
+    def _format_poster_url(self, url: str | None) -> str | None:
+        """S+ Refinement: Unified poster formatting logic for Discord embeds via wsrv.nl proxy."""
+        if not url: return None
+        if url.startswith('//'): url = 'https:' + url
+        
+        # Consistent Proxying for Discord Embed reliability
+        # We proxy all Piccoma static images through wsrv.nl to avoid CDN hotlinking blocks
+        if any(domain in url for domain in ['piccoma.com', 'piccoma-static.com', 'piccoma.jp', 'kakaocdn.net']):
+            return f"https://wsrv.nl/?url={urllib.parse.quote(url)}&w=600&fit=cover"
+        return url
+
+    async def _get_authenticated_session(self, region_domain: str) -> "AsyncSession":
+        """S+ Refinement: TLS Fingerprint Entropy & Explicit Scoping."""
+        session_obj = await self.session_service.get_active_session("piccoma")
+        
+        # S+ Fingerprint Entropy: Rotate between modern browser profiles
+        profiles = {
+            "chrome120": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "chrome116": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+            "safari15_5": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15"
+        }
+        impersonation = random.choice(list(profiles.keys()))
+        ua = profiles[impersonation]
+        
+        async_session = AsyncSession(impersonate=impersonation, proxy=Settings.get_proxy())
+        
+        # 🟢 S+ Critical Fix: Synchronize UA with TLS Fingerprint
+        headers = self.default_headers.copy()
+        headers["User-Agent"] = ua
+        async_session.headers.update(headers)
+
+        if session_obj:
+            # Audit session health: Ensure pksid exists and is not empty
+            has_pksid = any(c.get('name') == 'pksid' and c.get('value') for c in session_obj.get("cookies", []))
+            if not has_pksid:
+                logger.warning("  ⚠️ [Auth Health Audit] Session 'primary' found but 'pksid' is MISSING or EMPTY. Treating as no session.")
+                session_obj = None
+
+        if not session_obj:
+            # S+ GRADE: Automated Login Fallback
+            # If no healthy sessions are in the vault, we attempt to refresh using LoginService
+            async with self.session_service.get_refresh_lock("piccoma"):
+                # Double-check after acquiring lock in case another worker already refreshed
+                session_obj = await self.session_service.get_active_session("piccoma")
+                
+                # Re-audit health of retrieved session
+                if session_obj:
+                    if not any(c.get('name') == 'pksid' and c.get('value') for c in session_obj.get("cookies", [])):
+                        session_obj = None
+
+                if not session_obj:
+                    logger.info("🔄 [Piccoma Identity] No healthy sessions in vault. Triggering automated login fallback...")
+                    login_success = await self.login_service.auto_login("piccoma")
+                    
+                    if login_success:
+                        session_obj = await self.session_service.get_active_session("piccoma")
+                        
+            if not session_obj:
+                # S-GRADE: Explicitly fail if no session is available after fallback attempt
+                raise ScraperError("No healthy sessions available for piccoma after automated login attempt. Please check logs for specific errors.")
+        
+        if session_obj:
+            logger.info(f"[Piccoma Identity] Applying session '{session_obj.get('account_id')}' ({len(session_obj.get('cookies', []))} cookies).")
+            
+            # 🟢 S+ Identity Trace: Granular cookie audit
+            applied_trace = []
+            for c in session_obj.get("cookies", []):
+                name = str(c.get('name') or c.get('key'))
+                value = str(c.get('value') or c.get('val'))
+                
+                if name and value is not None:
+                    # 🟢 S+ USER-REQUEST: Aggressive Cookie Injection
+                    # Forcing .piccoma.com on host-only cookies (like csrftoken) is a bot signal
+                    # for SOME sites, but for Piccoma's Wait-Free logic, it is REQUIRED.
+                    if name.lower() in ['pksid', 'csrftoken', 'csrf_token']:
+                        c_domain = ".piccoma.com"
+                        c_path = "/"
+                    else:
+                        c_domain = c.get('domain') or region_domain
+                        c_path = c.get('path') or "/"
+                    
+                    async_session.cookies.set(name, value, domain=c_domain, path=c_path)
+                    
+            # --- 🟢 S+ USER-REQUEST: Persistent Thick Identity Maturation ---
+            # If the loaded session is 'thin' (too few cookies), it triggers a 'Warming Ritual'
+            # to acquire tracking cookies and then SAVES them back to the vault.
+            if len(async_session.cookies) < 8:
+                logger.info(f"🛡️ [Piccoma Identity] 'Thin' session detected ({len(async_session.cookies)} cookies). Maturing profile...")
+                try:
+                    # 1. Handshake Ritual (Landing + Product)
+                    await async_session.get(f"{base_url}/web/", timeout=10)
+                    # 🕵️ Audit the resulting matured jar
+                    matured_cookies = []
+                    for c in async_session.cookies.jar:
+                        # Defensive check: ensure we have a real Cookie object
+                        name = getattr(c, 'name', None)
+                        if name:
+                            matured_cookies.append({
+                                "name": name,
+                                "value": getattr(c, 'value', ""),
+                                "domain": getattr(c, 'domain', ".piccoma.com"),
+                                "path": getattr(c, 'path', "/"),
+                                "expires": getattr(c, 'expires', None)
+                            })
+                    
+                    if len(matured_cookies) >= 8:
+                        logger.info(f"✅ [Piccoma Identity] Identity matured and PERSISTED ({len(matured_cookies)} cookies).")
+                        # Save back to vault so next task starts matured
+                        await self.session_service.update_session_cookies("piccoma", session_obj.get('account_id', 'primary'), matured_cookies)
+                except Exception as ritual_e:
+                    logger.warning(f"⚠️ [Piccoma Identity] Identity maturation failed: {ritual_e}")
+
+            # 🕵️ [DEV-TRACE]: Final session audit
+            logger.info(f"[DEV-TRACE] Session Identity Audit: {len(async_session.cookies)} total cookies active in AsyncSession.")
+            return async_session
+
+    async def is_session_valid(self, session) -> bool:
+        """Stateless validation: Check if redirected on the current session's base."""
+        try:
+            base_url = "https://piccoma.com" 
+            res = await session.get(f"{base_url}/web/product/favorite", timeout=15, allow_redirects=False)
+            valid = res.status_code == 200
+            if valid:
+                await self.session_service.record_session_success("piccoma")
+            return valid
+        except Exception: 
+            return False
+
+    async def get_series_info(self, url: str, fast: bool = False):
+        """S+ Refinement: Parallel Fetching and JSON-First extraction."""
+        match = re.search(r'/web/product/(\d+)', url)
+        if not match: raise ScraperError("Invalid Piccoma URL")
+        
+        series_id = match.group(1)
+        base_url, region, domain = self._get_context_from_url(url)
+        auth_session = await self._get_authenticated_session(domain)
+        
+        # --- 🟢 S+ USER-REQUEST: Mandatory /web/ Handshake for Cookies ---
+        # If we don't have a 'csrftoken' in our jar, we MUST hit the landing page 
+        # first to establish the cookie identity, as per user requirement.
+        if 'csrftoken' not in auth_session.cookies:
+            logger.info("🛡️ [Piccoma Identity] Seed CSRF cookie missing. Performing /web/ Handshake...")
+            try:
+                handshake_res = await auth_session.get(f"{base_url}/web/", timeout=10)
+                if handshake_res.status_code == 200:
+                    logger.info("✅ [Piccoma Identity] /web/ Handshake complete. Cookies primed.")
+            except Exception as e:
+                logger.warning(f"⚠️ [Piccoma Identity] /web/ Handshake ritual failed: {e}")
+
+        # 1. Parallel Fetching (S-Grade Latency Optimization)
+        product_url = f"{base_url}/web/product/{series_id}"
+        episodes_url = f"{base_url}/web/product/{series_id}/episodes?etype=E"
+        
+        if fast:
+            res = await auth_session.get(product_url)
+            ep_res = None
+        else:
+            # Fire both at once to halve network wait time
+            res_task = auth_session.get(product_url)
+            ep_task = auth_session.get(episodes_url)
+            res, ep_res = await asyncio.gather(res_task, ep_task)
+            
+        if res.status_code != 200: raise ScraperError(f"Failed to fetch series: {res.status_code}")
+        
+        # Geo-block detection
+        if len(res.text) < 10000 and ("日本国内でのみ" in res.text or "only be used from Japan" in res.text):
+            raise ScraperError("Piccoma geo-blocked: This service can only be accessed from Japan. Use a Japan VPN or proxy.")
+        
+        await self.session_service.record_session_success("piccoma")
+        # Use lxml for 10x faster parsing
+        soup = BeautifulSoup(res.text, 'lxml')
+        
+        title_elem = soup.select_one('h1.PCM-productTitle')
+        title = title_elem.text.strip() if title_elem else f"Piccoma_{series_id}"
+        
+        thumb_img = soup.select_one('.PCM-productThumb_img, .PCM-productThum_img, .PCM-productThumb img, .PCOM-productCover img')
+        image_url = self._format_poster_url(thumb_img['src'] if thumb_img else None)
+
+        # 2. Extract Metadata & Release Day
+        release_day, release_time = None, None
+        day_map = {"日曜": "Saturday", "月曜": "Sunday", "火曜": "Monday", "水曜": "Tuesday", "木曜": "Wednesday", "金曜": "Thursday", "土曜": "Friday"}
+        status_label = "Completed" if "完結" in res.text else None
+
+        status_items = soup.select('ul.PCM-productStatus li')
+        for li in status_items:
+            text = li.get_text(strip=True)
+            for jp_day, en_day in day_map.items():
+                if jp_day in text:
+                    release_day, release_time = en_day, "15:00"
+                    break
+
+        # 🟢 SMART-OON detection (STRICT: Tag-Based Identification)
+        # As requested: We strictly identify Smaratoon only if it appears in the tag list.
+        tags = [a.get('data-gtm-label', '').upper() for a in soup.select('.PCM-productDesc_tagList a')]
+        if not tags:
+            # Fallback to text content if GTM labels are missing
+            tags = [a.get_text(strip=True).upper() for a in soup.select('.PCM-productDesc_tagList a')]
+        
+        is_smartoon = "SMARTOON" in tags
+        is_novel = "ノベル" in tags or "NOVEL" in tags
+        
+        # 🟢 S-GRADE: Restriction Check
+        if not is_smartoon:
+            # S-Grade: Professional Apple-style messaging
+            raise ScraperError("Currently, Piccoma Manga and Novels are not supported. Only Smartoon series are available.")
+        
+        task_viewer_prefix = f"{base_url}/web/viewer/s"
+        logger.info(f"[Piccoma] Series '{title}' (ID: {series_id}) | Format: Smartoon")
+
+        # 3. Chapter Extraction (JSON-First Heuristic)
+        all_chapters = []
+        
+        # Source 1: If fast=True, check the current soup (landing page)
+        if fast or not ep_res:
+             ep_soup = soup
+        else:
+             ep_soup = BeautifulSoup(ep_res.text, 'lxml')
+
+        # 🟢 HEURISTIC A: Extract from __NEXT_DATA__ (Fastest O(1) Access)
+        next_data_script = ep_soup.select_one('script#__NEXT_DATA__')
+        if next_data_script:
+            try:
+                data = json.loads(next_data_script.string)
+                state = data.get('props', {}).get('pageProps', {}).get('initialState', {})
+                ep_list = state.get('product', {}).get('episodeList', []) or state.get('viewer', {}).get('episodeList', [])
+                
+                for ep in ep_list:
+                    cid = str(ep.get('id'))
+                    c_title = ep.get('title', f"Episode {cid}")
+                    all_chapters.append({
+                        'id': cid, 'title': c_title, 'notation': c_title,
+                        'url': f"{task_viewer_prefix}/{series_id}/{cid}",
+                        'is_locked': not ep.get('is_free', False) and not ep.get('is_wait_free', False),
+                        'is_new': ep.get('is_new', False)
+                    })
+            except: pass
+
+        # 🟢 HEURISTIC B: Fallback to HTML Iteration (Expensive O(N) DOM)
+        if not all_chapters:
+            ep_items = ep_soup.select('ul.PCM-epList li, div.PCM-epList_item, li[class*="PCM-epList"]')
+            for item in ep_items:
+                link = item.select_one('a')
+                if not link: continue
+                href, cid = link.get('href', ''), link.get('data-episode_id')
+                if not cid:
+                    m = re.search(r'/web/viewer/(?:s/)?\d+/(\d+)', href)
+                    cid = m.group(1) if m else None
+                if not cid: continue
+                
+                title_tag = item.select_one('p.PCM-epList_title, span.PCM-epList_title, .PCM-epList_title')
+                c_title = title_tag.get_text(strip=True) if title_tag else f"Episode {cid}"
+                is_locked = bool(item.select_one('.PCM-epList_lock, .PCM-icon_lock, .PCM-icon_waitfree, .PCM-icon_clock'))
+                if not is_locked:
+                    is_locked = any(kw in item.get_text() for kw in ["待てば￥0", "¥0"]) is False and "無料" not in item.get_text()
+                
+                all_chapters.append({
+                    'id': cid, 'title': c_title, 'notation': c_title, 'url': f"{task_viewer_prefix}/{series_id}/{cid}",
+                    'is_locked': is_locked, 'is_new': "NEW" in item.get_text().upper()
+                })
+
+        # Sort and return
+        try: all_chapters.sort(key=lambda x: int(x['id']))
+        except: pass
+        return title, len(all_chapters), all_chapters, image_url, str(series_id), release_day, release_time, status_label, None
+
+    async def scrape_chapter(self, task, output_dir: str):
+        """S+ Refinement: Stateless and Heuristic Extraction."""
+        match = re.search(r'/web/viewer/(?:s/)?(\d+)/(\d+)', task.url)
+        if not match: raise ScraperError("Invalid Piccoma Viewer URL")
+        
+        series_id, chapter_id = match.groups()
+        base_url, region, domain = self._get_context_from_url(task.url)
+        auth_session = await self._get_authenticated_session(domain)
+        
+        # 1. Primary Extraction (Next.js Hydration Data)
+        res = await auth_session.get(task.url)
+        
+        # S+ Logic: Trigger unlock if 403/401 OR if 200 but page contains purchase indicators
+        is_locked_ui = res.status_code == 200 and ("js_purchaseForm" in res.text or "チャージ中" in res.text or "ポイントで読む" in res.text)
+        
+        if res.status_code != 200 or is_locked_ui:
+            # Attempt to unlock locked chapters (Coins or Wait-Free)
+            reason = f"HTTP {res.status_code}" if res.status_code != 200 else "Locked UI detected"
+            logger.info(f"[Piccoma] Chapter {chapter_id} {reason}, attempting fast purchase/unlock.")
+            if await self.fast_purchase(task):
+                # Re-fetch after successful purchase
+                auth_session = await self._get_authenticated_session(domain)
+                res = await auth_session.get(task.url)
+            else:
+                logger.error(f"  ❌ [Piccoma] Fast purchase failed for {chapter_id}")
+             
+        if res.status_code != 200: 
+            logger.error(f"[Piccoma] Final access attempt failed for {chapter_id} (Status: {res.status_code})")
+            raise ScraperError(f"Access error: {res.status_code}")
+        
+        await self.session_service.record_session_success("piccoma")
+
+        # S+ DRM Heuristic: Multi-stage manifest discovery
+        pdata = self._extract_pdata_heuristic(res.text)
+        if not pdata:
+            # 🕵️ [DEV-MODE]: Capture viewer HTML on manifest failure
+            logger.error(f"[Piccoma] Manifest extraction FAILED for {chapter_id}. Heuristics exhausted.")
+            # Check for common reasons
+            if "js_purchaseForm" in res.text:
+                logger.warning(f"  ⚠️ [Piccoma] Page still shows PURCHASE form after unlock attempt. Points/Coins likely insufficient.")
+            elif "チャージ中" in res.text:
+                logger.warning(f"  ⚠️ [Piccoma] Page still shows CHARGING status. Wait-Free ticket used recently.")
+            
+            self._dump_diagnostic_data(f"manifest_fail_{chapter_id}", res.text, {
+                "url": task.url, "status": res.status_code, "headers": dict(res.headers)
+            })
+            raise ScraperError(f"Could not extract chapter manifest for {chapter_id} via any heuristic. Check diagnostics for details.")
+
+        # Capture V30 metadata for debugging
+        p_category = pdata.get('category')
+        p_scroll = pdata.get('scroll')
+        logger.debug(f"[Piccoma] Metadata - Category: {p_category}, Scroll: {p_scroll}")
+
+        images = pdata.get('img', pdata.get('contents', []))
+        valid_images = [img for img in images if img.get('path')]
+        if not valid_images: raise ScraperError("No accessible images found in manifest.")
+
+        total = len(valid_images)
+        stats = {"completed": 0}
+        from app.core.logger import ProgressBar
+        progress = ProgressBar(task.req_id, "Downloading", "Piccoma", total)
+        progress.update(stats["completed"])
+
+        async def process_one(img_data, i):
+            async with self._download_semaphore:
+                # S+ Fully Switch to pyccoma v0.7.2 logic - Now per-image seed calculation
+                await self._download_robust(auth_session, img_data, i+1, output_dir, region)
+            stats["completed"] += 1
+            progress.update(stats["completed"])
+
+        await asyncio.gather(*(process_one(img, i) for i, img in enumerate(valid_images)))
+        progress.finish()
+        return output_dir
+
+    def _extract_pdata_heuristic(self, html_text):
+        """S+ Refinement: DRM Heuristic Recovery."""
+        # Heuristic 1: NEXT_DATA
+        soup = BeautifulSoup(html_text, 'html.parser')
+        next_data = soup.select_one('script#__NEXT_DATA__')
+        if next_data:
+            try:
+                data = json.loads(next_data.string)
+                pdata = data.get('props', {}).get('pageProps', {}).get('initialState', {}).get('viewer', {}).get('pData')
+                if pdata: return pdata
+            except: pass
+
+        # Heuristic 2: Legacy _pdata_ global (Now handles JS objects)
+        # We look for the entire block and use regex to pull paths, which is safer for JS object literals
+        match = re.search(r'var\s+_pdata_\s*=\s*(.*?)\s*(?:var\s+|</script>|;)', html_text, re.DOTALL)
+        if match:
+            content = match.group(1)
+            try:
+                # Try direct JSON parsing first
+                return json.loads(content)
+            except:
+                # Fallback: Extract image paths from JS object literal via regex
+                paths = re.findall(r"['\"]?path['\"]?\s*:\s*['\"](.*?)['\"]", content)
+                if paths:
+                    logger.info(f"[Piccoma] Manifest recovered via regex fallback: {len(paths)} images.")
+                    return {'img': [{'path': p} for p in paths]}
+            
+        # Heuristic 4: Modern PC Smartoon (episodeDetail)
+        if next_data:
+            try:
+                n_data = json.loads(next_data.string)
+                # PC Smartoon hierarchy: props -> pageProps -> episodeDetail -> manifest
+                manifest = n_data.get('props', {}).get('pageProps', {}).get('episodeDetail', {}).get('manifest', {})
+                images = manifest.get('images', [])
+                if images:
+                    pdata = {'img': [{'path': img.get('path')} for img in images if img.get('path')]}
+                    logger.info(f"✨ [Piccoma Heuristic] Success via episodeDetail hierarchy! ({len(images)} images)")
+                    return pdata
+            except: pass
+
+        # Heuristic 5: Recursive Deep Regex Scan (Last Stand)
+        # Look for 'path' or 'imageUrl' keys anywhere in the HTML blob
+        # Search for lists of image paths directly via regex if JSON parsing is nested too deep
+        img_matches = re.findall(r'["\']path["\']\s*:\s*["\'](https?://[^"\']+\.(?:jpg|png|webp|jpeg)[^"\']*)["\']', html_text)
+        if img_matches:
+            pdata_list = [{'path': m} for m in img_matches if '/seed' in m or '/img' in m]
+            if pdata_list:
+                logger.info(f"✨ [Piccoma Heuristic] Success via Deep Regex Pattern! ({len(pdata_list)} images)")
+                return {'img': pdata_list}
+            
+        return None
+
+    async def _download_robust(self, session, img_data, idx, out_dir, region):
+        """S+ Verbatim 100% Mirror of pyccoma's Scraper.download logic."""
+        url = img_data['path']
+        if not url.startswith('http'): url = 'https:' + url
+        
+        # S+ Per-image seed calculation for V30 compatibility
+        seed = self._calculate_seed(url, region)
+        
+        d_task = session.get(url, timeout=30)
+        res = await d_task
+        res.raise_for_status()
+        out_path = f"{out_dir}/page_{idx:03d}.png"
+        
+        # 🟢 V30.0 FIX: Relaxing isupper() check to handle alphanumeric/numeric seeds.
+        # We only skip if seed is empty or contains lowercase letters (which shouldn't happen for V30).
+        is_valid_seed = seed and (seed.isupper() or all(not c.islower() for c in seed))
+
+        if is_valid_seed:
+            if not Canvas:
+                logger.warning(f"[Piccoma] 🛑 CANNOT UNSCRAMBLE: Canvas (pycasso) library not loaded. Page {idx} will remain scrambled.")
+                with open(out_path, "wb") as f: f.write(res.content)
+                return
+
+            try:
+                def unscramble():
+                    # 🧩 S-GRADE: Lock the unscramble process
+                    with self._unscramble_lock:
+                        from io import BytesIO
+                        img_io = BytesIO(res.content)
+                        # 🟢 V30: Follow pyccoma reference logic EXACTLY
+                        final_seed = self._dd_transform(seed) if seed.isupper() else seed
+                        canvas = Canvas(img_io, (50, 50), final_seed)
+                        logger.info(f"[Piccoma] Unscrambling page {idx} (Seed: {final_seed} | Mode: scramble)")
+                        return canvas.export(mode="scramble", format="png").getvalue()
+                
+                content = await asyncio.to_thread(unscramble)
+                with open(out_path, "wb") as f: f.write(content)
+            except Exception as e:
+                logger.error(f"[Piccoma] Unscramble error (V3 Seed: {seed}): {e}")
+                with open(out_path, "wb") as f: f.write(res.content)
+        else:
+            # 🟢 S-GRADE: Skip unscrambling if seed doesn't meet criteria
+            logger.debug(f"[Piccoma] Page {idx} - No unscramble (Seed: {seed} | valid: {is_valid_seed})")
+            with open(out_path, "wb") as f: f.write(res.content)
+
+    def _dd_transform(self, input_string: str) -> str:
+        """S+ Mirrors pyccoma's dd() seed parity manipulator."""
+        result_bytearray = bytearray()
+        for index, byte in enumerate(bytes(input_string, 'utf-8')):
+            if index < 3:
+                byte = byte + (1 - 2 * (byte % 2))
+            elif 2 < index < 6 or index == 8:
+                pass
+            elif index < 10:
+                byte = byte + (1 - 2 * (byte % 2))
+            elif 12 < index < 15 or index == 16:
+                byte = byte + (1 - 2 * (byte % 2))
+            elif index == len(input_string[:-1]) or index == len(input_string[:-2]):
+                byte = byte + (1 - 2 * (byte % 2))
+            else:
+                pass
+            result_bytearray.append(byte)
+        return str(result_bytearray, 'utf-8')
+
+    def _calculate_seed(self, url, region):
+        """Precise mirror of pyccoma 0.7.2's get_seed() JS logic."""
+        # 🟢 S-GRADE: Robust segment extraction
+        # Handle both ".../seed/1.jpg" and ".../seed?expires=..."
+        path_only = url.split('?')[0].rstrip('/')
+        segments = [s for s in path_only.split('/') if s]
+        
+        if region == "fr":
+            parsed = urllib.parse.urlparse(url)
+            qs = urllib.parse.parse_qs(parsed.query)
+            chk_raw = qs.get('q', [''])[0]
+        else:
+            # Check if last segment is a file or a seed
+            if segments and segments[-1].lower().endswith(('.png', '.jpg', '.webp', '.jpeg')):
+                chk_raw = segments[-2] if len(segments) >= 2 else ""
+            else:
+                chk_raw = segments[-1] if segments else ""
+
+        chk = str(chk_raw)
+        
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query)
+        expires = qs.get('expires', [''])[0]
+    async def fast_purchase(self, task) -> bool:
+        """
+        S-Grade Unified Purchase: Detects and handles Coin, Point, and Wait-Free chapters.
+        Implements human-like 'Ritual' warm-up and automated redirect trap detection.
+        Follows the 'Discovery Loop' architecture for maximum resilience.
+        """
+        match = re.search(r'/web/viewer/(?:s/)?(\d+)/(\d+)', task.url)
+        if not match: return False
+            
+        series_id, episode_id = match.groups()
+        base_url, region, domain = self._get_context_from_url(task.url)
+        auth_session = await self._get_authenticated_session(domain)
+        
+        logger.info(f"[Piccoma Identity] 🚀 Chapter Handoff: {series_id}/{episode_id} | Session: {domain}")
+        await self.run_ritual(auth_session)
+
+        try:
+            # 1. Fetch Landing Page for CSRF/Audit
+            episode_page_url = f"{base_url}/web/product/{series_id}/episodes?etype=E"
+            res = await self._safe_request(auth_session, "GET", episode_page_url)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            
+            # --- 🟢 IDENTITY AUDIT ---
+            is_guest = bool(soup.select_one('.PCM-headerLogin, a[href*="/acc/signin"]'))
+            if is_guest:
+                logger.error("🛑 [Piccoma Identity] Browser shows LOGIN button. Session is guest or expired!")
+                await self.session_service.record_session_failure("piccoma")
+                return False
+
+            # --- CSRF EXTRACTION (Multi-Source Search) ---
+            csrf_token = None
+            csrf_middleware_token = None
+            
+            # Meta tags
+            meta_csrf = soup.select_one('meta[name="csrf-token"]')
+            if meta_csrf: csrf_token = meta_csrf.get('content')
+            
+            # Hidden inputs (Common for Django/Django REST)
+            csrf_input = soup.select_one('input[name="csrfmiddlewaretoken"]')
+            if csrf_input: csrf_middleware_token = csrf_input.get('value')
+            
+            # Next.JS props
+            next_data_script = soup.select_one('script#__NEXT_DATA__')
+            if next_data_script:
+                try:
+                    n_data = json.loads(next_data_script.string)
+                    csrf_token = csrf_token or n_data.get('props', {}).get('pageProps', {}).get('csrfToken')
+                except: pass
+
+            # 2. Security Hash Calculation
+            sec_hash = self._calculate_security_hash(episode_id)
+            
+            # 3. Discovery Matrix: Multi-endpoint, Multi-encoding, Multi-keys
+            # -----------------------------------------------------------
+            endpoints = [
+                "/web/api/v2/episode/waitfree/use", 
+                "/web/episode/waitfree/use", 
+                "/web/episode/use", 
+                "/web/episode/purchase"
+            ]
+            encodings = ["JSON", "FORM"]
+            key_sets = [
+                {"ep": "episodeId", "prod": "productId", "csrft": "csrfToken"},
+                {"ep": "episode_id", "prod": "product_id", "csrft": "csrfmiddlewaretoken"}
+            ]
+
+            for endpoint in endpoints:
+                purchase_url = f"{base_url}{endpoint}"
+                for encoding in encodings:
+                    for keys in key_sets:
+                        try:
+                            # Build the specific payload for this trial
+                            payload = {
+                                keys["ep"]: int(episode_id),
+                                keys["prod"]: int(series_id),
+                                "hash": sec_hash,
+                                keys["csrft"]: csrf_token if "middleware" not in keys["csrft"] else csrf_middleware_token
+                            }
+                            # Cleanup: don't send None
+                            payload = {k: v for k, v in payload.items() if v is not None}
+                            
+                            headers = self._build_browser_headers(referer=episode_page_url)
+                            if encoding == "JSON":
+                                headers["Content-Type"] = "application/json"
+                                headers["Accept"] = "application/json"
+                                kwargs = {"json": payload}
+                            else:
+                                headers["Content-Type"] = "application/x-www-form-urlencoded"
+                                kwargs = {"data": payload}
+                                
+                            headers.update({
+                                "X-CSRF-Token": csrf_token or csrf_middleware_token,
+                                "X-Requested-With": "XMLHttpRequest",
+                                "X-Security-Hash": sec_hash,
+                                "X-Hash-Code": sec_hash
+                            })
+                            
+                            logger.debug(f"🔍 [Piccoma Discovery] Trial: {endpoint} ({encoding}, {keys['ep']})")
+                            purchase_res = await self._safe_request(auth_session, "POST", purchase_url, headers=headers, **kwargs)
+                            
+                            # Success verification Part 1: API Response
+                            if purchase_res.status_code == 200:
+                                try:
+                                    res_json = purchase_res.json()
+                                    if res_json.get("result") == "ok":
+                                        logger.info(f"✨ [Piccoma API] Discovery loop found valid endpoint: {endpoint} ({encoding})")
+                                        # Verification Part 2: Final Manifest Check (Mandatory)
+                                        viewer_res = await self._safe_request(auth_session, "GET", task.url)
+                                        if self._extract_pdata(viewer_res.text):
+                                            logger.info(f"✅ [Piccoma] Discovery Matrix Success! Chapter {episode_id} is functionally UNLOCKED.")
+                                            return True
+                                except: pass
+                        except Exception: continue
+
+            logger.error(f"❌ [Piccoma] Discovery Matrix Exhausted: No Wait-Free path found for episode {episode_id}")
+            return False
+
+        except Exception as e:
+            logger.error(f"[Piccoma] Error in fast_purchase: {e}")
+            return False
+
+    async def get_new_series_list(self) -> list[dict]:
+        """Scrapes the 'New' series via the Theme API for Piccoma (JP)."""
+        base_url = "https://piccoma.com"
+        auth_session = await self._get_authenticated_session(".piccoma.com")
+        new_series = []
+        
+        try:
+            # 1. Try Direct Theme Page Scrape (Tier 1)
+            theme_url = f"{base_url}/web/theme/product/list/398316/N"
+            res = await auth_session.get(theme_url, timeout=15)
+            logger.info(f"[Piccoma] Theme Page Response: {res.status_code}")
+            
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, 'html.parser')
+                # Check for products in the initial HTML
+                items = soup.select('li, .PCM-productList1_item, .PCM-product, .PCM-productTile')
+                for item in items:
+                    link = item.select_one('a')
+                    if not link: continue
+                    href = link.get('href', '')
+                    if '/web/product/' not in href: continue
+                    sid_match = re.search(r'/web/product/(\d+)', href)
+                    if not sid_match: continue
+                    sid = sid_match.group(1)
+                    title_elem = item.select_one('.PCM-product_title, .PCM-productList1_title, .PCM-productTile_title, dt, span')
+                    title = title_elem.get_text(strip=True) if title_elem else ""
+                    
+                    # 🟢 FIX: Define img_elem for poster extraction
+                    img_elem = item.select_one('img')
+                    poster = self._format_poster_url(img_elem.get('src') if img_elem else None)
+                    if not title or title == "Unknown": continue
+                    
+                    if any(s['series_id'] == sid for s in new_series): continue
+                    new_series.append({
+                        "series_id": sid, "title": title, "poster_url": poster, "url": f"{base_url}{href}"
+                    })
+                logger.info(f"[Piccoma] Tier 1 (Theme Page) found {len(new_series)} series.")
+            
+            # 2. Try API for Paginated Data (Tier 2)
+            # Only if we found nothing or want more
+            if not new_series:
+                for p_id in [1, 0]:
+                    api_url = f"{base_url}/web/next_page/list?result_id=398316&list_type=T&sort_type=N&page_id={p_id}"
+                    headers = {'X-Requested-With': 'XMLHttpRequest', 'Referer': theme_url}
+                    try:
+                        res = await auth_session.get(api_url, headers=headers, timeout=15)
+                        if res.status_code != 200: continue
+                        ctype = res.headers.get('Content-Type', '').lower()
+                        if 'application/json' in ctype or res.text.strip().startswith('{'):
+                            data = res.json()
+                            # Picard API often nests products in data['products'] or directly in data
+                            raw_data = data.get('data', data)
+                            products = []
+                            if isinstance(raw_data, list):
+                                products = raw_data
+                            elif isinstance(raw_data, dict):
+                                products = raw_data.get('products', raw_data.get('list', []))
+                            
+                            if products and isinstance(products, list):
+                                for item in products:
+                                    if not isinstance(item, dict): continue
+                                    sid = str(item.get('id', item.get('product_id', '')))
+                                    if not sid: continue
+                                    title = item.get('title', item.get('product_name', 'Unknown'))
+                                    poster = self._format_poster_url(item.get('img', item.get('image', item.get('cover_x1'))))
+                                    if any(s['series_id'] == sid for s in new_series): continue
+                                    new_series.append({
+                                        "series_id": sid, "title": title, "poster_url": poster, "url": f"{base_url}/web/product/{sid}"
+                                    })
+                        
+                        if new_series: 
+                            logger.info(f"[Piccoma] Tier 2 (Paginated API) total: {len(new_series)} series.")
+                            break
+                    except Exception as e:
+                        logger.debug(f"[Piccoma Discovery] API Trial failed: {e}")
+                        continue
+
+            # 3. Final Fallback: General New Page (Tier 3)
+            if not new_series:
+                res = await auth_session.get(f"{base_url}/web/list/new/all", timeout=15)
+                if res.status_code == 200:
+                    soup = BeautifulSoup(res.text, 'html.parser')
+                    for item in soup.select('.PCM-productList1_item, .PCM-product'):
+                        link = item.select_one('a')
+                        if not link: continue
+                        href = link.get('href', '')
+                        sid_match = re.search(r'/web/product/(\d+)', href)
+                        if not sid_match: continue
+                        sid = sid_match.group(1)
+                        title_elem = item.select_one('.PCM-productList1_title, .PCM-product_title')
+                        title = title_elem.get_text(strip=True) if title_elem else "Unknown"
+                        
+                        # 🟢 FIX: Define img_elem for poster extraction in T3 fallback
+                        img_elem = item.select_one('img')
+                        poster = self._format_poster_url(img_elem.get('src') if img_elem else None)
+                        if any(s['series_id'] == sid for s in new_series): continue
+                        new_series.append({
+                            "series_id": sid, "title": title, "poster_url": poster, "url": f"{base_url}{href}"
+                        })
+            
+            logger.info(f"[Piccoma] Discovery finished. Found {len(new_series)} series.")
+            return new_series
+        except Exception as e:
+            logger.error(f"[Piccoma] Fatal error in new series discovery: {e}")
+            return []
+

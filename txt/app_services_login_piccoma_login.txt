@@ -55,7 +55,7 @@ class PiccomaLoginHandler:
         # Use Chrome 120 baseline (Supported Preset)
         async with AsyncSession(impersonate="chrome120", proxies=proxies) as session:
             session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
             })
             
             await asyncio.sleep(1.0)
@@ -212,20 +212,24 @@ class PiccomaLoginHandler:
                                 has_pksid = True
                                 cookies.append({"name": "pksid", "value": p_val, "domain": ".piccoma.com", "path": "/"})
 
+                auth_ok = (
+                    _piccoma_probe_confirms_auth(shelf_res)
+                    or _piccoma_probe_confirms_auth(hist_res)
+                )
+                
                 # S-Grade: If shelf/history fail (404), but web=200 and has_pksid is set, 
                 # we perform one last strict check on the 'web' page content.
-                auth_ok = has_pksid and web_res.status_code in [200, 302]
-                if auth_ok:
-                    # [PHASE 8] Resilient Check: User reports 404 on shelf is normal.
-                    # Relying on signout/profile markers in the HTML instead.
+                if not auth_ok and has_pksid and web_res.status_code == 200:
+                    # Look for logout links or profile indicators instead of just 'not denies_auth'
                     html = web_res.text
-                    auth_ok = "/acc/signout" in html or "PCM-header_user" in html or "本棚" in html
+                    is_logged_in_html = "/acc/signout" in html or "PCM-header_user" in html or "本棚" in html
+                    auth_ok = is_logged_in_html
 
                 # S-Grade: Human-Readable Outcome
                 outcome_details = []
                 outcome_details.append("Homepage: OK" if web_res.status_code == 200 else f"Homepage: {web_res.status_code}")
-                outcome_details.append("Bookshelf: OK" if shelf_res.status_code == 200 else f"Bookshelf: {shelf_res.status_code}")
-                outcome_details.append("History: OK" if hist_res.status_code == 200 else f"History: {hist_res.status_code}")
+                outcome_details.append("Bookshelf: OK" if shelf_res.status_code == 200 else f"Bookshelf: DENIED ({shelf_res.status_code})")
+                outcome_details.append("History: OK" if hist_res.status_code == 200 else f"History: DENIED ({hist_res.status_code})")
                 outcome_summary = " | ".join(outcome_details)
 
                 if cookies and has_pksid and auth_ok:

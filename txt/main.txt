@@ -71,27 +71,14 @@ async def main() -> None:
     logger.info("redis.connected")
     await sync_index_to_redis()
 
-    # Select Bot Identity
-    bot_token = Settings.DISCORD_TOKEN
-    identity_name = "Main"
-    
-    if Settings.BOT_MODE == "test" and Settings.TESTING_BOT_TOKEN:
-        bot_token = Settings.TESTING_BOT_TOKEN
-        identity_name = "Testing"
-    elif Settings.BOT_MODE == "admin" and Settings.ADMIN_BOT_TOKEN:
-        bot_token = Settings.ADMIN_BOT_TOKEN
-        identity_name = "Admin"
-    
-    logger.info(f"🚀 Bot Identity: {identity_name} Bot (Mode: {Settings.BOT_MODE})")
-
     session_service = SessionService()
     bot = MechaBot(
-        token=bot_token,
+        token=Settings.DISCORD_TOKEN,
         task_queue=queue,
         redis_brain=brain,
     )
     helper_bot: HelperBot | None = None
-    if Settings.HELPER_TOKEN and Settings.HELPER_TOKEN != bot_token:
+    if Settings.HELPER_TOKEN and Settings.HELPER_TOKEN != Settings.DISCORD_TOKEN:
         helper_bot = HelperBot(token=Settings.HELPER_TOKEN, main_bot=bot)
 
     try:

@@ -84,13 +84,9 @@ class AdminCog(commands.Cog):
         """Usage: $restart [Main|Testing]. Reboots the bot instance. [Owner/Admin Only]"""
 
         # 🟢 S-GRADE: Identity Check
-        # Identify instance identity based on the token in use
-        if self.bot.token_str == Settings.TESTING_BOT_TOKEN or self.bot.token_str == Settings.STAGING_TOKEN:
-            my_identity = "Testing"
-        elif self.bot.token_str == Settings.ADMIN_BOT_TOKEN:
-            my_identity = "Admin"
-        else:
-            my_identity = "Main"
+        # Identify if this instance is Main or Testing based on the token in use
+        is_testing = self.bot.token_str == Settings.STAGING_TOKEN
+        my_identity = "Testing" if is_testing else "Main"
 
         if target:
             if target.lower() != my_identity.lower():
