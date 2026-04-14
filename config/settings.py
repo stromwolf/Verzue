@@ -42,7 +42,10 @@ class Settings:
 
     # --- Secrets (populated after load()) ---
     DISCORD_TOKEN: str
+    BOT_MODE: str
     HELPER_TOKEN: str | None
+    TESTING_BOT_TOKEN: str | None
+    ADMIN_BOT_TOKEN: str | None
     STAGING_TOKEN: str | None
     REDIS_URL: str
     SCRAPING_PROXY: str | None
@@ -54,7 +57,10 @@ class Settings:
         """Creates required directories. Safe to call multiple times."""
         Secrets.load()
         cls.DISCORD_TOKEN = Secrets.DISCORD_TOKEN
+        cls.BOT_MODE = Secrets.BOT_MODE
         cls.HELPER_TOKEN = Secrets.HELPER_TOKEN
+        cls.TESTING_BOT_TOKEN = Secrets.TESTING_BOT_TOKEN
+        cls.ADMIN_BOT_TOKEN = Secrets.ADMIN_BOT_TOKEN
         cls.STAGING_TOKEN = Secrets.STAGING_TOKEN
         cls.REDIS_URL = Secrets.REDIS_URL
         cls.SCRAPING_PROXY = Secrets.SCRAPING_PROXY

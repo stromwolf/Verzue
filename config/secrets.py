@@ -27,7 +27,10 @@ class Secrets:
 
     DISCORD_TOKEN: str
     REDIS_URL: str
+    BOT_MODE: str | None
     HELPER_TOKEN: str | None
+    TESTING_BOT_TOKEN: str | None
+    ADMIN_BOT_TOKEN: str | None
     STAGING_TOKEN: str | None
     SCRAPING_PROXY: str | None
     DEVELOPER_MODE: bool
@@ -54,7 +57,10 @@ class Secrets:
         cls.REDIS_URL = redis_url
 
         # --- Optional secrets — None if absent, no noise ---
+        cls.BOT_MODE = os.getenv("BOT_MODE") or "prod"
         cls.HELPER_TOKEN = os.getenv("HELPER_TOKEN") or None
+        cls.TESTING_BOT_TOKEN = os.getenv("TESTING_BOT_TOKEN") or None
+        cls.ADMIN_BOT_TOKEN = os.getenv("ADMIN_BOT_TOKEN") or None
         cls.STAGING_TOKEN = os.getenv("STAGING_TOKEN") or None
         cls.SCRAPING_PROXY = os.getenv("SCRAPING_PROXY") or None
         cls.DEVELOPER_MODE = os.getenv("DEVELOPER_MODE", "false").lower() == "true"
