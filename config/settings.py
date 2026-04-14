@@ -76,6 +76,11 @@ class Settings:
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
+    @classmethod
+    def get_proxy(cls) -> str | None:
+        """Returns the global scraping proxy URL if configured."""
+        return getattr(cls, 'SCRAPING_PROXY', None)
+
 
 class AppState:
     """Runtime mutable state. Instantiate once; inject into services.
