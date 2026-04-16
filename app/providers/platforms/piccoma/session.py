@@ -1,7 +1,6 @@
 import logging
 from app.providers.curl_compat import AsyncSession, ProxyError, RequestsError
 from app.services.session_service import SessionService
-from app.services.login_service import LoginService
 from app.core.exceptions import ScraperError
 from config.settings import Settings
 from .helpers import PiccomaHelpers
@@ -21,12 +20,12 @@ class PiccomaSession:
             headers["Referer"] = referer
         return headers
 
-    async def _get_authenticated_session(self, region_domain: str) -> "AsyncSession":
+    async def _get_authenticated_session(self, region_domain: str, account_id: str = "primary") -> "AsyncSession":
         """S+ Refinement: TLS Fingerprint Entropy & Explicit Scoping."""
         session_service = self.provider.session_service
-        login_service = self.provider.login_service
-
-        session_obj = await session_service.get_active_session("piccoma")
+        
+        # S-Grade: Use the new centralized authenticated session retrieval
+        session_obj = await session_service.redis.get_session("piccoma", account_id)
 
         # Keep a stable fingerprint for Piccoma to reduce auth/session flapping
         impersonation = "chrome142"
@@ -46,37 +45,24 @@ class PiccomaSession:
                 c.get("name") == "pksid" and c.get("value")
                 for c in session_obj.get("cookies", [])
             )
-            if not has_pksid:
+            if not has_pksid or session_obj.get("status") != "HEALTHY":
                 logger.warning(
-                    "  ⚠️ [Auth Health Audit] Session 'primary' found but 'pksid' is MISSING or EMPTY. Treating as no session."
+                    f"  ⚠️ [Auth Health Audit] Session '{account_id}' found but its status is {session_obj.get('status')} or pksid is MISSING. Triggering refresh."
                 )
                 session_obj = None
 
         if not session_obj:
-            async with session_service.get_refresh_lock("piccoma"):
-                session_obj = await session_service.get_active_session("piccoma")
-
-                if session_obj:
-                    if not any(
-                        c.get("name") == "pksid" and c.get("value")
-                        for c in session_obj.get("cookies", [])
-                    ):
-                        session_obj = None
-
-                if not session_obj:
-                    logger.info(
-                        "🔄 [Piccoma Identity] No healthy sessions in vault. Triggering automated login fallback..."
-                    )
-                    login_success = await login_service.auto_login("piccoma")
-
-                    if login_success:
-                        session_obj = await session_service.get_active_session(
-                            "piccoma"
-                        )
+            # Trigger synchronous heal through session service
+            logger.info(f"🔄 [Piccoma Identity] Session '{account_id}' invalid. Triggering forced refresh...")
+            session_obj = await session_service.get_authenticated_session(
+                "piccoma", 
+                account_id=account_id, 
+                force_refresh=True
+            )
 
             if not session_obj:
                 raise ScraperError(
-                    "No healthy sessions available for piccoma after automated login attempt."
+                    f"No healthy sessions available for piccoma account '{account_id}' after automated login attempt."
                 )
 
         if session_obj:
@@ -159,56 +145,41 @@ class PiccomaSession:
             )
             return async_session
 
-    async def is_session_valid(self, session: AsyncSession) -> bool:
-        """Stateless validation: any authed 200 probe, or /web/ 200 without guest markers."""
-        probe_urls = (
-            "https://piccoma.com/web/",
-            "https://piccoma.com/web/bookshelf",
-            "https://piccoma.com/web/history",
-        )
-
-        def denies_auth(res) -> bool:
-            u = str(getattr(res, "url", "") or "")
-            t = res.text or ""
-            if (
-                "/web/acc/signin" in u
-                or "/acc/email/signin" in u
-                or "/acc/signin?" in u
-            ):
-                return True
-            if "ログイン｜ピッコマ" in t:
-                return True
-            if "PCM-loginMenu" in t:
-                return True
-            if len(t) < 70000 and "PCM-headerLogin" in t:
-                return True
+    async def is_session_valid(self, session: AsyncSession, deep: bool = False, strictness: str = "normal") -> bool:
+        """
+        Layered session validation.
+        
+        - shallow (deep=False): cookie presence and local expiry check.
+        - deep (deep=True): full auth_probe with network call to bookshelf/homepage.
+        """
+        # --- Layer 1: Shallow Sync Check (Performance Path) ---
+        import time
+        now = time.time()
+        pksid_cookie = None
+        for c in session.cookies.jar:
+            if getattr(c, "name", None) == "pksid":
+                pksid_cookie = c
+                break
+        
+        if not pksid_cookie or not getattr(pksid_cookie, "value", None):
             return False
+            
+        if getattr(pksid_cookie, "expires", None) and pksid_cookie.expires < now:
+            logger.warning(f"🕒 [Piccoma] Session cookie 'pksid' expired locally at {pksid_cookie.expires}.")
+            return False
+            
+        if not deep:
+            return True
 
-        def confirms(res) -> bool:
-            return res.status_code == 200 and not denies_auth(res)
-
+        # --- Layer 2: Deep Probe (Network Path) ---
         try:
-            last_res = None
-            nav_headers = PiccomaHelpers.get_navigation_headers()
-            for url in probe_urls:
-                res = await session.get(url, headers=nav_headers, timeout=15)
-                last_res = res
-                if confirms(res):
-                    await self.provider.session_service.record_session_success(
-                        "piccoma"
-                    )
-                    return True
-
-            web_res = await session.get("https://piccoma.com/web/", timeout=15)
-            if confirms(web_res):
+            from .auth import PiccomaAuth
+            auth = PiccomaAuth(self.provider)
+            is_valid = await auth.auth_probe(session, strictness=strictness)
+            
+            if is_valid:
                 await self.provider.session_service.record_session_success("piccoma")
-                return True
-
-            final_url = str(getattr(last_res, "url", "")) if last_res else ""
-            logger.warning(
-                f"[Piccoma Identity] Session validation failed after probes: "
-                f"last_status={getattr(last_res, 'status_code', None)}, last_url={final_url}"
-            )
-            return False
-        except Exception:
+            return is_valid
+        except Exception as e:
+            logger.warning(f"⚠️ [Piccoma Identity] Deep auth probe failed with error: {e}")
             return False

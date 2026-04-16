@@ -85,12 +85,12 @@ class SessionHealer:
                 # Headless S-Grade Healing: Attempt automated request-based login
                 # Use the same per-platform lock used by _get_authenticated_session
                 # to prevent a race with concurrent task logins.
-                lock = self.session_service.get_refresh_lock(platform)
+                lock = self.session_service.get_refresh_lock(platform, account_id)
                 async with lock:
                     # Re-check: another task may have already healed while we waited
-                    refreshed = await self.session_service.get_active_session(platform)
-                    if refreshed and refreshed.get("status") == "HEALTHY":
-                        logger.info(f"💉 [{platform}] Session already healed by a concurrent worker. Skipping.")
+                    session = await self.redis.get_session(platform, account_id)
+                    if session and session.get("status") == "HEALTHY":
+                        logger.info(f"💉 [{platform}:{account_id}] Session already healed by a concurrent worker. Skipping.")
                         return
                     
                     success = await self.login_service.auto_login(platform, account_id)

@@ -225,23 +225,32 @@ class PiccomaLoginHandler:
                             has_pksid = True
                         cookies.append({"name": name, "value": value, "domain": ".piccoma.com", "path": "/"})
 
-                # S-Grade: If shelf/history fail (404), but web=200 and has_pksid is set, 
-                # we perform one last strict check on the 'web' page content.
-                # [PHASE 8] Piccoma removed /bookshelf & /history — don't use them as auth signal.
-                # Only fail if the homepage itself is a login shell.
-                auth_ok = has_pksid and web_res.status_code in [200, 302]
-                if auth_ok:
-                    html = web_res.text
-                    is_explicit_login_shell = (
-                        "ログイン｜ピッコマ" in html
-                        or "PCM-loginMenu" in html
-                        or ("/acc/signin" in html[:3000] and "PCM-headerLogin" in html)
+                # S-Grade Step: Probes must confirm not just 'logged in' (pksid) 
+                # but 'authorized' (access to protected resources).
+                auth_ok = has_pksid and web_res.status_code == 200
+                
+                # Check for explicit login shells
+                is_explicit_login_shell = (
+                    "ログイン｜ピッコマ" in web_res.text
+                    or "PCM-loginMenu" in web_res.text
+                    or ("/acc/signin" in web_res.text[:3000] and "PCM-headerLogin" in web_res.text)
+                )
+                
+                if is_explicit_login_shell:
+                    auth_ok = False
+                    logger.error(f"[Piccoma] Homepage is a login shell despite pksid present.")
+                
+                # [PHASE 9] Re-evaluating 404s: Bookshelf/History are protected. 
+                # 404s here indicate session is not fully active or restricted.
+                if auth_ok and (shelf_res.status_code != 200 or hist_res.status_code != 200):
+                    logger.warning(
+                        f"🚨 [Piccoma] Auth DEGRADED: pksid present but protected endpoints rejected "
+                        f"(Shelf: {shelf_res.status_code}, History: {hist_res.status_code})."
                     )
-                    if is_explicit_login_shell:
-                        auth_ok = False
-                        logger.error(f"[Piccoma] Homepage is a login shell despite pksid present — session rejected by server.")
-                    else:
-                        logger.info(f"[Piccoma] Auth probe passed (pksid present, homepage not a signin shell).")
+                    # We still mark as OK for now but with a loud warning, 
+                    # as some accounts might genuinely not have these.
+                    # Actually, let's follow the user's lead and consider it a red flag.
+                    auth_ok = False 
 
                 # S-Grade: Human-Readable Outcome
                 outcome_details = []

@@ -15,11 +15,12 @@ class SessionService:
         self.redis = RedisManager()
         self._last_emit = {} # platform -> timestamp
 
-    def get_refresh_lock(self, platform: str) -> asyncio.Lock:
-        """Returns or creates an asyncio.Lock for the specific platform."""
-        if platform not in self._refresh_locks:
-            self._refresh_locks[platform] = asyncio.Lock()
-        return self._refresh_locks[platform]
+    def get_refresh_lock(self, platform: str, account_id: str = "primary") -> asyncio.Lock:
+        """Returns or creates an asyncio.Lock for the specific (platform, account) pair."""
+        lock_key = f"{platform}:{account_id}"
+        if lock_key not in self._refresh_locks:
+            self._refresh_locks[lock_key] = asyncio.Lock()
+        return self._refresh_locks[lock_key]
 
     async def get_active_session(self, platform: str):
         """
@@ -103,3 +104,93 @@ class SessionService:
         await self.redis.set_session(platform, account_id, session)
         logger.info(f"✅ Session updated and refreshed: {platform}:{account_id}")
         await self._emit_status_change(platform)
+
+    async def get_authenticated_session(
+        self,
+        provider: str,
+        account_id: str | None = None,
+        force_refresh: bool = False,
+        timeout: int = 60
+    ) -> dict | None:
+        """
+        Get an authenticated session for the provider.
+        
+        Args:
+            provider: Platform identifier (e.g. 'piccoma')
+            account_id: Specific account to retrieve. If None, resolves from active session.
+            force_refresh: If True, mark current session expired and trigger 
+                           a synchronous heal, awaiting the result.
+            timeout: Max seconds to wait for healing.
+        """
+        # Resolve which account to use
+        if account_id is None:
+            active = await self.get_active_session(provider)
+            account_id = active.get("account_id") if active else "primary"
+        
+        if force_refresh:
+            await self._mark_session_expired(provider, account_id)
+            
+            logger.info(f"💉 [Forced Refresh] Healing {provider}:{account_id} synchronously...")
+            try:
+                healed = await asyncio.wait_for(
+                    self._heal_session_now(provider, account_id),
+                    timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"❌ Forced refresh TIMEOUT after {timeout}s for {provider}:{account_id}")
+                return None
+            
+            if not healed:
+                return None
+            
+            # Return the freshly healed session
+            return await self.redis.get_session(provider, account_id)
+        
+        # Normal path - get existing and trigger background heal if needed (handled by caller or healer)
+        return await self.redis.get_session(provider, account_id)
+
+    async def _heal_session_now(self, provider: str, account_id: str = "primary") -> bool:
+        """Synchronous healing — uses the canonical refresh lock for the (provider, account) pair."""
+        lock = self.get_refresh_lock(provider, account_id)
+        
+        # S-Grade: Try-lock pattern to prevent thundering herd
+        if lock.locked():
+            logger.info(
+                f"💉 [Heal] Refresh already in progress for {provider}:{account_id}. "
+                f"Awaiting existing heal instead of starting a new one."
+            )
+            async with lock:  # Will block until in-flight heal releases
+                pass
+            # Check if the in-flight heal actually succeeded
+            session = await self.redis.get_session(provider, account_id)
+            return session is not None and session.get("status") == "HEALTHY"
+        
+        async with lock:
+            try:
+                # Re-check inside lock: maybe someone just finished healing it
+                session = await self.redis.get_session(provider, account_id)
+                if session and session.get("status") == "HEALTHY":
+                    return True
+
+                return await self._perform_login(provider, account_id)
+            except Exception as e:
+                logger.error(f"❌ Synchronous heal failed for {provider}:{account_id}: {e}")
+                return False
+
+    async def _perform_login(self, provider: str, account_id: str) -> bool:
+        """Trigger automated login via LoginService (Lazy Import to avoid circularity)."""
+        try:
+            from app.services.login_service import LoginService
+            login_service = LoginService()
+            return await login_service.auto_login(provider, account_id)
+        except Exception as e:
+            logger.error(f"Error during synchronous login for {provider}:{account_id}: {e}")
+            return False
+
+    async def _mark_session_expired(self, platform: str, account_id: str):
+        """Internal helper to mark a session as EXPIRED in Redis."""
+        session = await self.redis.get_session(platform, account_id)
+        if session:
+            session["status"] = "EXPIRED"
+            await self.redis.set_session(platform, account_id, session)
+            logger.debug(f"Session {platform}:{account_id} marked as EXPIRED.")

@@ -82,7 +82,10 @@ class PiccomaProvider(BaseProvider):
         
         series_id = match.group(1)
         base_url, region, domain = self._get_context_from_url(url)
-        auth_session = await self._get_authenticated_session(domain)
+        
+        active = await self.session_service.get_active_session("piccoma")
+        account_id = active.get("account_id", "primary") if active else "primary"
+        auth_session = await self._get_authenticated_session(domain, account_id=account_id)
         
         # --- CSRF Handshake ---
         if 'csrftoken' not in auth_session.cookies:
@@ -232,7 +235,10 @@ class PiccomaProvider(BaseProvider):
         
         series_id, chapter_id = match.groups()
         base_url, region, domain = self._get_context_from_url(task.url)
-        auth_session = await self._get_authenticated_session(domain)
+        
+        active = await self.session_service.get_active_session("piccoma")
+        account_id = active.get("account_id", "primary") if active else "primary"
+        auth_session = await self._get_authenticated_session(domain, account_id=account_id)
         
         episodes_referer = f"{base_url}/web/product/{series_id}/episodes?etype=E"
         viewer_nav_headers = self._build_browser_headers(referer=episodes_referer)
@@ -316,46 +322,66 @@ class PiccomaProvider(BaseProvider):
         if signin_markers:
             logger.warning(
                 f"[Piccoma] Viewer returned SIGNIN page for chapter {chapter_id} on first attempt. "
-                "Retrying with a fresh authenticated session before marking unhealthy."
+                "Forcing session heal before retry."
             )
-            # 🔧 FIX: Do NOT report session failure yet. The session may be valid for image
-            # downloading even if the viewer URL redirects on first hit (cookie domain issue).
-            # Only escalate if the retry with a brand-new session also fails.
-            auth_session = await self._get_authenticated_session(domain)
+            
+            # 🔧 CRITICAL FIX: Report failure FIRST so the healer kicks in,
+            # then AWAIT the healing synchronously before retrying.
             try:
-                logger.info(f"[Piccoma] Running inline identity ritual before viewer retry for chapter {chapter_id}.")
+                await self.session_service.report_session_failure(
+                    "piccoma",
+                    account_id,
+                    reason="Viewer returned signin page (initial attempt)"
+                )
+            except Exception as e:
+                logger.warning(f"[Piccoma][DEV-TRACE] Failed to record session failure: {e}")
+            
+            # 🔧 Force-await a fresh authenticated session
+            try:
+                # Trigger synchronous heal through session service
+                fresh_obj = await self.session_service.get_authenticated_session(
+                    "piccoma",
+                    account_id=account_id,
+                    force_refresh=True,
+                    timeout=60
+                )
+                if not fresh_obj:
+                    raise ScraperError("Piccoma auth failure: healer could not produce a valid session.")
+            except Exception as e:
+                raise ScraperError(f"Piccoma auth failure during forced heal: {e}")
+            
+            # Re-apply the FRESH session to our scraper
+            auth_session = await self._get_authenticated_session(domain, account_id=account_id)
+            
+            # Re-run the warm-up ritual on the NEW session
+            try:
+                logger.info(f"[Piccoma] Running inline identity ritual on FRESHLY HEALED session for chapter {chapter_id}.")
                 await self.run_ritual(auth_session, base_url)
             except Exception as e:
-                logger.warning(f"[Piccoma][DEV-TRACE] Inline identity ritual failed before retry: {e}")
+                logger.warning(f"[Piccoma][DEV-TRACE] Inline ritual failed after heal: {e}")
+            
+            # Now retry the viewer
             (
-                res,
-                final_url,
-                redirect_chain,
-                signin_markers,
-                has_next_data,
-                has_purchase_form,
-                has_charging,
-                has_points_read,
-                verdict
+                res, final_url, redirect_chain, signin_markers,
+                has_next_data, has_purchase_form, has_charging,
+                has_points_read, verdict
             ) = await _fetch_viewer_with_trace(auth_session)
-            logger.info(
-                f"[Piccoma] Viewer Retry Result for {chapter_id}: {verdict}"
-            )
+            
+            logger.info(f"[Piccoma] Viewer Retry Result for {chapter_id} (after heal): {verdict}")
+            
             if signin_markers:
-                # 🔧 Only NOW report failure - the session is genuinely broken if retry also fails
+                # Both attempts failed even with fresh login
                 try:
-                    active = await self.session_service.get_active_session("piccoma")
-                    if active and active.get("account_id"):
-                        await self.session_service.report_session_failure(
-                            "piccoma",
-                            active.get("account_id"),
-                            reason="Viewer returned signin page on both initial and retry attempt"
-                        )
-                except Exception as e:
-                    logger.warning(f"[Piccoma][DEV-TRACE] Failed to record session failure telemetry: {e}")
+                    await self.session_service.report_session_failure(
+                        "piccoma",
+                        account_id,
+                        reason="Viewer rejected even after forced heal — account may be flagged"
+                    )
+                except Exception:
+                    pass
                 raise ScraperError(
-                    f"Piccoma auth failure: viewer returned signin page for chapter {chapter_id}. "
-                    "Session is invalid or not accepted for viewer access."
+                    f"Piccoma auth failure: viewer rejected chapter {chapter_id} even after forced re-login. "
+                    "Account may be shadow-banned, geo-blocked, or require 2FA."
                 )
 
         is_locked_ui = res.status_code == 200 and (
@@ -369,7 +395,7 @@ class PiccomaProvider(BaseProvider):
             reason = f"HTTP {res.status_code}" if res.status_code != 200 else "Locked UI detected"
             logger.info(f"[Piccoma] Chapter {chapter_id} {reason}, attempting fast purchase/unlock.")
             if await self.fast_purchase(task):
-                auth_session = await self._get_authenticated_session(domain)
+                auth_session = await self._get_authenticated_session(domain, account_id=account_id)
                 res = await auth_session.get(task.url, timeout=30, headers=viewer_nav_headers)
                 final_url = str(getattr(res, "url", task.url))
             else:
