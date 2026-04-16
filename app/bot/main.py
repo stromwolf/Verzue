@@ -70,9 +70,9 @@ class MechaBot(commands.Bot):
         # Sync Slash Commands
         try:
             synced = await self.tree.sync()
-            self.logger.info(f"⚡ Synced {len(synced)} slash commands.")
+            self.logger.info(f"Synced {len(synced)} slash commands.")
         except Exception as e:
-            self.logger.error(f"❌ Command sync failed: {e}")
+            self.logger.error(f"Uh oh, command sync failed: {e}")
 
     async def start_bot(self):
         """Custom start method to handle login."""
@@ -120,8 +120,8 @@ class MechaBot(commands.Bot):
             user_channel = self.get_channel(task.channel_id)
             
             embed = discord.Embed(
-                title="❌ Error Happened",
-                description=f"Come <@1216284053049704600>. New Error",
+                title="Hmm... Error",
+                description=f"<@1216284053049704600>, Check Pls",
                 color=0xe74c3c
             )
 

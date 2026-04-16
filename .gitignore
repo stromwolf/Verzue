@@ -55,3 +55,9 @@ piccoma_wasm_bridge.txt
 piccoma.com.har
 Untitled.base
 Untitled.canvas
+
+# User requested exclusions
+txt/
+tools/
+graphify-out/
+.ruff_cache/

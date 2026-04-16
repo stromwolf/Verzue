@@ -151,6 +151,18 @@ class PiccomaLoginHandler:
                     logger.debug(f"📡 [Piccoma] Following login redirect: {next_loc}")
                     post_res = await session.get(next_loc, headers=page_headers)
 
+            # [PHASE 8] Capture pksid from the FINAL response Set-Cookie before warmup:
+            if not found_pksid_on_post:
+                hdr_val = post_res.headers.get('Set-Cookie', '') or ''
+                # Split cookies correctly if joined by comma (common in some clients, though Set-Cookie is technically multi-header)
+                for sc in hdr_val.split(','):
+                    m = re.search(r'pksid=([^; ]+)', sc)
+                    if m and m.group(1):
+                        logger.info("🔑 [Piccoma] Captured pksid from final response Set-Cookie.")
+                        session.cookies.set("pksid", m.group(1), domain=".piccoma.com", path="/")
+                        found_pksid_on_post = True
+                        break
+
             # --- Identity Handshake ---
             logger.info("🎭 [Identity Handshake] Warming up session...")
             await asyncio.sleep(1.0)
@@ -177,49 +189,59 @@ class PiccomaLoginHandler:
                 has_pksid = False
                 
                 try:
-                    jar_obj = session.cookies.jar
-                    for domain in jar_obj._cookies:
-                        for path in jar_obj._cookies[domain]:
-                            for name, cookie in jar_obj._cookies[domain][path].items():
-                                if name == "pksid" and cookie.value:
-                                    has_pksid = True
-                                
-                                cookies.append({
-                                    "name": name, "value": cookie.value, "domain": domain,
-                                    "path": path, "expires": getattr(cookie, 'expires', None)
-                                })
+                    # Using get_dict() is domain-agnostic for the names, but we need to ensure pksid is found.
+                    flat = session.cookies.get_dict()
+                    for name, value in flat.items():
+                        if name == "pksid" and value:
+                            has_pksid = True
+                        cookies.append({
+                            "name": name, "value": value,
+                            "domain": ".piccoma.com", "path": "/", "expires": None
+                        })
                     
-                    # Ensure injected trackers persist
-                    current_names = [c.get('name') for c in cookies]
+                    # Belt-and-suspenders: direct .get() in case get_dict missed a domain-scoped cookie
+                    if not has_pksid:
+                        for domain_key in (".piccoma.com", "piccoma.com", ""):
+                            try:
+                                pv = session.cookies.get("pksid", domain=domain_key) if domain_key else session.cookies.get("pksid")
+                            except TypeError:
+                                pv = session.cookies.get("pksid")
+                            if pv:
+                                has_pksid = True
+                                if not any(c["name"] == "pksid" for c in cookies):
+                                    cookies.append({"name": "pksid", "value": pv, "domain": ".piccoma.com", "path": "/"})
+                                break
+
+                    # Ensure injected trackers persist (existing logic, unchanged)
+                    current_names = {c["name"] for c in cookies}
                     for k, v in injected_trackers.items():
                         if k not in current_names:
                             cookies.append({"name": k, "value": v, "domain": ".piccoma.com", "path": "/"})
                             
                 except Exception as e:
-                    logger.warning(f"  ⚠️ [Identity Trace] Jar iteration failed ({e}), using items fallback.")
+                    logger.warning(f"  ⚠️ [Identity Trace] Cookie collection failed ({e}), falling back to items()")
                     for name, value in session.cookies.items():
-                        if name == "pksid" and value: has_pksid = True
+                        if name == "pksid" and value:
+                            has_pksid = True
                         cookies.append({"name": name, "value": value, "domain": ".piccoma.com", "path": "/"})
-                
-                # Header Fallback for pksid
-                if not has_pksid:
-                    header_cookies = post_res.headers.get_list('Set-Cookie') if hasattr(post_res.headers, 'get_list') else post_res.headers.get('Set-Cookie', "").split(",")
-                    for cookie_str in header_cookies:
-                        if "pksid=" in cookie_str:
-                            p_match = re.search(r'pksid=([^; ]+)', cookie_str)
-                            if p_match:
-                                p_val = p_match.group(1)
-                                has_pksid = True
-                                cookies.append({"name": "pksid", "value": p_val, "domain": ".piccoma.com", "path": "/"})
 
                 # S-Grade: If shelf/history fail (404), but web=200 and has_pksid is set, 
                 # we perform one last strict check on the 'web' page content.
+                # [PHASE 8] Piccoma removed /bookshelf & /history — don't use them as auth signal.
+                # Only fail if the homepage itself is a login shell.
                 auth_ok = has_pksid and web_res.status_code in [200, 302]
                 if auth_ok:
-                    # [PHASE 8] Resilient Check: User reports 404 on shelf is normal.
-                    # Relying on signout/profile markers in the HTML instead.
                     html = web_res.text
-                    auth_ok = "/acc/signout" in html or "PCM-header_user" in html or "本棚" in html
+                    is_explicit_login_shell = (
+                        "ログイン｜ピッコマ" in html
+                        or "PCM-loginMenu" in html
+                        or ("/acc/signin" in html[:3000] and "PCM-headerLogin" in html)
+                    )
+                    if is_explicit_login_shell:
+                        auth_ok = False
+                        logger.error(f"[Piccoma] Homepage is a login shell despite pksid present — session rejected by server.")
+                    else:
+                        logger.info(f"[Piccoma] Auth probe passed (pksid present, homepage not a signin shell).")
 
                 # S-Grade: Human-Readable Outcome
                 outcome_details = []

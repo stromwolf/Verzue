@@ -83,7 +83,18 @@ class SessionHealer:
         try:
             if platform in ["piccoma", "mecha"]:
                 # Headless S-Grade Healing: Attempt automated request-based login
-                success = await self.login_service.auto_login(platform, account_id)
+                # Use the same per-platform lock used by _get_authenticated_session
+                # to prevent a race with concurrent task logins.
+                lock = self.session_service.get_refresh_lock(platform)
+                async with lock:
+                    # Re-check: another task may have already healed while we waited
+                    refreshed = await self.session_service.get_active_session(platform)
+                    if refreshed and refreshed.get("status") == "HEALTHY":
+                        logger.info(f"💉 [{platform}] Session already healed by a concurrent worker. Skipping.")
+                        return
+                    
+                    success = await self.login_service.auto_login(platform, account_id)
+                
                 if not success:
                     logger.warning(f"🤷 Automated login failed for {platform}. No further healing strategy.")
             else:
