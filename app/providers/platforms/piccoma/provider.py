@@ -315,22 +315,12 @@ class PiccomaProvider(BaseProvider):
 
         if signin_markers:
             logger.warning(
-                f"[Piccoma] Viewer returned SIGNIN page for chapter {chapter_id}. "
-                "Marking session unhealthy and retrying once with a fresh authenticated session."
+                f"[Piccoma] Viewer returned SIGNIN page for chapter {chapter_id} on first attempt. "
+                "Retrying with a fresh authenticated session before marking unhealthy."
             )
-            try:
-                if hasattr(self.session_service, "record_session_failure"):
-                    await self.session_service.record_session_failure("piccoma")
-                elif hasattr(self.session_service, "report_session_failure"):
-                    active = await self.session_service.get_active_session("piccoma")
-                    if active and active.get("account_id"):
-                        await self.session_service.report_session_failure(
-                            "piccoma",
-                            active.get("account_id"),
-                            reason="Viewer returned signin page"
-                        )
-            except Exception as e:
-                logger.warning(f"[Piccoma][DEV-TRACE] Failed to record session failure telemetry: {e}")
+            # 🔧 FIX: Do NOT report session failure yet. The session may be valid for image
+            # downloading even if the viewer URL redirects on first hit (cookie domain issue).
+            # Only escalate if the retry with a brand-new session also fails.
             auth_session = await self._get_authenticated_session(domain)
             try:
                 logger.info(f"[Piccoma] Running inline identity ritual before viewer retry for chapter {chapter_id}.")
@@ -352,6 +342,17 @@ class PiccomaProvider(BaseProvider):
                 f"[Piccoma] Viewer Retry Result for {chapter_id}: {verdict}"
             )
             if signin_markers:
+                # 🔧 Only NOW report failure - the session is genuinely broken if retry also fails
+                try:
+                    active = await self.session_service.get_active_session("piccoma")
+                    if active and active.get("account_id"):
+                        await self.session_service.report_session_failure(
+                            "piccoma",
+                            active.get("account_id"),
+                            reason="Viewer returned signin page on both initial and retry attempt"
+                        )
+                except Exception as e:
+                    logger.warning(f"[Piccoma][DEV-TRACE] Failed to record session failure telemetry: {e}")
                 raise ScraperError(
                     f"Piccoma auth failure: viewer returned signin page for chapter {chapter_id}. "
                     "Session is invalid or not accepted for viewer access."

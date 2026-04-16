@@ -4,6 +4,7 @@ from app.services.session_service import SessionService
 from app.services.login_service import LoginService
 from app.core.exceptions import ScraperError
 from config.settings import Settings
+from .helpers import PiccomaHelpers
 
 logger = logging.getLogger("PiccomaSession")
 

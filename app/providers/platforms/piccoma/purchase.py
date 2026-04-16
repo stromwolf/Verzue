@@ -141,6 +141,12 @@ class PiccomaPurchase:
         for kind in kinds:
             try:
                 r = await _post_v2(kind, csrf_token)
+                
+                # 🔧 FIX: If we landed on a signin page, the chapter needs purchase — not a session problem
+                if "/acc/signin" in str(getattr(r, "url", "")) or self.provider.helpers.piccoma_html_indicates_guest_shell(str(getattr(r, "url", "")), r.text or ""):
+                    logger.info(f"[Piccoma] v2/{kind}/use redirected to signin — chapter requires purchase, session is fine.")
+                    continue  # Try next kind, don't break the loop or raise
+
                 if r.status_code in (401, 403):
                     self.provider._dump_diagnostic_data(
                         f"v2_forbidden_{kind}_{series_id}_{episode_id}",
@@ -180,8 +186,14 @@ class PiccomaPurchase:
                     f"(viewer len={len(viewer_res.text)})"
                 )
             except Exception as ex:
-                if "sign-in" in str(ex).lower() or "session rejected" in str(ex).lower():
-                    logger.warning(f"[Piccoma] V2 {kind} unlock triggered an auth-kick. Aborting loop to heal session.")
+                ex_str = str(ex).lower()
+                # 🔧 FIX: "signin" (no hyphen) is Piccoma's actual URL pattern
+                is_auth_kick = "sign-in" in ex_str or "signin" in ex_str or "session rejected" in ex_str
+                # Distinguish: a signin redirect for a PURCHASE endpoint just means "not unlocked via this method"
+                # Only abort the loop (and propagate) if it's a direct auth session rejection, not a paywall redirect
+                is_paywall_redirect = "acc/signin?next_url=" in ex_str or "Block/Trap page detected at https://piccoma.com/web/acc/signin" in str(ex)
+                if is_auth_kick and not is_paywall_redirect:
+                    logger.warning(f"[Piccoma] V2 {kind} unlock triggered a genuine auth-kick. Aborting loop to heal session.")
                     raise ex
                 logger.info(f"[Piccoma] v2/{kind}/use attempt failed: {ex}")
                 continue

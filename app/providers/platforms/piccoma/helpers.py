@@ -169,6 +169,18 @@ class PiccomaHelpers:
                     if reason != "Unknown":
                         logger.error(f"⚠️ [Piccoma Identity] Redirect Trap detected: {reason}")
                         raise ScraperError(f"Redirect trap ({reason}): -> {location}")
+                    
+                    # 🔧 FIX: Signin redirects for API calls (purchase endpoints) mean "chapter locked",
+                    # NOT a broken session. Follow to final destination and let caller inspect the result.
+                    if "/acc/signin" in location:
+                        logger.info(f"[Piccoma] Signin redirect for {current_url} -> {location} (chapter may require purchase)")
+                        # Return a synthetic response-like object the caller can inspect
+                        # by following through to get the actual signin page
+                        current_url = location
+                        method = "GET"
+                        kwargs.pop("data", None)
+                        kwargs.pop("json", None)
+                        continue
                         
                     current_url = location
                     method = "GET"
