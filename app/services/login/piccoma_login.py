@@ -225,49 +225,34 @@ class PiccomaLoginHandler:
                             has_pksid = True
                         cookies.append({"name": name, "value": value, "domain": ".piccoma.com", "path": "/"})
 
-                # S-Grade Step: Probes must confirm not just 'logged in' (pksid) 
-                # but 'authorized' (access to protected resources).
-                auth_ok = has_pksid and web_res.status_code == 200
+                # [PHASE 9] Hardened Probe evaluation
+                from app.providers.platforms.piccoma.auth import PiccomaAuth
+                probe_handler = PiccomaAuth(None)
+                probe = await probe_handler.auth_probe(session, strictness="normal")
+                auth_ok = (probe["verdict"] != "INVALID")
+                probes_str = " | ".join(probe["details"])
                 
-                # Check for explicit login shells
-                is_explicit_login_shell = (
-                    "ログイン｜ピッコマ" in web_res.text
-                    or "PCM-loginMenu" in web_res.text
-                    or ("/acc/signin" in web_res.text[:3000] and "PCM-headerLogin" in web_res.text)
-                )
-                
-                if is_explicit_login_shell:
-                    auth_ok = False
-                    logger.error(f"[Piccoma] Homepage is a login shell despite pksid present.")
-                
-                # [PHASE 9] Re-evaluating 404s: Bookshelf/History are protected. 
-                # 404s here indicate session is not fully active or restricted.
-                if auth_ok and (shelf_res.status_code != 200 or hist_res.status_code != 200):
-                    logger.warning(
-                        f"🚨 [Piccoma] Auth DEGRADED: pksid present but protected endpoints rejected "
-                        f"(Shelf: {shelf_res.status_code}, History: {hist_res.status_code})."
+                if probe["verdict"] == "HEALTHY":
+                    logger.info(
+                        f"✅ [Piccoma] Login HEALTHY. cookies={len(session.cookies)}, "
+                        f"probes=({probes_str})"
                     )
-                    # We still mark as OK for now but with a loud warning, 
-                    # as some accounts might genuinely not have these.
-                    # Actually, let's follow the user's lead and consider it a red flag.
-                    auth_ok = False 
-
-                # S-Grade: Human-Readable Outcome
-                outcome_details = []
-                outcome_details.append("Homepage: OK" if web_res.status_code == 200 else f"Homepage: {web_res.status_code}")
-                outcome_details.append("Bookshelf: OK" if shelf_res.status_code == 200 else f"Bookshelf: {shelf_res.status_code}")
-                outcome_details.append("History: OK" if hist_res.status_code == 200 else f"History: {hist_res.status_code}")
-                outcome_summary = " | ".join(outcome_details)
+                elif probe["verdict"] == "DEGRADED":
+                    logger.warning(
+                        f"⚠️ [Piccoma] Login DEGRADED but acceptable. cookies={len(session.cookies)}, "
+                        f"probes=({probes_str})"
+                    )
+                else:  # INVALID
+                    logger.error(
+                        f"🛑 [Piccoma] Login INVALID. cookies={len(session.cookies)}, "
+                        f"has_pksid={probe['pksid_present']}, probes=({probes_str})"
+                    )
 
                 if cookies and has_pksid and auth_ok:
                     await self.service.session_service.update_session_cookies("piccoma", account_id, cookies)
-                    logger.info(f"✅ Automated login successful for Piccoma ({email}) [{outcome_summary}].")
+                    logger.info(f"✅ Automated login successful for Piccoma ({email}) [{probes_str}].")
                     return True
                 else:
-                    logger.error(
-                        f"🛑 [Piccoma] Login considered invalid after handshake: "
-                        f"cookies={len(cookies)}, has_pksid={has_pksid}, auth_ok={auth_ok}, probes=({outcome_summary})"
-                    )
                     return False
             else:
                 reason = "Rerendered login page" if rerendered else f"HTTP {post_res.status_code}"

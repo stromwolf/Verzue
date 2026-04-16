@@ -175,7 +175,8 @@ class PiccomaSession:
         try:
             from .auth import PiccomaAuth
             auth = PiccomaAuth(self.provider)
-            is_valid = await auth.auth_probe(session, strictness=strictness)
+            # 🔧 Use fail-open boolean check for periodic health monitoring
+            is_valid = await auth.is_authenticated(session)
             
             if is_valid:
                 await self.provider.session_service.record_session_success("piccoma")

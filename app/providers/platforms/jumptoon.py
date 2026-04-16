@@ -579,7 +579,7 @@ class JumptoonProvider(BaseProvider):
         total = len(image_data)
         stats = {"completed": 0}
         from app.core.progress import ProgressBar
-        progress = ProgressBar(task.req_id, "Downloading", "Jumptoon", total)
+        progress = ProgressBar(task.req_id, "Downloading", "Jumptoon", total, episode_id=task.episode_id)
         progress.update(stats["completed"])
 
         async def download_one(item):

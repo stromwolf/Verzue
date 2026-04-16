@@ -399,7 +399,6 @@ class UniversalDashboard:
             # Determine global phase status if individual tasks haven't fully taken over
             global_phase = None
             if self.phases["analyze"] != "done": global_phase = "Analyzing"
-            elif self.phases["purchase"] != "done": global_phase = "Purchasing"
             
             if global_phase and not self.active_tasks:
                 # Early state: Scraper/Unlocker is working on the series as a whole
@@ -417,11 +416,15 @@ class UniversalDashboard:
                             status_line = f"> **{task.chapter_str}**"
                         else:
                             # Status text assembly
+                            # 🟡 S-GRADE: Show "Analyzing..." only if the task is STILL queued and metadata isn't ready
                             if global_phase and task.status == TaskStatus.QUEUED:
                                 status_text = f"{global_phase}..."
                             else:
+                                # Show the specific task status (Downloading, Uploading, etc.)
                                 status_text = f"{task.status.value}"
-                                if task.status != TaskStatus.COMPLETED: status_text += "..."
+                                if task.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+                                    status_text += "..."
+                            
                             status_line = f"> {task.chapter_str}: {status_text}"
                     else:
                         ch_str = item["ch"]

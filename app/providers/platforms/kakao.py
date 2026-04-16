@@ -196,7 +196,7 @@ class KakaoProvider(BaseProvider):
         total = len(files)
         completed = 0
         from app.core.progress import ProgressBar
-        progress = ProgressBar(task.req_id, "Downloading", "Kakao", total)
+        progress = ProgressBar(task.req_id, "Downloading", "Kakao", total, episode_id=task.episode_id)
         progress.update(completed)
 
         async def dl(f, idx):
@@ -231,7 +231,7 @@ class KakaoProvider(BaseProvider):
             total = len(files)
             completed = 0
             from app.core.progress import ProgressBar
-            progress = ProgressBar(task.req_id, "Downloading", "Kakao", total)
+            progress = ProgressBar(task.req_id, "Downloading", "Kakao", total, episode_id=task.episode_id)
             progress.update(completed)
 
             async def dl(f, idx):

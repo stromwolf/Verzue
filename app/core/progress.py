@@ -4,13 +4,14 @@ from .logger import req_id_context
 
 class ProgressBar:
     """S-Grade Progress Bar for log-compatible console output."""
-    def __init__(self, req_id: str, label: str, service: str, total: int, bar_length: int = 20):
+    def __init__(self, req_id: str, label: str, service: str, total: int, bar_length: int = 20, episode_id: str | None = None):
         self.req_id = req_id
         self.label = label
         self.service = service
         self.total = total
         self.bar_length = bar_length
         self.completed = 0
+        self.episode_id = episode_id
         self._last_percent = -1
 
     def update(self, current: int = None):
@@ -49,13 +50,26 @@ class ProgressBar:
             from app.bot.common.view import UniversalDashboard
             view = UniversalDashboard.active_views.get(self.req_id)
             if view:
+                from app.models.chapter import TaskStatus
+                new_status = TaskStatus.DOWNLOADING if self.label == "Downloading" else TaskStatus.UPLOADING
+                
+                updated = False
                 for t in view.active_tasks:
-                    if t.status not in ["Chapter Completed", "Failed"]:
-                        from app.models.chapter import TaskStatus
-                        new_status = TaskStatus.DOWNLOADING if self.label == "Downloading" else TaskStatus.UPLOADING
+                    # If we have a specific episode_id, only update THAT task
+                    if self.episode_id and str(t.episode_id) != str(self.episode_id):
+                        continue
+                        
+                    if t.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
                         if t.status != new_status:
                             t.status = new_status
-                        break
+                            updated = True
+                        
+                        # If we updated the target task (or the first available one if no ID provided), we can stop
+                        if self.episode_id or updated:
+                            break
+                
+                if updated:
+                    view.trigger_refresh()
         except: pass
 
     def finish(self):

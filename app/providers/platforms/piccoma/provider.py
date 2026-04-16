@@ -441,7 +441,7 @@ class PiccomaProvider(BaseProvider):
 
         total = len(valid_images)
         from app.core.progress import ProgressBar
-        progress = ProgressBar(task.req_id, "Downloading", "Piccoma", total)
+        progress = ProgressBar(task.req_id, "Downloading", "Piccoma", total, episode_id=task.episode_id)
         progress.update(0)
 
         async def process_one(img_data, i):

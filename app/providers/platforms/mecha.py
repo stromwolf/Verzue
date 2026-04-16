@@ -291,7 +291,7 @@ class MechaProvider(BaseProvider):
         total = len(img_tasks)
         stats = {"completed": 0}
         from app.core.progress import ProgressBar
-        progress = ProgressBar(task.req_id, "Downloading", "Mecha", total)
+        progress = ProgressBar(task.req_id, "Downloading", "Mecha", total, episode_id=task.episode_id)
         progress.update(stats["completed"])
 
         # 🧤 S-Grade: Fixed Concurrency (10)

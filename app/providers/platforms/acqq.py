@@ -131,7 +131,7 @@ class AcqqProvider(BaseProvider):
         total = len(image_urls)
         completed = 0
         from app.core.progress import ProgressBar
-        progress = ProgressBar(task.req_id, "Downloading", "AC.QQ", total)
+        progress = ProgressBar(task.req_id, "Downloading", "AC.QQ", total, episode_id=task.episode_id)
         progress.update(completed)
 
         async def dl(url, idx):

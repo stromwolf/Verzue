@@ -77,7 +77,14 @@ class TaskWorker:
                 if task.service not in self._SERVICE_LOCKS:
                     self._SERVICE_LOCKS[task.service] = asyncio.Lock()
                 
+                from app.bot.common.view import UniversalDashboard
+                view = UniversalDashboard.active_views.get(task.req_id)
+                
                 async with self._SERVICE_LOCKS[task.service]:
+                    if view: 
+                        view.phases["analyze"] = "done"
+                        view.trigger_refresh()
+                    
                     # --- LOCAL DOWNLOAD TRACK ---
                     # All providers are now async
                     await provider.scrape_chapter(task, str(raw_dir))
@@ -276,7 +283,8 @@ class TaskWorker:
             completed = [1] # Use list for mutable scoping in nested async
             total = len(files)
             from app.core.progress import ProgressBar
-            progress = ProgressBar(task.req_id, "Uploading", task.service.capitalize(), total)
+            # 🔵 UPLOAD PROGRESS: Pass episode_id for task-specific status sync
+            progress = ProgressBar(task.req_id, "Uploading", task.service.capitalize(), total, episode_id=task.episode_id)
             progress.update(completed[0])
 
             async def safe_upload(filename):

@@ -98,7 +98,7 @@ class KuaikanProvider(BaseProvider):
         total = len(image_urls)
         completed = 0
         from app.core.progress import ProgressBar
-        progress = ProgressBar(task.req_id, "Downloading", "Kuaikan", total)
+        progress = ProgressBar(task.req_id, "Downloading", "Kuaikan", total, episode_id=task.episode_id)
         progress.update(completed)
 
         async def dl(url, idx):
