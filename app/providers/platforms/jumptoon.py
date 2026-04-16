@@ -618,16 +618,19 @@ class JumptoonProvider(BaseProvider):
         
         with open(raw_path, 'wb') as f: f.write(res.content)
         
-        try:
-            # Unscrambling happens during download phase for S-Grade efficiency
-            img = await asyncio.to_thread(ImageOptimizer.unscramble_jumptoon_v2, raw_path, seed, version="V2", requested_width=requested_width)
-            if img:
-                img.save(final_path, format="WEBP", quality=100)
-                os.remove(raw_path)
-            else: os.rename(raw_path, final_path)
-        except Exception as e:
-            logger.error(f"Unscramble failed: {e}")
-            if os.path.exists(raw_path): os.rename(raw_path, final_path)
+        if os.path.exists(raw_path):
+            try:
+                # Unscrambling happens during download phase for S-Grade efficiency
+                img = await asyncio.to_thread(ImageOptimizer.unscramble_jumptoon_v2, raw_path, seed, version="V2", requested_width=requested_width)
+                if img:
+                    img.save(final_path, format="WEBP", quality=100)
+                    os.remove(raw_path)
+                else: os.rename(raw_path, final_path)
+            except Exception as e:
+                logger.error(f"Unscramble failed: {e}")
+                if os.path.exists(raw_path): os.rename(raw_path, final_path)
+        else:
+            logger.error(f"Cannot unscramble: Download failed and {raw_path} does not exist.")
 
     async def fast_purchase(self, task) -> bool:
         """
@@ -690,12 +693,16 @@ class JumptoonProvider(BaseProvider):
     async def run_ritual(self, session):
         """S-Grade Ritual: Simulate a user browsing the ranking and checking 'My Toon'."""
         logger.info("[Jumptoon] Running behavioral ritual...")
-        # 1. Visit Hero Section (Home)
-        await session.get(self.BASE_URL)
-        await asyncio.sleep(random.uniform(2, 4))
-        # 2. Visit Rankings (Human curiosity)
-        await session.get(f"{self.BASE_URL}/ranking/")
-        await asyncio.sleep(random.uniform(3, 5))
-        # 3. Check Account Status
-        await session.get(f"{self.BASE_URL}/mypage")
-        logger.info("[Jumptoon] Ritual complete. Session warmed.")
+        try:
+            # Add max_redirects=3 to prevent infinite loops
+            await session.get(self.BASE_URL, timeout=15, max_redirects=3)
+            await asyncio.sleep(random.uniform(2, 4))
+            
+            await session.get(f"{self.BASE_URL}/ranking/", timeout=15, max_redirects=3)
+            await asyncio.sleep(random.uniform(3, 5))
+            
+            await session.get(f"{self.BASE_URL}/mypage", timeout=15, max_redirects=3)
+            logger.info("[Jumptoon] Ritual complete. Session warmed.")
+        except Exception as e:
+            # Swallow the error so the Healer task doesn't crash globally
+            logger.warning(f"[Jumptoon] Ritual interrupted/aborted: {e}")

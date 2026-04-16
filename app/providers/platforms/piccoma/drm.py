@@ -257,6 +257,8 @@ class PiccomaDRM:
         
         res = await session.get(url, timeout=30)
         res.raise_for_status()
+        
+        raw_path = f"{out_dir}/raw_page_{idx:03d}.png"
         out_path = f"{out_dir}/page_{idx:03d}.png"
         
         is_valid_seed = bool(seed)
@@ -267,19 +269,29 @@ class PiccomaDRM:
                 with open(out_path, "wb") as f: f.write(res.content)
                 return
 
-            try:
-                final_seed = await self._dd_transform(seed)
-                
-                def unscramble():
-                    with self.unscramble_lock:
-                        img_io = BytesIO(res.content)
-                        canvas = Canvas(img_io, (50, 50), final_seed)
-                        return canvas.export(mode="unscramble", format="png").getvalue()
-                
-                content = await asyncio.to_thread(unscramble)
-                with open(out_path, "wb") as f: f.write(content)
-            except Exception as e:
-                logger.error(f"[Piccoma] Unscramble error (V3 Seed: {seed}): {e}")
+            # Save raw file for unscrambler
+            with open(raw_path, "wb") as f: f.write(res.content)
+
+            if os.path.exists(raw_path):
+                try:
+                    final_seed = await self._dd_transform(seed)
+                    
+                    def unscramble():
+                        with self.unscramble_lock:
+                            canvas = Canvas(raw_path, (50, 50), final_seed)
+                            return canvas.export(mode="unscramble", format="png").getvalue()
+                    
+                    content = await asyncio.to_thread(unscramble)
+                    with open(out_path, "wb") as f: f.write(content)
+                    os.remove(raw_path)
+                except Exception as e:
+                    logger.error(f"[Piccoma] Unscramble error (V3 Seed: {seed}): {e}")
+                    if os.path.exists(raw_path):
+                        os.rename(raw_path, out_path)
+                    else:
+                        with open(out_path, "wb") as f: f.write(res.content)
+            else:
+                logger.error(f"Cannot unscramble: Download failed and {raw_path} does not exist.")
                 with open(out_path, "wb") as f: f.write(res.content)
         else:
             with open(out_path, "wb") as f: f.write(res.content)
