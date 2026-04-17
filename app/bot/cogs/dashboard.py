@@ -27,6 +27,24 @@ logger = logging.getLogger("Dashboard")
 class DashboardCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.redis = RedisManager()
+
+    async def _store_url_token(self, url: str) -> str:
+        """Stores a URL in Redis and returns a short token to stay under 100 chars."""
+        token = f"tok_{uuid.uuid4().hex[:8]}"
+        # Set with 2 hour expiry (7200s)
+        await self.redis.client.setex(f"v2_url_token:{token}", 7200, url)
+        return token
+
+    async def _resolve_url_token(self, token_or_url: str) -> str:
+        """Resolves a token back to a URL if it matches the token format."""
+        if not str(token_or_url).startswith("tok_"):
+            return token_or_url
+        
+        val = await self.redis.client.get(f"v2_url_token:{token_or_url}")
+        if val:
+            return val.decode("utf-8") if isinstance(val, bytes) else val
+        return token_or_url # Fallback to original if expired/missing
 
     @app_commands.command(name="dashboard", description="Open the central extraction menu")
     async def dashboard(self, interaction: discord.Interaction):
@@ -695,10 +713,11 @@ class DashboardCog(commands.Cog):
 
             # --- Channel Selection for Subscription ---
             elif custom_id.startswith("v2_select_sub_channel_"):
-                # Format: v2_select_sub_channel_{platform}|{url}
+                # Format: v2_select_sub_channel_{platform}|{url_or_token}
                 parts = custom_id.replace("v2_select_sub_channel_", "").split("|", 1)
                 platform = parts[0]
-                url = parts[1] if len(parts) > 1 else ""
+                token_or_url = parts[1] if len(parts) > 1 else ""
+                url = await self._resolve_url_token(token_or_url)
                 
                 # Extract selected channel ID
                 values = interaction.data.get("values", [])
@@ -710,16 +729,18 @@ class DashboardCog(commands.Cog):
 
             # --- Registration Hook ---
             elif custom_id.startswith("v2_btn_sub_confirm_yes_"):
-                # Format: v2_btn_sub_confirm_yes_{platform}|{url}
+                # Format: v2_btn_sub_confirm_yes_{platform}|{url_or_token}
                 parts = custom_id.replace("v2_btn_sub_confirm_yes_", "").split("|", 1)
                 platform = parts[0]
-                url = parts[1] if len(parts) > 1 else ""
+                token_or_url = parts[1] if len(parts) > 1 else ""
+                url = await self._resolve_url_token(token_or_url)
                 await self.finalize_subscription(interaction, platform, url, interaction.channel_id)
             elif custom_id.startswith("v2_btn_sub_confirm_no_"):
-                # Format: v2_btn_sub_confirm_no_{platform}|{url}
+                # Format: v2_btn_sub_confirm_no_{platform}|{url_or_token}
                 parts = custom_id.replace("v2_btn_sub_confirm_no_", "").split("|", 1)
                 platform = parts[0]
-                url = parts[1] if len(parts) > 1 else ""
+                token_or_url = parts[1] if len(parts) > 1 else ""
+                url = await self._resolve_url_token(token_or_url)
                 await self.launch_channel_select(interaction, platform, url)
 
             # --- View All Subscriptions (Paginated List) ---
@@ -854,7 +875,8 @@ class DashboardCog(commands.Cog):
                 # "Yes" to "Move this series to new channel?" -> Show channel select inline
                 parts = custom_id.replace("v2_btn_sub_move_yes_", "").split("|", 1)
                 platform = parts[0]
-                url = parts[1] if len(parts) > 1 else ""
+                token_or_url = parts[1] if len(parts) > 1 else ""
+                url = await self._resolve_url_token(token_or_url)
                 await self.launch_channel_select(interaction, platform, url, force_message=True)
             elif custom_id.startswith("v2_btn_sub_move_no_"):
                 # "No" -> Cancel / Delete
@@ -1471,8 +1493,16 @@ class DashboardCog(commands.Cog):
                 
                 if is_already_here:
                     content = f"✅ **Series Found but um...**\nLooks like this series is already subscribed to this channel. Would you want to move this series to new channel?"
-                    yes_id = f"v2_btn_sub_move_yes_{platform}|{url}"
-                    no_id = f"v2_btn_sub_move_no_{platform}|{url}"
+                    
+                    # 🟢 SCENARIO A: Tokenize IDs to prevent 100-char overflow
+                    token = await self._store_url_token(url)
+                    yes_id = f"v2_btn_sub_move_yes_{platform}|{token}"
+                    no_id = f"v2_btn_sub_move_no_{platform}|{token}"
+                    
+                    # Hard-guard against overflow (Discord limit)
+                    assert len(yes_id) <= 100, f"SCENARIO A yes_id overflow: {len(yes_id)} chars"
+                    assert len(no_id) <= 100, f"SCENARIO A no_id overflow: {len(no_id)} chars"
+
                     trigger_components = [
                         {"type": 10, "content": content},
                         {
@@ -1488,6 +1518,12 @@ class DashboardCog(commands.Cog):
                     from app.services.group_manager import get_title_override
                     occ_title = get_title_override(occ_group, occupation_series.get('series_url', '')) or occupation_series.get('series_title', 'Unknown')
                     content = f"🚫 **Uh-Oh**\nThis channel is already occupied by **{occ_title}**.\nPlease choose a dedicated channel for this series."
+                    
+                    # 🟢 SCENARIO A (Occupied): Tokenize ID
+                    token = await self._store_url_token(url)
+                    channel_select_id = f"v2_select_sub_channel_{platform}|{token}"
+                    assert len(channel_select_id) <= 100, f"SCENARIO A chan_select overflow: {len(channel_select_id)} chars"
+
                     trigger_components = [
                         {"type": 10, "content": content},
                         {
@@ -1495,7 +1531,7 @@ class DashboardCog(commands.Cog):
                             "components": [
                                 {
                                     "type": 8, # CHANNEL_SELECT
-                                    "custom_id": f"v2_select_sub_channel_{platform}|{url}",
+                                    "custom_id": channel_select_id,
                                     "channel_types": [0],
                                     "placeholder": "Select Channel"
                                 }
@@ -1522,7 +1558,7 @@ class DashboardCog(commands.Cog):
                 # Call with fast=True to skip chapter crawling
                 data = await scraper.get_series_info(url, fast=True)
                 title, total_chapters, chapter_list, image_url, series_id, release_day, release_time, status_label, genre_label = data
-                series_id = series_id or series_id
+                # Clean up no-op line
                 
                 # 🟢 S-GRADE: Subscription Block Rule (Mar 25 Request)
                 if status_label in ["Oneshot", "Completed", "Novel"]:
@@ -1543,8 +1579,16 @@ class DashboardCog(commands.Cog):
                 
                 # Standard prompt
                 content = f"✅ **Series Found!**\nWould you like to use this channel for this series subscription?"
-                yes_id = f"v2_btn_sub_confirm_yes_{platform}|{url}"
-                no_id = f"v2_btn_sub_confirm_no_{platform}|{url}"
+                
+                # 🟢 SCENARIO B: Tokenize IDs to prevent 100-char overflow
+                token = await self._store_url_token(url)
+                yes_id = f"v2_btn_sub_confirm_yes_{platform}|{token}"
+                no_id = f"v2_btn_sub_confirm_no_{platform}|{token}"
+                
+                # Hard-guard against overflow (Discord limit)
+                assert len(yes_id) <= 100, f"SCENARIO B yes_id overflow: {len(yes_id)} chars"
+                assert len(no_id) <= 100, f"SCENARIO B no_id overflow: {len(no_id)} chars"
+                
                 trigger_components = [
                     {"type": 10, "content": content},
                     {
@@ -1779,10 +1823,18 @@ class DashboardCog(commands.Cog):
             # The user specifically said "On No button popup is alright", implies they might want a Modal.
             # Let's try to fit it into a Modal if possible.
             
+            # 🟢 S-GRADE: Tokenize IDs to prevent 100-char overflow
+            token = await self._store_url_token(url)
+            modal_id = f"v2_modal_sub_channel_select_{platform}|{token}"
+            select_id = f"v2_select_sub_channel_{platform}|{token}"
+            
+            assert len(modal_id) <= 100, f"launch_channel_select modal_id overflow: {len(modal_id)} chars"
+            assert len(select_id) <= 100, f"launch_channel_select select_id overflow: {len(select_id)} chars"
+
             modal_payload = {
                 "type": 9,
                 "data": {
-                    "custom_id": f"v2_modal_sub_channel_select_{platform}|{url}", # We'll need to handle this in on_interaction too
+                    "custom_id": modal_id, 
                     "title": "Select Target Channel",
                     "components": [
                         {
@@ -1790,7 +1842,7 @@ class DashboardCog(commands.Cog):
                             "label": "Choose the auto-download channel",
                             "component": {
                                 "type": 8, # CHANNEL_SELECT
-                                "custom_id": f"v2_select_sub_channel_{platform}|{url}",
+                                "custom_id": select_id,
                                 "channel_types": [0],
                                 "required": True
                             }
@@ -1813,7 +1865,8 @@ class DashboardCog(commands.Cog):
         if custom_id.startswith("v2_modal_sub_channel_select_"):
             parts = custom_id.replace("v2_modal_sub_channel_select_", "").split("|", 1)
             platform = parts[0]
-            url = parts[1] if len(parts) > 1 else ""
+            token_or_url = parts[1] if len(parts) > 1 else ""
+            url = await self._resolve_url_token(token_or_url)
             
             # Extract from Modal Data
             # components[0] (Label) -> component (Channel Select) -> values
