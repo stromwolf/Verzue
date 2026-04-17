@@ -28,23 +28,19 @@ class DashboardCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.redis = RedisManager()
+        self._url_store: dict[str, str] = {} # token -> url
 
-    async def _store_url_token(self, url: str) -> str:
-        """Stores a URL in Redis and returns a short token to stay under 100 chars."""
+    def _store_url(self, url: str) -> str:
+        """Stores a URL in transient memory and returns a short token safe for custom_id."""
         token = f"tok_{uuid.uuid4().hex[:8]}"
-        # Set with 2 hour expiry (7200s)
-        await self.redis.client.setex(f"v2_url_token:{token}", 7200, url)
+        self._url_store[token] = url
         return token
 
-    async def _resolve_url_token(self, token_or_url: str) -> str:
-        """Resolves a token back to a URL if it matches the token format."""
+    def _resolve_url(self, token_or_url: str) -> str:
+        """Resolves a token back to a URL, or returns the input if not a token."""
         if not str(token_or_url).startswith("tok_"):
             return token_or_url
-        
-        val = await self.redis.client.get(f"v2_url_token:{token_or_url}")
-        if val:
-            return val.decode("utf-8") if isinstance(val, bytes) else val
-        return token_or_url # Fallback to original if expired/missing
+        return self._url_store.get(token_or_url, token_or_url)
 
     @app_commands.command(name="dashboard", description="Open the central extraction menu")
     async def dashboard(self, interaction: discord.Interaction):
@@ -553,10 +549,14 @@ class DashboardCog(commands.Cog):
         # but since we are triggered by a Modal Submit (type 5), we can respond with UPDATE_MESSAGE (type 7) directly.
         try:
             await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=success_payload)
-        except:
+        except Exception as e:
             # Fallback PATCH if interaction already acknowledged
-            route = discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original')
-            await self.bot.http.request(route, json=success_payload["data"])
+            logger.debug(f"[Dashboard] POST callback failed, trying PATCH: {e}")
+            try:
+                route = discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original')
+                await self.bot.http.request(route, json=success_payload["data"])
+            except Exception as e2:
+                logger.error(f"[Dashboard] Sub removal PATCH failed: {e2}", exc_info=True)
 
         # 4. AUTO-DELETE AFTER 5 MINUTES (300s)
         async def delayed_delete():
@@ -717,7 +717,7 @@ class DashboardCog(commands.Cog):
                 parts = custom_id.replace("v2_select_sub_channel_", "").split("|", 1)
                 platform = parts[0]
                 token_or_url = parts[1] if len(parts) > 1 else ""
-                url = await self._resolve_url_token(token_or_url)
+                url = self._resolve_url(token_or_url)
                 
                 # Extract selected channel ID
                 values = interaction.data.get("values", [])
@@ -733,14 +733,14 @@ class DashboardCog(commands.Cog):
                 parts = custom_id.replace("v2_btn_sub_confirm_yes_", "").split("|", 1)
                 platform = parts[0]
                 token_or_url = parts[1] if len(parts) > 1 else ""
-                url = await self._resolve_url_token(token_or_url)
+                url = self._resolve_url(token_or_url)
                 await self.finalize_subscription(interaction, platform, url, interaction.channel_id)
             elif custom_id.startswith("v2_btn_sub_confirm_no_"):
                 # Format: v2_btn_sub_confirm_no_{platform}|{url_or_token}
                 parts = custom_id.replace("v2_btn_sub_confirm_no_", "").split("|", 1)
                 platform = parts[0]
                 token_or_url = parts[1] if len(parts) > 1 else ""
-                url = await self._resolve_url_token(token_or_url)
+                url = self._resolve_url(token_or_url)
                 await self.launch_channel_select(interaction, platform, url)
 
             # --- View All Subscriptions (Paginated List) ---
@@ -876,7 +876,7 @@ class DashboardCog(commands.Cog):
                 parts = custom_id.replace("v2_btn_sub_move_yes_", "").split("|", 1)
                 platform = parts[0]
                 token_or_url = parts[1] if len(parts) > 1 else ""
-                url = await self._resolve_url_token(token_or_url)
+                url = self._resolve_url(token_or_url)
                 await self.launch_channel_select(interaction, platform, url, force_message=True)
             elif custom_id.startswith("v2_btn_sub_move_no_"):
                 # "No" -> Cancel / Delete
@@ -926,10 +926,13 @@ class DashboardCog(commands.Cog):
                             callback_payload = {"type": 4, "data": error_payload}
                             route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
                             await self.bot.http.request(route, json=callback_payload)
-                    except:
+                    except Exception as e:
                         # Final safety fallback
-                        try: await interaction.followup.send("❌ Session Expired. Please restart the dashboard.", ephemeral=True)
-                        except: pass
+                        try: 
+                            logger.debug(f"[Dashboard] Session error dispatch failed, trying followup: {e}")
+                            await interaction.followup.send("❌ Session Expired. Please restart the dashboard.", ephemeral=True)
+                        except Exception as e2:
+                            logger.error(f"[Dashboard] Final safety followup failed: {e2}", exc_info=True)
                     return
                 
                 # 🔄 Reset session timer on every interaction
@@ -1339,7 +1342,9 @@ class DashboardCog(commands.Cog):
                         }
                         try:
                             return await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=error_payload)
-                        except: return
+                        except Exception as e:
+                            logger.error(f"[Dashboard] No New Releases error dispatch failed: {e}", exc_info=True)
+                            return
                 elif mode_val == "custom" and range_val:
                     try:
                         # 🟢 S-GRADE: Support semantic ranges (matching _display_idx from view.py)
@@ -1495,7 +1500,7 @@ class DashboardCog(commands.Cog):
                     content = f"✅ **Series Found but um...**\nLooks like this series is already subscribed to this channel. Would you want to move this series to new channel?"
                     
                     # 🟢 SCENARIO A: Tokenize IDs to prevent 100-char overflow
-                    token = await self._store_url_token(url)
+                    token = self._store_url(url)
                     yes_id = f"v2_btn_sub_move_yes_{platform}|{token}"
                     no_id = f"v2_btn_sub_move_no_{platform}|{token}"
                     
@@ -1520,7 +1525,7 @@ class DashboardCog(commands.Cog):
                     content = f"🚫 **Uh-Oh**\nThis channel is already occupied by **{occ_title}**.\nPlease choose a dedicated channel for this series."
                     
                     # 🟢 SCENARIO A (Occupied): Tokenize ID
-                    token = await self._store_url_token(url)
+                    token = self._store_url(url)
                     channel_select_id = f"v2_select_sub_channel_{platform}|{token}"
                     assert len(channel_select_id) <= 100, f"SCENARIO A chan_select overflow: {len(channel_select_id)} chars"
 
@@ -1581,7 +1586,7 @@ class DashboardCog(commands.Cog):
                 content = f"✅ **Series Found!**\nWould you like to use this channel for this series subscription?"
                 
                 # 🟢 SCENARIO B: Tokenize IDs to prevent 100-char overflow
-                token = await self._store_url_token(url)
+                token = self._store_url(url)
                 yes_id = f"v2_btn_sub_confirm_yes_{platform}|{token}"
                 no_id = f"v2_btn_sub_confirm_no_{platform}|{token}"
                 
@@ -1650,7 +1655,7 @@ class DashboardCog(commands.Cog):
             route = discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original')
             await self.bot.http.request(route, json=analyzing_payload)
         except Exception as e:
-            logger.error(f"Interaction expired or PATCH failed: {e}")
+            logger.error(f"[Dashboard] Interaction expired or PATCH failed: {type(e).__name__}: {e}", exc_info=True)
             return
 
         try:
@@ -1795,7 +1800,7 @@ class DashboardCog(commands.Cog):
                             "components": [
                                 {
                                     "type": 8,
-                                    "custom_id": f"v2_select_sub_channel_{platform}|{url}",
+                                    "custom_id": f"v2_select_sub_channel_{platform}|{self._store_url(url)}",
                                     "channel_types": [0], # Text Channels only
                                     "placeholder": "Search or select a text channel..."
                                 }
@@ -1824,7 +1829,7 @@ class DashboardCog(commands.Cog):
             # Let's try to fit it into a Modal if possible.
             
             # 🟢 S-GRADE: Tokenize IDs to prevent 100-char overflow
-            token = await self._store_url_token(url)
+            token = self._store_url(url)
             modal_id = f"v2_modal_sub_channel_select_{platform}|{token}"
             select_id = f"v2_select_sub_channel_{platform}|{token}"
             
@@ -1866,7 +1871,7 @@ class DashboardCog(commands.Cog):
             parts = custom_id.replace("v2_modal_sub_channel_select_", "").split("|", 1)
             platform = parts[0]
             token_or_url = parts[1] if len(parts) > 1 else ""
-            url = await self._resolve_url_token(token_or_url)
+            url = self._resolve_url(token_or_url)
             
             # Extract from Modal Data
             # components[0] (Label) -> component (Channel Select) -> values
