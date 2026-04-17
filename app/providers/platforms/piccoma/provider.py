@@ -163,6 +163,19 @@ class PiccomaProvider(BaseProvider):
         all_chapters = []
         ep_soup = soup if (fast or not ep_res) else BeautifulSoup(ep_res.text, 'html.parser')
 
+        # ✅ S-GRADE: Authoritative total from Piccoma's own counter (全N話)
+        # This is the platform-rendered ground truth, faster and more reliable than len(all_chapters)
+        declared_total = 0
+        length_wrap = ep_soup.select_one('.PCM-headListParts_lengthWrap')
+        if length_wrap:
+            span = length_wrap.select_one('span')
+            if span:
+                try:
+                    declared_total = int(span.get_text(strip=True))
+                    logger.info(f"[Piccoma] Declared total from 全N話 banner: {declared_total}")
+                except ValueError:
+                    pass
+
         # Heuristic A: NEXT_DATA
         next_data_script = ep_soup.select_one('script#__NEXT_DATA__')
         if next_data_script:
@@ -235,7 +248,8 @@ class PiccomaProvider(BaseProvider):
 
         try: all_chapters.sort(key=lambda x: int(x['id']))
         except: pass
-        return title, len(all_chapters), all_chapters, image_url, str(series_id), release_day, release_time, status_label, None
+        total = declared_total if declared_total > 0 else len(all_chapters)
+        return title, total, all_chapters, image_url, str(series_id), release_day, release_time, status_label, None
 
     async def scrape_chapter(self, task, output_dir: str):
         """S+ Refinement: Stateless and Heuristic Extraction."""

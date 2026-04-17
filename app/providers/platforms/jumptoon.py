@@ -125,7 +125,7 @@ class JumptoonProvider(BaseProvider):
                 break
         
         if total_chapters == 0:
-            h2_count = re.search(r'<h2>全\s*(?:<!-- -->)?\s*(\d+)\s*(?:<!-- -->)?\s*話</h2>', html_content)
+            h2_count = re.search(r'<h2[^>]*>全\s*(?:<!--.*?-->\s*)*(\d+)\s*(?:<!--.*?-->\s*)*話</h2>', html_content, re.DOTALL)
             if h2_count: total_chapters = int(h2_count.group(1))
 
         # 2. Title Extraction
