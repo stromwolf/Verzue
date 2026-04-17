@@ -467,9 +467,11 @@ class UniversalDashboard:
             footer = self._get_footer_action_row()
             if footer: inner_components.append(footer)
         else:
+            total_ch_count = len(self.all_chapters)
             header_text = f"## {self.title}"
             if self.original_title and self.original_title != self.title:
                 header_text += f"\n-# {self.original_title}"
+            header_text += f"\n**Total Ch:** {total_ch_count}"
             
             inner_components = []
             if self.image_url:
@@ -480,7 +482,7 @@ class UniversalDashboard:
                 })
             else:
                 inner_components.append({"type": 10, "content": header_text})
-            
+
             inner_components.append({"type": 14, "spacing": 1})
             inner_components.append({"type": 10, "content": desc})
             inner_components.append({"type": 10, "content": selection_text})

@@ -9,6 +9,7 @@ from discord.ext import tasks
 from app.services.group_manager import (
     get_all_subscriptions,
     update_last_chapter,
+    update_last_up_chapter,
     load_group,
     save_group,
 )
@@ -222,9 +223,19 @@ class AutoDownloadPoller:
                         logger.info(f"🏷️ [AutoPoller] Status updated: {title} → {new_status}")
                         break
 
-            if latest_chapter and current_id != last_known:
-                logger.info(f"🚨 [AutoPoller] NEW CHAPTER DETECTED! {title} - {latest_chapter['notation']}")
-                update_last_chapter(group_name, series_id, current_id)
+            # ✅ Piccoma UP flag integration
+            latest_is_up = latest_chapter.get('is_up', False) if latest_chapter else False
+            up_not_yet_notified = latest_is_up and str(sub.get("last_up_chapter_id")) != current_id
+            
+            if latest_chapter and (current_id != last_known or up_not_yet_notified):
+                trigger_reason = "ID change" if current_id != last_known else "UP flag"
+                logger.info(f"🚨 [AutoPoller] NEW CHAPTER DETECTED ({trigger_reason})! {title} - {latest_chapter['notation']}")
+                
+                if current_id != last_known:
+                    update_last_chapter(group_name, series_id, current_id)
+                
+                if up_not_yet_notified:
+                    update_last_up_chapter(group_name, series_id, current_id)
 
                 # Poster attachment
                 files = []

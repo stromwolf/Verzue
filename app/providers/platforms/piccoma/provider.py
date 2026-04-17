@@ -178,13 +178,15 @@ class PiccomaProvider(BaseProvider):
                     p_is_free = ep.get('is_free', ep.get('isFree', False))
                     p_is_wait_free = ep.get('is_wait_free', ep.get('isWaitFree', False))
                     p_is_new = ep.get('is_new', ep.get('isNew', False))
+                    p_is_up = ep.get('is_up', ep.get('isUp', False))
 
                     all_chapters.append({
                         'id': cid, 'title': c_title, 'notation': c_title,
                         'url': f"{task_viewer_prefix}/{series_id}/{cid}",
                         'is_locked': not p_is_free and not p_is_wait_free,
                         'is_wait_free': bool(p_is_wait_free),
-                        'is_new': bool(p_is_new)
+                        'is_new': bool(p_is_new) or bool(p_is_up),
+                        'is_up': bool(p_is_up),
                     })
             except: pass
 
@@ -219,9 +221,16 @@ class PiccomaProvider(BaseProvider):
                 if not is_locked:
                     is_locked = any(kw in row_text for kw in ["待てば￥0", "¥0"]) is False and "無料" not in row_text
 
+                # ✅ NEW: Detect Piccoma's UP icon via CSS class
+                item_classes = item.get('class', [])
+                is_up = 'PCM-stt_up' in item_classes
+
                 all_chapters.append({
                     'id': cid, 'title': c_title, 'notation': c_title, 'url': f"{task_viewer_prefix}/{series_id}/{cid}",
-                    'is_locked': is_locked, 'is_wait_free': is_wait_free_row, 'is_new': "NEW" in row_text.upper()
+                    'is_locked': is_locked, 
+                    'is_wait_free': is_wait_free_row, 
+                    'is_new': "NEW" in row_text.upper() or is_up,
+                    'is_up': is_up
                 })
 
         try: all_chapters.sort(key=lambda x: int(x['id']))

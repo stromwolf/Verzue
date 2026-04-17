@@ -207,6 +207,20 @@ def update_last_chapter(group_name: str, series_id: str, chapter_id: str):
         logger.info(f"[GroupManager] Updated all subscriptions for {series_id} in {group_name} to chapter {chapter_id}")
 
 
+def update_last_up_chapter(group_name: str, series_id: str, chapter_id: str):
+    """S-Grade: Specifically tracks the last notified 'UP' flag for Piccoma to avoid spam."""
+    data = load_group(group_name)
+    changed = False
+    for sub in data["subscriptions"]:
+        if sub["series_id"] == series_id:
+            sub["last_up_chapter_id"] = chapter_id
+            changed = True
+    
+    if changed:
+        save_group(group_name, data)
+        logger.info(f"[GroupManager] Updated UP-notification tracker for {series_id} in {group_name} to chapter {chapter_id}")
+
+
 async def is_series_subscribed_globally(series_id: str) -> tuple[bool, str]:
     """
     Checks across Redis Index first, then falls back to disk.

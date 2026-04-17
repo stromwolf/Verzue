@@ -168,9 +168,10 @@ class MechaProvider(BaseProvider):
 
         total_reported = 0
         max_page = 1
-        count_el = soup.select_one("div.p-search_chapterNo span")
+        count_el = soup.select_one("div.p-search_chapterNo")
         if count_el:
-            m = re.search(r'(\d+)', count_el.get_text())
+            # Targets "／24話へ" text -> extracts 24
+            m = re.search(r'／(\d+)話へ', count_el.get_text())
             if m:
                 total_reported = int(m.group(1))
                 max_page = math.ceil(total_reported / 10)
@@ -190,6 +191,10 @@ class MechaProvider(BaseProvider):
 
         all_chapters.sort(key=lambda x: int(x['id']))
         
+        # ✅ Mecha has no UP/NEW badge — latest chapter = last in sorted list
+        if all_chapters:
+            all_chapters[-1]['is_new'] = True
+
         # 4. Release Day Extraction (V2 Feature)
         release_day = None
         release_time = None
