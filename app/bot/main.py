@@ -64,6 +64,7 @@ class MechaBot(commands.Bot):
         await UIManager().start()
 
         # 5. Start the internal worker loops in the background!
+        await self.task_queue.boot()  # 🟢 NEW: registers worker, sweeps orphans
         asyncio.create_task(self.task_queue.start_worker(num_workers=2))
 
         # 6. Start the Auto-Download Poller
@@ -80,6 +81,12 @@ class MechaBot(commands.Bot):
     async def start_bot(self):
         """Custom start method to handle login."""
         await self.start(self.token_str)
+
+    async def close(self):
+        """Graceful shutdown hook."""
+        if hasattr(self, 'task_queue'):
+            await self.task_queue.shutdown()  # 🟢 NEW: drains & deregisters
+        await super().close()
 
     # --- EVENT HANDLERS (Must be inside the MechaBot class) ---
 

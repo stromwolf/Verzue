@@ -41,6 +41,24 @@ class TaskQueue:
         from app.services.browser.unlocker import BatchUnlocker
         self.unlocker = BatchUnlocker()
 
+    async def boot(self):
+        """One-shot startup sequence. Call exactly once before workers spin up."""
+        # 1. Register this process as an alive worker (starts heartbeat loop)
+        await self.redis.queue.register_worker()
+        # 2. Sweep dead workers' processing lists back to global queue
+        recovered = await self.redis.queue.recover_orphans()
+        if recovered:
+            logger.warning(f"🔄 Boot recovered {recovered} in-flight tasks from prior crash")
+
+    async def shutdown(self):
+        """Drain in-flight tasks back to global queue and deregister."""
+        self.is_draining = True
+        # Wait for active workers to finish current tasks (bounded)
+        deadline = asyncio.get_event_loop().time() + 30  # 30s grace
+        while self.busy_workers > 0 and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.5)
+        await self.redis.queue.deregister_worker()
+
     async def add_task(self, task: ChapterTask):
         """Producer: Bot pushes task to the Redis global queue."""
         if self.is_draining:
@@ -73,34 +91,6 @@ class TaskQueue:
         logger.info(f"📥 Queued (Redis Global): [{task.series_title}] {task.title} | User: {task.req_id}")
         return task
 
-    async def _get_next_task(self) -> ChapterTask:
-        """The Dealer: Grabs one task from Redis global queue."""
-        while True:
-            try:
-                # 1. Check if we have tasks in Redis
-                task_data = await self.redis.pop_task(timeout=5)
-                
-                if task_data:
-                    # Convert back to object
-                    task = ChapterTask.from_dict(task_data)
-                    async with self.task_condition:
-                        if self.total_tasks > 0: self.total_tasks -= 1
-                    return task
-                
-                # Check for hibernation/redis drop (RedisManager returns None on ConnectionError)
-                if not self.redis._is_connected:
-                    logger.warning("😴 [TaskQueue] Redis is offline. Worker Hibernating...")
-                    await asyncio.sleep(5) # Longer wait during outage
-                    continue
-
-                # 2. If no tasks, check if we should shut down
-                if self.workers_to_kill > 0: return None
-                
-                # 3. Brief wait if queue was empty
-                await asyncio.sleep(1)
-            except Exception as e:
-                logger.error(f"⚠️ [TaskQueue] Error in retrieval loop: {e}")
-                await asyncio.sleep(2)
 
     # ==========================================
     # WORKER & PIT BOSS LOGIC
@@ -161,16 +151,20 @@ class TaskQueue:
                 if self.workers_to_kill > 0:
                     self.workers_to_kill -= 1
                     logger.warning(f"👋 Worker {worker_id} cashing out to free up RAM.")
-                    break # Exit the loop and kill this thread entirely
-                    
-                # 2. Wait for the Dealer to hand us a card (task)
-                task = await self._get_next_task()
-                
-                # If task is None, it means the Pit Boss woke us up specifically to die
-                if task is None:
-                    # Note: Workers_to_kill decrement already handled in _get_next_task or _worker_loop 141
-                    logger.warning(f"👋 Worker {worker_id} cashing out from idle state to free up RAM.")
                     break
+                    
+                # 🟢 RELIABLE POP: returns (payload, envelope) — envelope is opaque,
+                # carries retry metadata, must be passed to ack/nack.
+                task_dict, envelope = await self.redis.queue.pop_task(timeout=5)
+                
+                if task_dict is None:
+                    # If we timed out, check if we should shut down
+                    if not self.redis._is_connected:
+                        await asyncio.sleep(5)
+                    continue
+
+                # Reconstruct the ChapterTask from the dict payload
+                task = ChapterTask.from_dict(task_dict)
                 
                 token = req_id_context.set(task.req_id)
                 dedup_key = f"{task.series_id_key}:{task.episode_id}"
@@ -179,17 +173,25 @@ class TaskQueue:
                     self.busy_workers += 1
                     await EventBus.emit("task_started", {"req_id": task.req_id, "title": task.title})
                     
-                    # Process the task
+                    # Process the task. process_task should raise on failure.
                     await self.worker.process_task(task)
                     
+                    # 🟢 SUCCESS: ack removes the task from this worker's processing list
+                    await self.redis.queue.ack_task(envelope)
                     await EventBus.emit("task_completed", {"req_id": task.req_id, "title": task.title})
                     
                 except Exception as e:
                     logger.error(f"❌ Worker {worker_id} crashed on {task.title}: {e}")
+                    # 🟢 FAILURE: nack with requeue. After MAX_RETRIES it auto-routes
+                    # to dead-letter. The processing list is cleaned up either way.
+                    await self.redis.queue.nack_task(envelope, requeue=True, reason=str(e))
                     await EventBus.emit("task_failed", task, str(e))
                 finally:
                     self.busy_workers -= 1
-                    await self.redis.remove_active_task(dedup_key)
+                    # Always clear dedup so retries (whether immediate or via recovery)
+                    # aren't blocked. The dedup hash now has a TTL so even if this
+                    # line is skipped (process death), the key self-expires in 1hr.
+                    await self.redis.queue.remove_active_task(dedup_key)
                     req_id_context.reset(token)
                     
         finally:

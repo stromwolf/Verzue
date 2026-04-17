@@ -225,5 +225,91 @@ class AdminCog(commands.Cog):
             logger.error(f"Clear Platform Failed")
             await ctx.send(f"Come <@1216284053049704600>. New Error")
 
+    # ==========================================
+    # 📊 QUEUE & BACKUP DIAGNOSTICS
+    # ==========================================
+
+    @commands.command(name="qstats")
+    @commands.is_owner()
+    async def queue_stats(self, ctx):
+        """Show current Redis queue depths and worker levels."""
+        depths = await self.bot.task_queue.redis.queue.queue_depths()
+        embed = discord.Embed(title="📊 Queue Depths", color=0x3498db)
+        embed.add_field(name="Global (pending)", value=f"`{depths.get('global', 0)}`")
+        embed.add_field(name="Dead Letter", value=f"`{depths.get('dead_letter', 0)}`")
+        
+        proc = depths.get("processing_by_worker", {})
+        if proc:
+            val = "\n".join(f"`{w.split(':')[-1]}`: {n}" for w, n in proc.items())
+            embed.add_field(name="In-flight by worker (PID)", value=val, inline=False)
+        else:
+            embed.add_field(name="In-flight", value="`0`", inline=False)
+            
+        await ctx.send(embed=embed)
+
+    @commands.command(name="dlq_replay")
+    @commands.is_owner()
+    async def replay_dead_letter(self, ctx, max_count: int = 100):
+        """Replay failed tasks back into the global queue."""
+        n = await self.bot.task_queue.redis.queue.replay_dead_letter(max_count=max_count)
+        await ctx.send(f"♻️ Replayed **{n}** tasks from dead-letter back to global queue.")
+
+    @commands.command(name="backup_status")
+    @commands.is_owner()
+    async def backup_status(self, ctx):
+        """Usage: $backup_status. Checks the freshness of local snapshots."""
+        import os
+        from datetime import datetime
+        
+        backup_path = "/var/lib/verzue-backups/15min/"
+        # 🟢 Cross-platform adaptation for Windows testing
+        if os.name == 'nt':
+            # Check if we have a local dev folder or just use a dummy for testing
+            if not os.path.exists(backup_path):
+                backup_path = "data/backups/15min/" # Potential local dev path
+        
+        try:
+            if not os.path.exists(backup_path):
+                return await ctx.send(f"❌ **Backup path not found**: `{backup_path}`\n-# (This usually means backups aren't configured yet on this host)")
+
+            # Get files sorted by modified time
+            files = [f for f in os.listdir(backup_path) if f.endswith('.tar.gz')]
+            files.sort(key=lambda x: os.path.getmtime(os.path.join(backup_path, x)), reverse=True)
+            
+            # Calculate total directory size
+            import math
+            def convert_size(size_bytes):
+                if size_bytes == 0: return "0B"
+                size_name = ("B", "KB", "MB", "GB", "TB")
+                i = int(math.floor(math.log(size_bytes, 1024)))
+                p = math.pow(1024, i)
+                s = round(size_bytes / p, 2)
+                return f"{s} {size_name[i]}"
+
+            root_path = os.path.dirname(os.path.dirname(backup_path))
+            total_size = 0
+            for dirpath, dirnames, filenames in os.walk(root_path):
+                for f in filenames:
+                    fp = os.path.join(dirpath, f)
+                    total_size += os.path.getsize(fp)
+
+            embed = discord.Embed(title="💾 Local Backup Status", color=0x9b59b6)
+            embed.add_field(name="Storage Usage", value=f"`{convert_size(total_size)}`", inline=True)
+            
+            if files:
+                recent = files[:3]
+                val = ""
+                for f in recent:
+                    mtime = os.path.getmtime(os.path.join(backup_path, f))
+                    dt = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+                    val += f"• `{f}`\n  -# ({dt})\n"
+                embed.add_field(name="Recent 15-min Snapshots", value=val, inline=False)
+            else:
+                embed.add_field(name="Alert", value=f"❌ No snapshots found in `{backup_path}`", inline=False)
+                
+            await ctx.send(embed=embed)
+        except Exception as e:
+            await ctx.send(f"⚠️ **Error checking backups**: `{e}`")
+
 async def setup(bot):
     await bot.add_cog(AdminCog(bot))

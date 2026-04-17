@@ -32,7 +32,7 @@ test_stitcher.py
 Discord Component V2/
 Newtoki/
 Piccoma Act files/
-scripts/
+# scripts/ (Removed to allow production backup scripts to be tracked)
 temp_skill_download/
 tests/
 tmp/

@@ -63,7 +63,14 @@ class RedisManager:
         return await self.queue.push_task(task_dict)
 
     async def pop_task(self, timeout: int = 5):
+        """Now returns (payload, envelope) tuple. Caller must ack/nack."""
         return await self.queue.pop_task(timeout)
+
+    async def ack_task(self, envelope_json: str):
+        return await self.queue.ack_task(envelope_json)
+
+    async def nack_task(self, envelope_json: str, requeue: bool = True, reason: str = ""):
+        return await self.queue.nack_task(envelope_json, requeue=requeue, reason=reason)
 
     async def set_active_task(self, key: str, task_id: str):
         return await self.queue.set_active_task(key, task_id)

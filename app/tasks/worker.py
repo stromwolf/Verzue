@@ -99,6 +99,7 @@ class TaskWorker:
                     from app.core.exceptions import MechaException
                     raise MechaException("No images found after scrape.", code="ST_001")
                 logger.info(f"✅ STAGE 1 COMPLETE: {len(valid_imgs)} images.")
+                await self._refresh_dedup_during_long_work(task)
 
                 # --- STAGE 2: STITCHING (Semaphore-Controlled CPU Offloading) ---
                 task.status = TaskStatus.STITCHING
@@ -146,6 +147,8 @@ class TaskWorker:
                 async with STITCH_SEMAPHORE:
                     logger.info("⚡ Slot Acquired! Stitching now...")
                     await loop.run_in_executor(PROCESS_POOL, stitch_func)
+                
+                await self._refresh_dedup_during_long_work(task)
                 
                 # --- STAGE 3: UPLOADING (Decoupled & Backgrounded) ---
                 task.status = TaskStatus.UPLOADING
@@ -321,3 +324,9 @@ class TaskWorker:
                 except Exception as e:
                     logger.warning(f"Could not clean {path}: {e}")
                     break
+
+    async def _refresh_dedup_during_long_work(self, task):
+        """For tasks that may exceed the dedup TTL (e.g. huge chapter, slow GDrive),
+        extend the lease so the orphan sweep doesn't think we're dead."""
+        dedup_key = f"{task.series_id_key}:{task.episode_id}"
+        await redis_brain.queue.refresh_active_task(dedup_key, ttl=3600)
