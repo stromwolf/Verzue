@@ -454,8 +454,10 @@ class Discovery(commands.Cog):
         # 1. Feedback
         msg = await ctx.send(f"🔍 **Starting New Series Detection Sweep...**")
         
-        # 2. Get Poller
-        poller = getattr(self.bot, "auto_poller", None)
+        # 2. Get Poller (Resolve from main bot if called from helper)
+        resolved_bot = self.bot if hasattr(self.bot, 'auto_poller') else getattr(self.bot, 'main_bot', self.bot)
+        poller = getattr(resolved_bot, "auto_poller", None)
+
         if not poller:
             return await msg.edit(content="❌ `AutoPoller` not initialized correctly on this bot instance.")
             

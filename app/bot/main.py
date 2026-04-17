@@ -25,58 +25,59 @@ class MechaBot(commands.Bot):
 
     async def setup_hook(self):
         """Loads extensions and subscribes to events."""
-        # Removed all individual site cogs!
+        # Determine identity
+        if self.token_str == Settings.ADMIN_BOT_TOKEN:
+            self.identity = "Admin"
+        elif self.token_str == Settings.TESTING_BOT_TOKEN:
+            self.identity = "Testing"
+        else:
+            self.identity = "Main"
+
+        self.logger.info(f"🤖 Identity resolved: {self.identity}")
+
+        # Cog routing (Unified for robustness, identity checks are inside the cogs where needed)
         extensions = [
             "app.bot.cogs.admin",
             "app.bot.cogs.dashboard",
             "app.bot.cogs.subscriptions",
             "app.bot.cogs.discovery",
+            "app.bot.cogs.discovery_commands",
             "app.bot.cogs.status",
-            "app.bot.cogs.monitor_cog"
+            "app.bot.cogs.monitor_cog",
+            "app.bot.cogs.helper_cogs",
         ]
 
-        
         for ext in extensions:
             try:
                 await self.load_extension(ext)
-                self.logger.info(f"🧩 Loaded: {ext}")
+                self.logger.info(f"🧩 Loaded: {ext} [{self.identity}]")
             except Exception as e:
                 self.logger.error(f"❌ Failed to load {ext}: {e}")
 
         # --- EVENT SUBSCRIPTIONS ---
-        # 1. Zip Uploads
         EventBus.subscribe("upload_zip_to_discord", self.handle_zip_upload)
-        
-        # 2. Direct Links
         EventBus.subscribe("send_direct_link", self.handle_direct_link)
-        
-        # 3. Error Alerts
         EventBus.subscribe("task_failed", self.handle_task_failure)
-
-        # 4. Subscription Alerts
         EventBus.subscribe("subscription_added", self.handle_subscription_added)
-
-        # 5. Waiter Alerts (Fan-out)
         EventBus.subscribe("notify_waiter", self.handle_waiter_notification)
 
-        # 4. Start UI Dispatcher
+        # 🟢 FIX: Initialize Poller EARLY — before worker/boot calls that might fail
+        from app.tasks.poller import AutoDownloadPoller
+        self.auto_poller = AutoDownloadPoller(self)
+
+        # Initialize core services for all identities to ensure command robustness
         from app.services.ui_manager import UIManager
         await UIManager().start()
 
-        # 5. Start the internal worker loops in the background!
-        await self.task_queue.boot()  # 🟢 NEW: registers worker, sweeps orphans
+        await self.task_queue.boot()
         asyncio.create_task(self.task_queue.start_worker(num_workers=2))
-
-        # 6. Start the Auto-Download Poller
-        from app.tasks.poller import AutoDownloadPoller
-        self.auto_poller = AutoDownloadPoller(self)
 
         # Sync Slash Commands
         try:
             synced = await self.tree.sync()
-            self.logger.info(f"Synced {len(synced)} slash commands.")
+            self.logger.info(f"⚡ Synced {len(synced)} slash commands [{self.identity}].")
         except Exception as e:
-            self.logger.error(f"Uh oh, command sync failed: {e}")
+            self.logger.error(f"❌ Sync failed [{self.identity}]: {e}")
 
     async def start_bot(self):
         """Custom start method to handle login."""

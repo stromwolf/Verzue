@@ -82,8 +82,38 @@ class PollerNotifier:
                     '/channels/{channel_id}/messages',
                     channel_id=channel.id,
                 )
-                await self.bot.http.request(route, json=payload, files=files)
-                logger.info(f"📨 [AutoPoller] Notification sent for {series_title} (N-ID: {notification_id})")
+                
+                if files:
+                    # 🟢 FIX: Multipart form-data required for V2 Components with attachment:// references
+                    import json as json_lib
+                    from aiohttp import FormData
+                    
+                    form = FormData()
+                    form.add_field("payload_json", json_lib.dumps(payload), content_type="application/json")
+                    
+                    for idx, f in enumerate(files):
+                        f.fp.seek(0)  # Reset buffer pointer
+                        form.add_field(
+                            f"files[{idx}]",
+                            f.fp,
+                            filename=f.filename,
+                            content_type="image/png"
+                        )
+                    
+                    # Use the underlying session to send raw multipart data
+                    # (HTTPClient.request doesn't handle the payload_json field required for files + components)
+                    url = f"https://discord.com/api/v10{route.url}"
+                    headers = {"Authorization": f"Bot {self.bot.http.token}"}
+                    
+                    async with self.bot.http._HTTPClient__session.post(url, data=form, headers=headers) as resp:
+                        if resp.status not in (200, 201, 204):
+                            body = await resp.text()
+                            logger.error(f"❌ Failed to send notification: {resp.status} {body}")
+                        else:
+                            logger.info(f"📨 [AutoPoller] Notification sent with attachment for {series_title} (N-ID: {notification_id})")
+                else:
+                    await self.bot.http.request(route, json=payload)
+                    logger.info(f"📨 [AutoPoller] Notification sent for {series_title} (N-ID: {notification_id})")
             except Exception as e:
                 logger.error(f"Failed to send release notification to {channel.id}: {e}")
         finally:

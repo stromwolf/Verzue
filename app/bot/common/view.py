@@ -80,7 +80,9 @@ class UniversalDashboard:
 
         # 🟢 BACKGROUND SCAN: Fetch remaining chapters for Mecha/Jumptoon (Faster initial load)
         self._full_scan_task: asyncio.Task | None = None
+        self._bg_scanning = False
         if self.service_type in ["mecha", "jumptoon"] and self.total_chapters > len(self.all_chapters):
+            self._bg_scanning = True
             self._full_scan_task = asyncio.create_task(self._perform_full_scan())
 
     async def _auto_timeout_loop(self):
@@ -107,14 +109,11 @@ class UniversalDashboard:
                 # Attempt to edit the message to show it expired using the fallback route
                 if getattr(self, 'interaction', None):
                     try:
-                        exp_payload = {
-                            "flags": 32768, 
-                            "components": [{
-                                "type": 17, "components": [{"type": 10, "content": "<a:error:1482426908699267174> **Session Expired:**\nThis dashboard has closed due to 15 minutes of inactivity."}]
-                            }]
-                        }
-                        route = discord.http.Route('PATCH', f'/channels/{self.interaction.channel_id}/messages/{self.interaction.message.id}')
-                        await self.bot.http.request(route, json=exp_payload)
+                        route = discord.http.Route(
+                            'DELETE',
+                            f'/channels/{self.interaction.channel_id}/messages/{self.interaction.message.id}'
+                        )
+                        await self.bot.http.request(route)
                     except: pass
                 break
 
@@ -380,6 +379,12 @@ class UniversalDashboard:
 
                 if len(clean_line) > 100: clean_line = clean_line[:97] + "..."
                 desc += clean_line + "\n"
+
+            # 🟢 BACKGROUND SCAN INDICATOR
+            if getattr(self, '_bg_scanning', False):
+                missing = self.total_chapters - len(self.all_chapters)
+                if missing > 0 and self.page == 1:
+                    desc += f"\n{ICONS['load']} *Loading {missing} more chapters...*\n"
             
             start_idx = (self.page - 1) * self.per_page
 
@@ -673,6 +678,10 @@ class UniversalDashboard:
 
         except Exception as e:
             logger.error(f"[{self.req_id}] ❌ Background full scan failed: {e}")
+        finally:
+            self._bg_scanning = False
+            self.trigger_refresh()
+            self._latest_ui_update = time.time()
 
     @staticmethod
     def _jumptoon_sort_key(ch):

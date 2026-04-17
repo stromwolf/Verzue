@@ -19,7 +19,6 @@ from app.services.session_service import SessionService
 from app.services.task_listener import TaskListener
 from app.tasks.manager import TaskQueue
 from app.bot.main import MechaBot
-from app.bot.helper_bot import HelperBot
 
 _PID_FILE = Path("bot.pid")
 
@@ -78,29 +77,25 @@ async def main() -> None:
     state.load_state()
     state.migrate_legacy_data()
 
-    # Select Bot Identity
-    bot_token = Settings.DISCORD_TOKEN
-    identity_name = "Main"
-    
-    if Settings.BOT_MODE == "test" and Settings.TESTING_BOT_TOKEN:
-        bot_token = Settings.TESTING_BOT_TOKEN
-        identity_name = "Testing"
-    elif Settings.BOT_MODE == "admin" and Settings.ADMIN_BOT_TOKEN:
-        bot_token = Settings.ADMIN_BOT_TOKEN
-        identity_name = "Admin"
-    
-    logger.info(f"🚀 Bot Identity: {identity_name} Bot (Mode: {Settings.BOT_MODE})")
-
     session_service = SessionService()
-    bot = MechaBot(
-        token=bot_token,
-        task_queue=queue,
-        redis_brain=brain,
-    )
-    bot.app_state = state
-    helper_bot: HelperBot | None = None
-    if Settings.HELPER_TOKEN and Settings.HELPER_TOKEN != bot_token:
-        helper_bot = HelperBot(token=Settings.HELPER_TOKEN, main_bot=bot)
+    bots = []
+
+    # 1. Main Bot (Always)
+    main_bot = MechaBot(token=Settings.DISCORD_TOKEN, task_queue=queue, redis_brain=brain)
+    main_bot.app_state = state
+    bots.append(main_bot)
+
+    # 2. Admin Bot (Optional)
+    if Settings.ADMIN_BOT_TOKEN:
+        admin_bot = MechaBot(token=Settings.ADMIN_BOT_TOKEN, task_queue=queue, redis_brain=brain)
+        admin_bot.app_state = state
+        bots.append(admin_bot)
+
+    # 3. Testing Bot (Optional)
+    if Settings.TESTING_BOT_TOKEN:
+        test_bot = MechaBot(token=Settings.TESTING_BOT_TOKEN, task_queue=queue, redis_brain=brain)
+        test_bot.app_state = state
+        bots.append(test_bot)
 
     try:
         async with asyncio.TaskGroup() as tg:
@@ -108,20 +103,20 @@ async def main() -> None:
             tg.create_task(SessionHealer(session_service).start())
             tg.create_task(HealthMonitor(session_service).start())
             tg.create_task(TaskListener().start())
-            tg.create_task(bot.start_bot())
-            if helper_bot:
-                tg.create_task(helper_bot.start_bot())
+            
+            for b in bots:
+                tg.create_task(b.start_bot())
+
     except* asyncio.CancelledError:
         logger.info("system.shutdown: cancel signal received")
     except* Exception as eg:
         for exc in eg.exceptions:
             logger.critical("system.crash", exc_info=exc)
     finally:
-        # Phase 1: graceful close (bot cleans up its own internals)
+        # Phase 1: graceful close (bots clean up their own internals)
         await asyncio.wait_for(
             asyncio.gather(
-                bot.close(),
-                helper_bot.close() if helper_bot else asyncio.sleep(0),
+                *[b.close() for b in bots],
                 return_exceptions=True,
             ),
             timeout=10.0,

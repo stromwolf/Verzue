@@ -28,8 +28,8 @@ except ImportError:
 class HelperSlashCog(commands.Cog):
     """Slash commands mapped directly to the original Verzue Bot logic."""
     def __init__(self, bot):
-        self.bot = bot # This is the HelperBot instance
-        self.main_bot = bot.main_bot
+        self.bot = bot # This can be MechaBot or HelperBot
+        self.main_bot = getattr(bot, 'main_bot', bot)
         self.login_service = LoginService()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:

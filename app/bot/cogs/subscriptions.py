@@ -109,13 +109,58 @@ class SubscriptionsCog(commands.Cog):
                         await interaction.followup.send(f"Come <@1216284053049704600>. New Error", ephemeral=True)
                     
     @commands.command(name="check_chapters", aliases=["check_subs", "force_poll"])
-    async def force_subscription_poll(self, ctx):
-        """Forces a manual check for new chapters across all subscriptions."""
-        poller = getattr(self.bot, "auto_poller", None)
+    async def force_subscription_poll(self, ctx, series_url: str = None):
+        """
+        Forces a manual chapter check.
+        - No URL: checks all subscriptions.
+        - With URL (jumptoon/piccoma/mecha): checks only that specific series.
+        """
+        # 🟢 FIX: Resolve poller through main_bot if running on HelperBot
+        resolved_bot = self.bot if hasattr(self.bot, 'auto_poller') else getattr(self.bot, 'main_bot', self.bot)
+        poller = getattr(resolved_bot, "auto_poller", None)
         if not poller:
             return await ctx.send("❌ `AutoPoller` not initialized.")
-        
-        await poller.trigger_manual_poll(ctx)
+
+        # --- MODE A: No URL → Full sweep (original behavior) ---
+        if not series_url:
+            return await poller.trigger_manual_poll(ctx)
+
+        # --- MODE B: URL provided → Single series check ---
+        series_url = series_url.strip("<>")  # Strip Discord's auto-embed brackets if present
+
+        msg = await ctx.send(f"🔍 **Checking chapters for:** `{series_url}`...")
+
+        try:
+            # 1. Find the matching subscription across all groups
+            all_subs = get_all_subscriptions()
+            target_sub = None
+            target_group = None
+
+            for group_name, sub in all_subs:
+                sub_url = sub.get("series_url", "")
+                # Normalize comparison: strip trailing slashes
+                if sub_url.rstrip("/") == series_url.rstrip("/"):
+                    target_sub = sub
+                    target_group = group_name
+                    break
+
+            if not target_sub:
+                return await msg.edit(content=f"❌ **No subscription found** for that URL.\nMake sure it's an exact match to a subscribed series.")
+
+            # 2. Run the single sub check (same logic as the poller)
+            title = target_sub.get("series_title", series_url)
+            await msg.edit(content=f"🔄 **Forcing check for:** `{title}`...")
+
+            found_new = await poller._check_single_sub(target_group, target_sub)
+
+            if found_new:
+                await msg.edit(content=f"✅ **New chapter found and notification sent for:** `{title}`")
+            else:
+                await msg.edit(content=f"📭 **No new chapter detected for:** `{title}`\n-# Already up to date.")
+
+        except Exception as e:
+            logger.error(f"[check_chapters] Error checking {series_url}: {e}", exc_info=True)
+            await msg.edit(content=f"❌ **Error while checking:** `{e}`")
 
 async def setup(bot):
     await bot.add_cog(SubscriptionsCog(bot))
