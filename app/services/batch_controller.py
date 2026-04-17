@@ -163,6 +163,14 @@ class BatchController:
                         link = await asyncio.to_thread(self.uploader.get_share_link, main_existing_id)
                         view_ref.existing_links[task.chapter_str] = {"link": link, "title": task.title}
                     continue
+
+                # 🟢 S-GRADE: Check Redis for In-Flight (Downloading)
+                key = f"{task.series_id_key}:{task.episode_id}"
+                in_flight_id = await self.bot.task_queue.redis.get_active_task(key)
+                if in_flight_id:
+                    logger.info(f"⏳ [In-Flight] {folder_name} is already active {in_flight_id}. Linking requester to notification.")
+                    if view_ref:
+                        view_ref.any_waiters = True
                 
                 temp_name = f"[Uploading] {folder_name}"
                 if temp_name in main_manifest:

@@ -64,6 +64,7 @@ class UniversalDashboard:
         self.interaction, self.sub_status, self.processing_mode, self._last_hash = None, None, False, 0
         self.retry_active = False
         self.existing_links = {} # 🟢 S-GRADE: {chapter_str: link} for pre-existing chapters
+        self.any_waiters = False # 🟢 S-GRADE: Flag for in-flight tasks
         self._latest_ui_update: float = 0.0 # 🟢 Throttle for background updates
         
         # 🟢 UI Toggle for Selection Mode Menu

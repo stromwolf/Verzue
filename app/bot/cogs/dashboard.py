@@ -1155,6 +1155,15 @@ class DashboardCog(commands.Cog):
                             view.phases.update({"analyze":"done","purchase":"done","download":"loading"})
                             view.active_tasks = [await self.bot.task_queue.add_task(t) for t in tasks]
                             view.trigger_refresh()
+                            
+                            if getattr(view, "any_waiters", False):
+                                try:
+                                    await interaction.followup.send(
+                                        "⏳ **Heads up!** One or more of these chapters are already being downloaded by someone else. "
+                                        "You've been added to the notification list and will receive a ping the moment they're ready! ✅",
+                                        ephemeral=True
+                                    )
+                                except: pass
                     except RuntimeError as e:
                         # 🟢 S-GRADE: Friendly Maintenance Feedback
                         view.processing_mode = False

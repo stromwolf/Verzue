@@ -55,3 +55,21 @@ class RedisQueue:
         """Clears the active flag after completion/failure."""
         if not self.client: return
         await self.client.hdel("verzue:active_tasks", key)
+
+    async def register_waiter(self, key: str, waiter_data: dict):
+        """Registers a secondary requester for an in-flight task."""
+        if not self.client: return
+        waiter_key = f"verzue:waiters:{key}"
+        await self.client.rpush(waiter_key, json.dumps(waiter_data))
+        await self.client.expire(waiter_key, 3600) # 1hr TTL safety
+
+    async def pop_all_waiters(self, key: str):
+        """Drains and returns all registered waiters for a task."""
+        if not self.client: return []
+        waiter_key = f"verzue:waiters:{key}"
+        waiters = []
+        while True:
+            raw = await self.client.lpop(waiter_key)
+            if not raw: break
+            waiters.append(json.loads(raw))
+        return waiters

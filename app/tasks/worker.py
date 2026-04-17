@@ -188,6 +188,12 @@ class TaskWorker:
             self._sync_view_status(task)
             logger.info(f"✅ BACKGROUND UPLOAD COMPLETE: [{task.series_title}] - {task.title}")
             await EventBus.emit("task_completed", task)
+            
+            # 🟢 S-GRADE: Fan-out notification to waiters
+            key = f"{task.series_id_key}:{task.episode_id}"
+            waiters = await redis_brain.pop_all_waiters(key)
+            for waiter in waiters:
+                await EventBus.emit("notify_waiter", waiter, task.to_dict())
         except Exception as e:
             task.status = TaskStatus.FAILED
             task.error_message = str(e)

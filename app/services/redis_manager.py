@@ -74,6 +74,12 @@ class RedisManager:
     async def remove_active_task(self, key: str):
         return await self.queue.remove_active_task(key)
 
+    async def register_waiter(self, key: str, waiter_data: dict):
+        return await self.queue.register_waiter(key, waiter_data)
+
+    async def pop_all_waiters(self, key: str):
+        return await self.queue.pop_all_waiters(key)
+
     # --- Subscription Delegation ---
 
     async def update_subs_index(self, *args, **kwargs):

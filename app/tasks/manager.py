@@ -52,6 +52,12 @@ class TaskQueue:
         active_id = await self.redis.get_active_task(key)
         if active_id:
             logger.info(f"🎫 TICKET: Task {key} is already active/queued. Attaching R-ID {task.req_id}.")
+            # Register this user as a waiter in Redis
+            await self.redis.register_waiter(key, {
+                "req_id": task.req_id, 
+                "channel_id": task.channel_id, 
+                "user_id": task.requester_id
+            })
             return task
 
         task.status = TaskStatus.QUEUED

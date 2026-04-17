@@ -56,6 +56,9 @@ class MechaBot(commands.Bot):
         # 4. Subscription Alerts
         EventBus.subscribe("subscription_added", self.handle_subscription_added)
 
+        # 5. Waiter Alerts (Fan-out)
+        EventBus.subscribe("notify_waiter", self.handle_waiter_notification)
+
         # 4. Start UI Dispatcher
         from app.services.ui_manager import UIManager
         await UIManager().start()
@@ -186,6 +189,31 @@ class MechaBot(commands.Bot):
 
         except Exception as e:
             self.logger.error(f"Failed to send extraction error alert: {e}")
+
+    async def handle_waiter_notification(self, waiter: dict, task_dict: dict):
+        """Notifies a secondary requester that their in-flight task is finished."""
+        try:
+            channel_id = waiter.get("channel_id")
+            user_id = waiter.get("user_id")
+            if not channel_id or not user_id: return
+
+            channel = self.get_channel(channel_id)
+            if not channel:
+                try: channel = await self.fetch_channel(channel_id)
+                except: return
+
+            series_title = task_dict.get("series_title", "Unknown Series")
+            title = task_dict.get("title", "Chapter")
+            link = task_dict.get("share_link")
+
+            msg = (
+                f"<@{user_id}> ✅ **{series_title} — {title}** is ready!\n"
+                f"🔗 {link}"
+            )
+            await channel.send(msg)
+            self.logger.info(f"🔔 Notified waiter {user_id} in {channel_id} for {title}")
+        except Exception as e:
+            self.logger.error(f"Failed to notify waiter: {e}")
 
     # --- S-GRADE: GLOBAL CRASH SENTINEL ---
     async def dispatch_error(self, error: Exception, ctx: commands.Context = None, interaction: discord.Interaction = None, event: str = None, code: str = None):
