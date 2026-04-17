@@ -510,7 +510,7 @@ class DashboardCog(commands.Cog):
         success_payload = {
             "type": 7, # UPDATE_MESSAGE
             "data": {
-                "flags": 32768,
+                "flags": 32832,
                 "components": [
                     {
                         "type": 17,
@@ -1504,7 +1504,7 @@ class DashboardCog(commands.Cog):
                     ]
 
                 trigger_payload = {
-                    "flags": 32768,
+                    "flags": 32832,
                     "components": [{
                         "type": 17,
                         "components": trigger_components
@@ -1527,7 +1527,7 @@ class DashboardCog(commands.Cog):
                 # 🟢 S-GRADE: Subscription Block Rule (Mar 25 Request)
                 if status_label in ["Oneshot", "Completed", "Novel"]:
                     error_payload = {
-                        "flags": 32768,
+                        "flags": 32832,
                         "components": [{
                             "type": 17,
                             "components": [{
@@ -1558,7 +1558,7 @@ class DashboardCog(commands.Cog):
                 ]
 
                 trigger_payload = {
-                    "flags": 32768,
+                    "flags": 32832,
                     "components": [{
                         "type": 17,
                         "components": trigger_components
@@ -1569,9 +1569,9 @@ class DashboardCog(commands.Cog):
                     json=trigger_payload
                 )
             except Exception as e:
-                logger.error(f"Failed to analyze for subscription: {e}")
+                logger.error(f"Failed to analyze for subscription: {e}", exc_info=True)
                 error_p = {
-                    "flags": 32768, 
+                    "flags": 32832, 
                     "components": [{
                         "type": 17, 
                         "components": [
@@ -1591,9 +1591,8 @@ class DashboardCog(commands.Cog):
                 await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'), json=error_p)
             return
 
-        # 🟢 Send the Analyzing message via PATCH
         analyzing_payload = {
-            "flags": 32768,
+            "flags": 32832,
             "components": [{
                 "type": 17,
                 "components": [{
@@ -1644,7 +1643,7 @@ class DashboardCog(commands.Cog):
             # 🟢 NOVEL REJECTION (User Request - Mar 27)
             if status_label == "Novel":
                 error_payload = {
-                    "flags": 32768,
+                    "flags": 32832,
                     "components": [{
                         "type": 17,
                         "components": [{
@@ -1687,7 +1686,7 @@ class DashboardCog(commands.Cog):
             view.interaction = interaction
             
             # 🟢 NO "content": "" here!
-            payload_data = {"flags": 32768, "components": view.build_v2_payload()}
+            payload_data = {"flags": 32832, "components": view.build_v2_payload()}
             
             route = discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original')
             await self.bot.http.request(route, json=payload_data)
@@ -1706,7 +1705,7 @@ class DashboardCog(commands.Cog):
             
             # Match V2 format for errors so Discord doesn't crash on the PATCH
             error_payload = {
-                "flags": 32768,
+                "flags": 32832,
                 "components": [{
                     "type": 17,
                     "components": [
@@ -1738,7 +1737,7 @@ class DashboardCog(commands.Cog):
     async def launch_channel_select(self, interaction, platform, url, force_message: bool = False):
         """Sends a V2 message with a Channel Select component."""
         channel_select_payload = {
-            "flags": 32768,
+            "flags": 32832,
             "components": [
                 {
                     "type": 17,
@@ -1838,7 +1837,7 @@ class DashboardCog(commands.Cog):
             analyzing_payload = {
                 "type": 7, # 🟢 Update original message instead of creating a new one
                 "data": {
-                    "flags": 32768,
+                    "flags": 32832,
                     "components": [{"type": 17, "components": [{"type": 10, "content": "📡 **Setting up Subscription...**"}]}]
                 }
             }
@@ -1862,7 +1861,7 @@ class DashboardCog(commands.Cog):
 
             if is_subbed and not is_universal_server:
                 error_payload = {
-                    "flags": 32768,
+                    "flags": 32832,
                     "components": [{
                         "type": 17,
                         "components": [{
@@ -1891,7 +1890,7 @@ class DashboardCog(commands.Cog):
                     occ_title = get_title_override(existing_group, existing_sub.get("series_url")) or existing_sub.get("series_title", "Unknown Series")
                     
                     error_payload = {
-                        "flags": 32768,
+                        "flags": 32832,
                         "components": [{
                             "type": 17,
                             "components": [
@@ -1924,7 +1923,7 @@ class DashboardCog(commands.Cog):
 
             if not group_name:
                 error_payload = {
-                    "flags": 32768,
+                    "flags": 32832,
                     "components": [
                         {
                             "type": 17,
@@ -1967,7 +1966,7 @@ class DashboardCog(commands.Cog):
 
             # 5. Success UI
             success_payload = {
-                "flags": 32768,
+                "flags": 32832,
                 "components": [{
                     "type": 17,
                     "components": [{
@@ -1998,7 +1997,7 @@ class DashboardCog(commands.Cog):
             logger.error(f"Subscription setup failed: {e}", exc_info=True)
             err = str(e).splitlines()[0] if str(e) else "Unknown Error"
             error_p = {
-                "flags": 32768, 
+                "flags": 32832, 
                 "components": [
                     {"type": 17, "components": [{"type": 10, "content": f"Come <@1216284053049704600>. New Error"}]},
                     {"type": 1, "components": [{"type": 2, "style": 2, "label": "Back to Dashboard", "custom_id": "v2Dash_Home"}]}
