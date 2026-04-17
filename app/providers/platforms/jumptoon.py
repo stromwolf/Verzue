@@ -13,6 +13,7 @@ from curl_cffi import requests as curl_requests
 from curl_cffi.requests import AsyncSession, RequestsError
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
+from app.services.redis_manager import RedisManager
 from app.core.exceptions import ScraperError
 from config.settings import Settings
 
@@ -22,6 +23,63 @@ logger = logging.getLogger("JumptoonProvider")
 JUMPTOON_RELEASE_TIME_UTC = "15:00"
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE-LEVEL RATE-LIMIT PRIMITIVES
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Layer 1: Process-wide semaphore capping concurrent Jumptoon page requests.
+# Sized for one user's worst-case (2 foreground + 4 background = 6).
+# Multiple concurrent users fairly share these 6 slots.
+JUMPTOON_METADATA_SEMAPHORE = asyncio.Semaphore(6)
+
+# Layer 2: Per-series lock registry. When 5 users open the same series at once,
+# only 1 actually fetches — the rest await the cached result.
+_SERIES_LOCKS: dict[str, asyncio.Lock] = {}
+_SERIES_LOCKS_LOCK = asyncio.Lock()  # Guards _SERIES_LOCKS dict itself
+
+# Layer 2 cache: series_id → (cached_result_tuple, expiry_timestamp)
+# 60s TTL matches realistic user-session overlap window.
+_SERIES_CACHE: dict[str, tuple] = {}
+_SERIES_CACHE_TTL = 60.0  # seconds
+
+
+async def _get_series_lock(series_id: str) -> asyncio.Lock:
+    """Atomically get-or-create the per-series lock."""
+    async with _SERIES_LOCKS_LOCK:
+        lock = _SERIES_LOCKS.get(series_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _SERIES_LOCKS[series_id] = lock
+            if len(_SERIES_LOCKS) > 500:
+                stale = [sid for sid, lk in _SERIES_LOCKS.items()
+                         if not lk.locked() and sid != series_id]
+                for sid in stale[:-250]:
+                    _SERIES_LOCKS.pop(sid, None)
+        return lock
+
+
+def _cache_get(series_id: str):
+    """Return cached result if fresh, else None. Non-blocking."""
+    entry = _SERIES_CACHE.get(series_id)
+    if not entry:
+        return None
+    result, expiry = entry
+    if time.time() > expiry:
+        _SERIES_CACHE.pop(series_id, None)
+        return None
+    return result
+
+
+def _cache_put(series_id: str, result: tuple):
+    """Store result with TTL. Bounded: prune if >200 entries."""
+    if len(_SERIES_CACHE) > 200:
+        oldest = sorted(_SERIES_CACHE.items(), key=lambda kv: kv[1][1])[:50]
+        for sid, _ in oldest:
+            _SERIES_CACHE.pop(sid, None)
+    _SERIES_CACHE[series_id] = (result, time.time() + _SERIES_CACHE_TTL)
+
+
+
 class JumptoonProvider(BaseProvider):
     IDENTIFIER = "jumptoon"
     BASE_URL = "https://jumptoon.com"
@@ -29,6 +87,7 @@ class JumptoonProvider(BaseProvider):
 
     def __init__(self):
         self.session_service = SessionService()
+        self.redis = RedisManager()  # Layer 3: token bucket
         self.active_account_id = None
         self.default_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -71,16 +130,81 @@ class JumptoonProvider(BaseProvider):
             logger.error(f"Session validation error: {e}")
             return False
 
+    # ─── THE CHOKE POINT: every metadata GET goes through this helper ────────
+
+    async def _jumptoon_gated_get(self, auth_session, url: str, timeout: int = 30,
+                                   allow_redirects: bool = True, max_retries: int = 2):
+        """
+        Unified rate-gated GET for all Jumptoon metadata requests.
+
+        Applies:
+          1. Redis token bucket (distributed rate limit: 8 req/s)
+          2. Module semaphore (process concurrency cap: 6)
+          3. 429/403 backoff with jitter
+        """
+        last_err = None
+        for attempt in range(max_retries + 1):
+            try:
+                allowed, wait_time = await self.redis.get_token(
+                    "platform:jumptoon",
+                    rate=8,
+                    capacity=15
+                )
+                if not allowed:
+                    sleep_for = min(wait_time or 0.15, 2.0)
+                    logger.debug(f"[Jumptoon] Token bucket wait: {sleep_for:.2f}s")
+                    await asyncio.sleep(sleep_for)
+                    continue
+            except Exception as e:
+                logger.debug(f"[Jumptoon] Token bucket unavailable ({e}); falling back to semaphore")
+
+            async with JUMPTOON_METADATA_SEMAPHORE:
+                try:
+                    res = await auth_session.get(
+                        url, timeout=timeout, allow_redirects=allow_redirects
+                    )
+                except RequestsError as e:
+                    last_err = e
+                    err_str = str(e).lower()
+                    is_proxy_block = ("403" in err_str or "tunnel" in err_str or "denied" in err_str)
+                    if is_proxy_block and attempt < max_retries:
+                        backoff = self._compute_backoff(attempt)
+                        logger.warning(f"[Jumptoon] Proxy block on {url} (attempt {attempt+1}/{max_retries+1}); backoff {backoff:.1f}s")
+                        await asyncio.sleep(backoff)
+                        continue
+                    raise
+                except Exception as e:
+                    last_err = e
+                    raise
+
+                if res.status_code in (429, 503):
+                    if attempt < max_retries:
+                        retry_after = res.headers.get('Retry-After')
+                        try:
+                            backoff = min(float(retry_after), 10.0) if retry_after else self._compute_backoff(attempt)
+                        except ValueError:
+                            backoff = self._compute_backoff(attempt)
+                        logger.warning(f"[Jumptoon] HTTP {res.status_code} on {url} (attempt {attempt+1}/{max_retries+1}); backoff {backoff:.1f}s")
+                        await asyncio.sleep(backoff)
+                        continue
+                    raise ScraperError(f"Jumptoon rate limit sustained (HTTP {res.status_code})", code="RL_001")
+
+                return res
+
+        if last_err:
+            raise last_err
+        raise ScraperError("Jumptoon request exhausted retries", code="RL_002")
+
+    @staticmethod
+    def _compute_backoff(attempt: int) -> float:
+        """Exponential backoff with jitter: 2^attempt + random(0, 1)."""
+        base = min(2 ** attempt, 8)
+        return base + random.random()
+
     async def get_series_info(self, url: str, fast: bool = False):
         """
-        Phase 1: Intelligence. TAIL-FIRST extraction (Mecha-parity).
-
-        Foreground fetches ONLY page 1 + last page in parallel.
-        Background scan (via _perform_full_scan → fetch_more_chapters) fills the gap.
-
-        Modes:
-          fast=True  → page 1 only (instant UI, 1 request)
-          default   → page 1 + last page in parallel (2 requests, ~1 RTT)
+        Tail-first extraction with full rate-limit hardening.
+        Layer 2: Per-series lock + 60s cache.
         """
         # 1. Normalize series ID from URL
         series_id_match = re.search(r'/series/([^/?#]+)', url)
@@ -91,14 +215,38 @@ class JumptoonProvider(BaseProvider):
             if not series_id or series_id == "episodes":
                 series_id = url.split("/")[-2]
 
-        fetch_url = f"{self.BASE_URL}/series/{series_id}/"
-        logger.info(f"[Jumptoon] 🔍 Intelligence Phase for: {series_id} "
-                    f"(mode={'fast' if fast else 'tail-first'})")
+        # ─── Layer 2: Cache check (non-fast mode only) ───
+        cache_key = f"{series_id}:{'fast' if fast else 'full'}"
+        if not fast:
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                logger.info(f"[Jumptoon] 🟢 Series cache HIT: {series_id}")
+                return cached
 
-        # 2. Fetch landing page (required to extract metadata + total_chapters)
+        # ─── Layer 2: Per-series lock (deduplicate simultaneous requests) ───
+        series_lock = await _get_series_lock(series_id)
+        async with series_lock:
+            # Re-check cache inside lock
+            if not fast:
+                cached = _cache_get(cache_key)
+                if cached is not None:
+                    return cached
+
+            result = await self._fetch_series_info_uncached(url, series_id, fast)
+
+            if not fast:
+                _cache_put(cache_key, result)
+
+            return result
+
+    async def _fetch_series_info_uncached(self, url: str, series_id: str, fast: bool):
+        """Internal fetcher using gated GET and tail-first logic."""
+        fetch_url = f"{self.BASE_URL}/series/{series_id}/"
+        logger.info(f"[Jumptoon] 🔍 Intelligence Phase (uncached): {series_id} (mode={'fast' if fast else 'tail-first'})")
+
         auth_session = await self._get_authenticated_session()
         try:
-            res = await auth_session.get(fetch_url, timeout=30, allow_redirects=True)
+            res = await self._jumptoon_gated_get(auth_session, fetch_url, timeout=30)
             if res.status_code in (301, 302, 303, 307, 308):
                 loc = res.headers.get("Location", "Unknown")
                 raise ScraperError(f"Auth Expired or Age Restricted accessing {fetch_url}. Redirected to {loc}")
@@ -106,10 +254,10 @@ class JumptoonProvider(BaseProvider):
                 raise ScraperError(f"Failed to access Jumptoon: HTTP {res.status_code} on {fetch_url}")
         except RequestsError as e:
             logger.error(f"[Jumptoon] Request Error (Potential Proxy): {e}")
-            raise ScraperError("Scraping Proxy Denied Access (403). Check bandwidth or IP Whitelist in Vess Dashboard.", code="PX_403")
+            raise ScraperError("Scraping Proxy Denied Access (403).", code="PX_403")
+        except ScraperError:
+            raise
         except Exception as e:
-            if "ScraperError" in type(e).__name__:
-                raise
             raise ScraperError(f"Request failed: {e}")
 
         html_content = res.text
@@ -118,7 +266,7 @@ class JumptoonProvider(BaseProvider):
 
         await self.session_service.record_session_success("jumptoon")
 
-        # 3. Extract Series ID (HTML-reported wins over URL-derived)
+        # 3. Extract Series ID
         id_match = re.search(r'"seriesId"\s*:\s*"([^"]+)"', clean_html)
         if id_match:
             series_id = id_match.group(1)
@@ -142,7 +290,7 @@ class JumptoonProvider(BaseProvider):
             if h2_count:
                 total_chapters = int(h2_count.group(1))
 
-        # 5. Title Extraction (JSON-first, HTML fallback)
+        # 5. Title Extraction
         title = series_id
         series_match = re.search(r'"series"\s*:\s*\{', clean_html)
         if series_match:
@@ -167,7 +315,7 @@ class JumptoonProvider(BaseProvider):
                 if t_tag:
                     title = t_tag.group(1).strip().split('|')[0].strip().split(' | ')[0].strip()
 
-        # 6. Poster Extraction (preserves existing JSON-heuristic logic)
+        # 6. Poster Extraction
         image_url = None
         img_match = re.search(
             r'"(?:seriesHeroImageUrl|seriesThumbnailV2ImageUrl|src)"\s*:\s*"(https://assets\.jumptoon\.com/series/[^"]+)"',
@@ -175,8 +323,6 @@ class JumptoonProvider(BaseProvider):
         )
         if img_match:
             image_url = img_match.group(1)
-            if Settings.DEVELOPER_MODE:
-                logger.debug(f"🧪 [Developer] Image detected via JSON/Props: {image_url}")
 
         if not image_url or "static.jumptoon.com" in image_url:
             og_match = re.search(r'<meta[^>]+(?:property|name)="og:image"[^>]+content="(https:[^"]+)"',
@@ -188,18 +334,13 @@ class JumptoonProvider(BaseProvider):
                 candidate = og_match.group(1)
                 if "static.jumptoon.com" not in candidate:
                     image_url = candidate
-                    if Settings.DEVELOPER_MODE:
-                        logger.debug(f"🧪 [Developer] Image detected via og:image: {image_url}")
-
-        if not image_url and Settings.DEVELOPER_MODE:
-            logger.warning(f"🧪 [Developer] Image extraction FAILED. HTML Snippet: {clean_html[:1500]}...")
 
         if image_url:
             if "?" in image_url:
                 image_url = image_url.split("?")[0]
             image_url += "?auto=avif-webp&width=3840"
 
-        # 7. Status Label + Release Day
+        # 7. Status + Release Day
         status_label = None
         if "読切" in html_content:
             status_label = "Oneshot"
@@ -211,63 +352,47 @@ class JumptoonProvider(BaseProvider):
         if day_match:
             release_day = day_match.group(1).capitalize()
 
-        # 8. Tag extraction from page 1 (UP / Coming Soon)
+        # 8. Tag extraction
         up_ids = set()
         coming_soon_ids = set()
         self._extract_tag_ids(html_content, up_ids, coming_soon_ids)
 
-        # 9. Parse page 1 chapters
         seen_ids = set()
         page1_chapters = self._parse_page_data(html_content, sees_ids=seen_ids,
                                                 up_ids=up_ids, coming_soon_ids=coming_soon_ids)
 
         release_time = JUMPTOON_RELEASE_TIME_UTC if release_day else None
 
-        # ─── FAST MODE: page 1 only (instant UI) ──────────────────────────────────
         if fast:
-            logger.info(f"[Jumptoon] Fast Fetch (Page 1 Only): {title} ({series_id})")
+            logger.info(f"[Jumptoon] Fast Fetch (Page 1 Only): {series_id}")
             page1_chapters.sort(key=self._extract_sort_key)
             for ch in page1_chapters:
                 if str(ch['id']) in up_ids:
                     ch['is_new'] = True
             return (title, total_chapters, page1_chapters, image_url, series_id,
-                    release_day, None, status_label, None)
+                    release_day, release_time, status_label, None)
 
-        # ─── DEFAULT MODE: TAIL-FIRST (page 1 + last page in parallel) ────────────
+        # ─── DEFAULT MODE: TAIL-FIRST (gated) ───
         pg_size = 30
         total_pages = math.ceil(total_chapters / pg_size) if total_chapters > 0 else 1
-
         all_chapters = list(page1_chapters)
 
-        # Fetch last page ONLY if it's different from page 1
         if total_pages > 1:
             last_page_url = f"{self.BASE_URL}/series/{series_id}/episodes/?page={total_pages}"
             try:
-                lp_res = await auth_session.get(last_page_url, timeout=30, allow_redirects=True)
-
-                if lp_res.status_code in (301, 302, 303, 307, 308):
-                    loc = lp_res.headers.get("Location", "Unknown")
-                    logger.warning(f"[Jumptoon] Last page redirect to {loc} — auth may be expired; "
-                                   f"continuing with page 1 only")
-                elif lp_res.status_code == 200:
+                lp_res = await self._jumptoon_gated_get(auth_session, last_page_url, timeout=30)
+                if lp_res.status_code == 200:
                     self._extract_tag_ids(lp_res.text, up_ids, coming_soon_ids)
                     tail_chaps = self._parse_page_data(lp_res.text, sees_ids=seen_ids,
                                                         up_ids=up_ids, coming_soon_ids=coming_soon_ids)
                     all_chapters.extend(tail_chaps)
-                    logger.debug(f"[Jumptoon] Tail fetch: page {total_pages} → +{len(tail_chaps)} chapters")
-                else:
-                    logger.warning(f"[Jumptoon] Last page returned HTTP {lp_res.status_code} — "
-                                   f"continuing with page 1 only")
+                    logger.debug(f"[Jumptoon] Tail fetch: page {total_pages} → +{len(tail_chaps)}")
             except Exception as e:
-                # Soft-fail: foreground continues even if tail fetch dies.
-                # Background _perform_full_scan will recover the missing data.
                 logger.warning(f"[Jumptoon] Tail fetch soft-fail ({e}); background scan will recover")
 
-        # Edge case: total_chapters was 0 in the HTML but we parsed some
         if total_chapters == 0 and all_chapters:
             total_chapters = len(all_chapters)
 
-        # Sort + UP flag assignment
         all_chapters.sort(key=self._extract_sort_key)
         for ch in all_chapters:
             if str(ch['id']) in up_ids:
@@ -326,7 +451,7 @@ class JumptoonProvider(BaseProvider):
         return series_list
 
     async def sync_latest_chapters(self, url):
-        """Background optimization: visits the LAST page to find the latest state."""
+        """Background subscription sync — gated."""
         try:
             title, total_count, _, _, series_id, _, _, _, _ = await self.get_series_info(url, fast=True)
             if total_count == 0:
@@ -337,9 +462,9 @@ class JumptoonProvider(BaseProvider):
 
             auth_session = await self._get_authenticated_session()
             last_url = f"{self.BASE_URL}/series/{series_id}/episodes/?page={last_page}"
-            logger.info(f"[Jumptoon] Syncing Latest Chapters (Background): Page {last_page}")
+            logger.info(f"[Jumptoon] Syncing Latest Chapters (gated): Page {last_page}")
 
-            res = await auth_session.get(last_url, timeout=30)
+            res = await self._jumptoon_gated_get(auth_session, last_url, timeout=30)
             if res.status_code == 200:
                 up_ids = set()
                 coming_soon_ids = set()
@@ -347,7 +472,6 @@ class JumptoonProvider(BaseProvider):
                 latest_chaps = self._parse_page_data(res.text, sees_ids=set(),
                                                       up_ids=up_ids, coming_soon_ids=coming_soon_ids)
                 latest_chaps.sort(key=self._extract_sort_key)
-                logger.debug(f"[Jumptoon] Sync Background: Found {len(latest_chaps)} on last page.")
                 return latest_chaps
         except Exception as e:
             logger.error(f"[Jumptoon] Background sync failed: {e}")
@@ -355,16 +479,7 @@ class JumptoonProvider(BaseProvider):
 
     async def fetch_more_chapters(self, url: str, total_pages: int, seen_ids: set,
                                    skip_pages: list | None = None):
-        """
-        Background scan: fills the middle pages that foreground tail-first missed.
-
-        Called by UniversalDashboard._perform_full_scan in the background.
-        By default, auto-skips page 1 and the last page (both loaded by foreground),
-        so we only fetch pages [2 .. total_pages-1] in parallel.
-
-        Caller can override skip_pages to request specific ranges.
-        """
-        # Default skip: page 1 + last page (already in foreground all_chapters)
+        """Background scan — all page GETs flow through _jumptoon_gated_get."""
         if skip_pages is None:
             skip_pages = [1]
             if total_pages > 1:
@@ -376,68 +491,44 @@ class JumptoonProvider(BaseProvider):
         series_id = series_id_match.group(1)
 
         auth_session = await self._get_authenticated_session()
-
         pages_to_fetch = [p for p in range(1, total_pages + 1) if p not in skip_pages]
         if not pages_to_fetch:
-            logger.debug(f"[Jumptoon] Background scan: all pages already covered, nothing to do")
             return []
 
-        logger.info(f"[Jumptoon] 📡 Background parallel fetch: {len(pages_to_fetch)} pages "
-                    f"({pages_to_fetch})")
+        logger.info(f"[Jumptoon] 📡 Background parallel fetch (rate-gated): {len(pages_to_fetch)} pages")
 
-        # 🟢 S-GRADE: Bounded semaphore prevents proxy rate-limit trip on big series
-        # (e.g., 400-ch series = 14 pages; firing all at once risks PX_403)
-        sem = asyncio.Semaphore(4)
-
-        # Shared tag sets across all background pages (consistent UP filtering)
         bg_up_ids = set()
         bg_coming_soon_ids = set()
 
         async def fetch_page(p):
-            async with sem:
-                try:
-                    p_res = await auth_session.get(
-                        f"{self.BASE_URL}/series/{series_id}/episodes/?page={p}",
-                        timeout=30, allow_redirects=True
-                    )
-                    if p_res.status_code in (301, 302, 303, 307, 308):
-                        loc = p_res.headers.get("Location", "Unknown")
-                        logger.warning(f"[Jumptoon] BG p{p} redirected to {loc}")
-                        return p, None
-                    if p_res.status_code == 200:
-                        return p, p_res.text
-                    logger.warning(f"[Jumptoon] BG p{p} returned HTTP {p_res.status_code}")
-                    return p, None
-                except Exception as e:
-                    logger.error(f"[Jumptoon] Background fetch error for page {p}: {e}")
-                    return p, None
+            try:
+                url_p = f"{self.BASE_URL}/series/{series_id}/episodes/?page={p}"
+                p_res = await self._jumptoon_gated_get(auth_session, url_p, timeout=30)
+                if p_res.status_code == 200:
+                    return p, p_res.text
+                return p, None
+            except Exception as e:
+                logger.error(f"[Jumptoon] BG p{p} error: {e}")
+                return p, None
 
-        # Fire all pages concurrently
         results = await asyncio.gather(*(fetch_page(p) for p in pages_to_fetch))
 
-        # Phase A: collect UP/coming-soon tags across all pages FIRST
-        # (parse_page_data consults these sets to filter coming-soon chapters;
-        #  tags must be complete before parsing to avoid order-dependent output)
-        for page_num, html in results:
+        for _, html in results:
             if html:
                 self._extract_tag_ids(html, bg_up_ids, bg_coming_soon_ids)
 
-        # Phase B: parse chapter data in deterministic page order
         extra_chapters = []
-        for page_num, html in sorted(results, key=lambda r: r[0]):
+        for _, html in sorted(results, key=lambda r: r[0]):
             if not html:
                 continue
             chaps = self._parse_page_data(html, sees_ids=seen_ids,
                                            up_ids=bg_up_ids, coming_soon_ids=bg_coming_soon_ids)
             if chaps:
-                # Apply is_new flag here too (foreground would normally do this,
-                # but background pages need their UP tags applied as chapters arrive)
                 for ch in chaps:
                     if str(ch['id']) in bg_up_ids:
                         ch['is_new'] = True
                 extra_chapters.extend(chaps)
 
-        logger.info(f"[Jumptoon] 📡 Background scan complete: +{len(extra_chapters)} chapters")
         return extra_chapters
 
     @staticmethod
