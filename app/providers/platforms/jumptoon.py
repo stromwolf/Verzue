@@ -11,6 +11,7 @@ import base64
 from bs4 import BeautifulSoup
 from curl_cffi import requests as curl_requests
 from curl_cffi.requests import AsyncSession, RequestsError
+from curl_cffi.requests.exceptions import TooManyRedirects
 from app.providers.base import BaseProvider
 from app.services.session_service import SessionService
 from app.services.redis_manager import RedisManager
@@ -161,8 +162,20 @@ class JumptoonProvider(BaseProvider):
             async with JUMPTOON_METADATA_SEMAPHORE:
                 try:
                     res = await auth_session.get(
-                        url, timeout=timeout, allow_redirects=allow_redirects
+                        url, 
+                        timeout=timeout, 
+                        allow_redirects=allow_redirects,
+                        max_redirects=10  # Prevent infinite loops
                     )
+                except TooManyRedirects:
+                    logger.error(f"[Jumptoon] 🔄 Redirect loop detected for {url} (max 10). "
+                                 f"Check if IP is blacklisted or account is blocked.")
+                    # If we are looping, the session likely needs fixed/re-verified
+                    if self.active_account_id:
+                        await self.session_service.report_session_failure(
+                            "jumptoon", self.active_account_id, "Redirect loop (likely auth wall)"
+                        )
+                    raise ScraperError("Jumptoon redirect loop detected. Session may be dead.", code="RL_003")
                 except RequestsError as e:
                     last_err = e
                     err_str = str(e).lower()
@@ -176,6 +189,15 @@ class JumptoonProvider(BaseProvider):
                 except Exception as e:
                     last_err = e
                     raise
+
+                # Check for explicit auth redirects even if not looping
+                if res.status_code == 200 and ("ログイン・新規登録" in res.text or "/auth/login" in res.url):
+                    logger.warning(f"[Jumptoon] 🔑 Auth wall detected at {res.url}")
+                    if self.active_account_id:
+                        await self.session_service.report_session_failure(
+                            "jumptoon", self.active_account_id, "Auth wall detected during gated fetch"
+                        )
+                    raise ScraperError("Authentication required (cookies expired).", code="AU_001")
 
                 if res.status_code in (429, 503):
                     if attempt < max_retries:
