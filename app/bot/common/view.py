@@ -83,6 +83,7 @@ class UniversalDashboard:
         self._bg_scanning = False
         if self.service_type in ["mecha", "jumptoon"] and self.total_chapters > len(self.all_chapters):
             self._bg_scanning = True
+            logger.info(f"[{self.req_id}] 📡 Initial Load: {len(self.all_chapters)}/{self.total_chapters} chapters. Starting Background Scan.")
             self._full_scan_task = asyncio.create_task(self._perform_full_scan())
 
     async def _auto_timeout_loop(self):
@@ -583,7 +584,7 @@ class UniversalDashboard:
                     else:
                         raise e
         except Exception as e:
-            logger.error(f"V2 UI Update Failed: {e}", exc_info=True)
+            logger.error(f"[{self.req_id}] V2 UI Update Failed: {e}", exc_info=True)
 
     def trigger_refresh(self):
         from app.services.ui_manager import UIManager
@@ -632,6 +633,8 @@ class UniversalDashboard:
                                 f"{len(self.all_chapters)} chapters mapped")
                     self.trigger_refresh()
                     self._latest_ui_update = time.time()
+                else:
+                    logger.warning(f"[{self.req_id}] ⚠️ Jumptoon background scan returned NO new chapters.")
                 return
 
             # ─── MECHA (and any future provider): sequential incremental scan ────

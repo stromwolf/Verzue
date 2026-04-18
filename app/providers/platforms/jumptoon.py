@@ -269,18 +269,20 @@ class JumptoonProvider(BaseProvider):
         landing_url = f"{self.BASE_URL}/series/{series_id}/"
         episodes_base = f"{self.BASE_URL}/series/{series_id}/episodes/"
 
-        logger.info(f"[Jumptoon] 🔍 Fetching: {series_id} "
-                    f"(mode={'fast' if fast else 'tail-first'})")
+        logger.info(f"[Jumptoon] 🔍 Series Info Requested: {series_id} (mode={'fast' if fast else 'full'})")
 
         auth_session = await self._get_authenticated_session()
 
         # ─── Step 1: Landing page — metadata ONLY, no chapter parsing ────────────
         try:
             res = await self._jumptoon_gated_get(auth_session, landing_url, timeout=30)
+            logger.debug(f"[Jumptoon] Landing page response: {res.status_code}")
             if res.status_code in (301, 302, 303, 307, 308):
                 loc = res.headers.get("Location", "Unknown")
+                logger.warning(f"[Jumptoon] Redirected from landing page to {loc}")
                 raise ScraperError(f"Auth Expired or Age Restricted. Redirected to {loc}")
             if res.status_code != 200:
+                logger.error(f"[Jumptoon] Failed to access landing page: {res.status_code}")
                 raise ScraperError(f"Failed to access Jumptoon: HTTP {res.status_code}")
         except RequestsError as e:
             logger.error(f"[Jumptoon] Request Error (Potential Proxy): {e}")
@@ -367,6 +369,8 @@ class JumptoonProvider(BaseProvider):
             if "?" in image_url:
                 image_url = image_url.split("?")[0]
             image_url += "?auto=avif-webp&width=3840"
+        
+        logger.info(f"[Jumptoon] Metadata Parsed: Title='{title}', Total='{total_chapters}', Status='{status_label}'")
 
         # Status + release day
         status_label = None
@@ -394,14 +398,18 @@ class JumptoonProvider(BaseProvider):
         if fast:
             logger.info(f"[Jumptoon] Fast Fetch (episodes page 1): {title} ({series_id})")
             try:
+                p1_url = f"{episodes_base}?page=1"
+                logger.debug(f"[Jumptoon] Fetching Fast metadata from {p1_url}")
                 p1_res = await self._jumptoon_gated_get(
-                    auth_session, f"{episodes_base}?page=1", timeout=30
+                    auth_session, p1_url, timeout=30
                 )
                 if p1_res.status_code == 200:
+                    logger.debug(f"[Jumptoon] Page 1 fetched successfully")
                     self._extract_tag_ids(p1_res.text, up_ids, coming_soon_ids)
                     page1_chapters = self._parse_page_data(p1_res.text, sees_ids=seen_ids,
                                                             up_ids=up_ids, coming_soon_ids=coming_soon_ids)
                 else:
+                    logger.warning(f"[Jumptoon] Page 1 returned HTTP {p1_res.status_code}")
                     page1_chapters = []
             except Exception as e:
                 logger.warning(f"[Jumptoon] Fast page-1 fetch failed: {e}")

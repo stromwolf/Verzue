@@ -35,24 +35,25 @@ class MechaBot(commands.Bot):
 
         self.logger.info(f"🤖 Identity resolved: {self.identity}")
 
-        # Cog routing (Unified for robustness, identity checks are inside the cogs where needed)
-        extensions = [
-            "app.bot.cogs.admin",
-            "app.bot.cogs.dashboard",
-            "app.bot.cogs.subscriptions",
-            "app.bot.cogs.discovery",
-            "app.bot.cogs.discovery_commands",
-            "app.bot.cogs.status",
-            "app.bot.cogs.monitor_cog",
-            "app.bot.cogs.helper_cogs",
+        # Cog routing optimization (Identity-based filtering)
+        all_extensions = [
+            ("app.bot.cogs.dashboard", ["Main", "Testing"]),
+            ("app.bot.cogs.subscriptions", ["Main", "Admin", "Testing"]),
+            ("app.bot.cogs.status", ["Main", "Admin", "Testing"]),
+            ("app.bot.cogs.admin", ["Admin"]),
+            ("app.bot.cogs.discovery", ["Admin"]),
+            ("app.bot.cogs.discovery_commands", ["Admin"]),
+            ("app.bot.cogs.monitor_cog", ["Admin"]),
+            ("app.bot.cogs.helper_cogs", ["Admin"]),
         ]
 
-        for ext in extensions:
-            try:
-                await self.load_extension(ext)
-                self.logger.info(f"🧩 Loaded: {ext} [{self.identity}]")
-            except Exception as e:
-                self.logger.error(f"❌ Failed to load {ext}: {e}")
+        for ext, allowed_identities in all_extensions:
+            if self.identity in allowed_identities:
+                try:
+                    await self.load_extension(ext)
+                    self.logger.info(f"🧩 Loaded: {ext} [{self.identity}]")
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to load {ext}: {e}")
 
         # --- EVENT SUBSCRIPTIONS ---
         EventBus.subscribe("upload_zip_to_discord", self.handle_zip_upload)

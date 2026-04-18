@@ -85,6 +85,7 @@ class PiccomaProvider(BaseProvider):
         
         active = await self.session_service.get_active_session("piccoma")
         account_id = active.get("account_id", "primary") if active else "primary"
+        logger.info(f"[Piccoma] 🔍 Series Info Requested: {url} (AID: {account_id}, mode={'fast' if fast else 'full'})")
         auth_session = await self._get_authenticated_session(domain, account_id=account_id)
         
         # --- CSRF Handshake ---
@@ -120,7 +121,11 @@ class PiccomaProvider(BaseProvider):
             raise ScraperError(f"Piccoma Network Error: {e}")
         except Exception as e:
             if "ScraperError" in type(e).__name__: raise
+            logger.error(f"[Piccoma] Request failed for {url}: {e}")
             raise ScraperError(f"Piccoma series fetch failed: {e}")
+        
+        logger.debug(f"[Piccoma] Main product response: {res.status_code}")
+        if ep_res: logger.debug(f"[Piccoma] Episode list response: {ep_res.status_code}")
         
         # Geo-block detection
         if len(res.text) < 10000 and ("日本国内でのみ" in res.text or "only be used from Japan" in res.text):
@@ -147,6 +152,8 @@ class PiccomaProvider(BaseProvider):
                 if jp_day in text:
                     release_day, release_time = en_day, "15:00"
                     break
+        
+        logger.info(f"[Piccoma] Metadata Parsed: Title='{title}', Status='{status_label}', Day='{release_day}'")
 
         # 3. Restriction Check
         tags = [a.get('data-gtm-label', '').upper() for a in soup.select('.PCM-productDesc_tagList a')]

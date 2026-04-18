@@ -57,6 +57,7 @@ class AcqqProvider(BaseProvider):
         match = re.search(r'id/(\d+)', url)
         if not match: raise ScraperError("Invalid Tencent URL.")
         series_id = match.group(1)
+        logger.info(f"[ACQQ] 🔍 Series Info Requested: {url} (ID: {series_id})")
         
         auth_session = await self._get_authenticated_session()
         target_url = f"https://m.ac.qq.com/comic/index/id/{series_id}"
@@ -100,6 +101,7 @@ class AcqqProvider(BaseProvider):
             })
 
         all_chapters.sort(key=lambda x: int(x['id']))
+        logger.info(f"[ACQQ] Metadata Parsed: Title='{title}', Chapters='{len(all_chapters)}', Image='{'Yes' if image_url else 'No'}'")
         return title, len(all_chapters), all_chapters, image_url, series_id, None, None, None, None
 
     async def scrape_chapter(self, task, output_dir: str):

@@ -48,6 +48,7 @@ class KuaikanProvider(BaseProvider):
         match = re.search(r'(?:topic|mobile)/(\d+)', url)
         if not match: raise ScraperError("Invalid Kuaikan URL.")
         series_id = match.group(1)
+        logger.info(f"[Kuaikan] 🔍 Series Info Requested: {url} (ID: {series_id})")
         
         auth_session = await self._get_authenticated_session()
         api_url = f"https://api.kuaikanmanhua.com/v1/topics/{series_id}"
@@ -78,7 +79,8 @@ class KuaikanProvider(BaseProvider):
                 'url': f"https://www.kuaikanmanhua.com/web/comic/{ch.get('id')}/",
                 'is_locked': ch.get('is_free', True) is False
             })
-            
+        
+        logger.info(f"[Kuaikan] Metadata Parsed: Title='{title}', Chapters='{len(all_chapters)}', Image='{'Yes' if image_url else 'No'}'")
         return title, len(all_chapters), all_chapters, image_url, series_id, None, None, None, None
 
     async def scrape_chapter(self, task, output_dir: str):

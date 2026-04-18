@@ -53,11 +53,12 @@ class DashboardCog(commands.Cog):
                 interaction_id=interaction.id,
                 interaction_token=interaction.token
             )
+            logger.debug(f"[Dashboard] Sending Dashboard Payload (User: {interaction.user.id})")
             await self.bot.http.request(route, json=payload)
         except discord.NotFound:
-            pass 
+            logger.warning(f"[Dashboard] Dashboard interaction not found or expired.")
         except Exception as e:
-            logger.error(f"Failed to send V2 Dashboard: {e}")
+            logger.error(f"[Dashboard] Failed to send V2 Dashboard: {e}")
 
     async def get_weeklies_section(self, scan_name: str):
         """Generates the 'Today Weeklies' text and action row components."""
@@ -647,6 +648,7 @@ class DashboardCog(commands.Cog):
         """🟢 EVENT LISTENER: Catch raw V2 interactions."""
         if interaction.type == discord.InteractionType.component:
             custom_id = interaction.data.get("custom_id", "")
+            logger.info(f"[Dashboard] 🖱️ Component Interaction: {custom_id} (User: {interaction.user.id}, Channel: {interaction.channel_id})")
             
             # --- Close Button ---
             # --- Close / Cancel Buttons ---
@@ -1404,8 +1406,9 @@ class DashboardCog(commands.Cog):
         """Deprecated."""
         pass
 
-    async def handle_platform_modal(self, interaction, custom_id):
+    async def handle_platform_modal(self, interaction: discord.Interaction, custom_id: str):
         """Processes the platform URL submission modal."""
+        logger.info(f"[Dashboard] 📝 Modal Submission: {custom_id} (User: {interaction.user.id})")
         # 🟢 THE FIX: DEFER IMMEDIATELY to prevent 3s timeout
         try:
             await interaction.response.defer(ephemeral=True)
@@ -1431,7 +1434,7 @@ class DashboardCog(commands.Cog):
             match = re.search(r'(https?://[^\s\"\'\<\>]+)', raw_url)
             if match:
                 url = match.group(1)
-                logger.info(f"📍 URL Extracted: '{raw_url}' -> '{url}'")
+                logger.info(f"[Dashboard] 📍 URL Extracted: '{raw_url}' -> '{url}'")
         
         platform_domains = {
             "mecha": "mechacomic.jp", 
@@ -1466,6 +1469,7 @@ class DashboardCog(commands.Cog):
                     ]
                 }]
             }
+            logger.warning(f"[Dashboard] ⛔ Domain Mismatch: Expected {expected_domain} for platform {platform}, got {url}")
             await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'), json=embed_payload)
             return 
 
@@ -1681,9 +1685,11 @@ class DashboardCog(commands.Cog):
             
             # 🛡️ Safety check (SY_002)
             if not scraper:
+                logger.error(f"[{req_id}] ❌ Unsupported platform URL: {url}")
                 raise MechaException(f"Unsupported platform URL: {url}", code="SY_002")
 
             # 🟢 Every Provider is now S-Grade Async
+            logger.debug(f"[{req_id}] Calling scraper.get_series_info(url={url})")
             data = await scraper.get_series_info(url)
                 
             logger.info(f"[{req_id}] ✅ Handoff: Metadata retrieved successfully.")
@@ -1746,12 +1752,18 @@ class DashboardCog(commands.Cog):
                     asyncio.create_task(browser.start())
                 
         except Exception as e:
-            logger.error(f"Failed to fetch metadata: {e}", exc_info=True)
+            logger.error(f"[{req_id}] ❌ Failed to fetch metadata: {e}", exc_info=True)
             # 🟢 S-GRADE: Dispatch to Admin Sentinel
             await self.bot.dispatch_error(e, interaction=interaction)
             
-            err = str(e).splitlines()[0] if str(e) else "Unknown Error"
+            err_type = type(e).__name__
+            err_msg = str(e).splitlines()[0] if str(e) else "Unknown Error"
             
+            if err_type in ["ScraperError", "MechaException"]:
+                display_content = f"### ❌ Extraction Failed\n> {err_msg}"
+            else:
+                display_content = f"### ❌ Unexpected Error\n> Come <@1216284053049704600>. New Error"
+
             # Match V2 format for errors so Discord doesn't crash on the PATCH
             error_payload = {
                 "flags": 32832,
@@ -1760,7 +1772,7 @@ class DashboardCog(commands.Cog):
                     "components": [
                         {
                             "type": 10,
-                            "content": f"Come <@1216284053049704600>. New Error"
+                            "content": display_content
                         },
                         {
                             "type": 1,

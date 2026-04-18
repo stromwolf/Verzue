@@ -50,6 +50,7 @@ class KakaoProvider(BaseProvider):
         except: return False
 
     async def get_series_info(self, url: str, fast: bool = False):
+        logger.info(f"[Kakao] 🔍 Series Info Requested: {url} (mode={'fast' if fast else 'full'})")
         if "webtoon.kakao.com" in url:
             return await self._get_webtoon_info(url, fast=fast)
         return await self._get_page_info(url, fast=fast)
@@ -104,6 +105,7 @@ class KakaoProvider(BaseProvider):
             if offset + len(episodes) >= total_count: break
             offset += len(episodes)
 
+        logger.info(f"[Kakao] Metadata Parsed (Webtoon): Title='{title}', Chapters='{len(all_chapters)}', Image='{'Yes' if image_url else 'No'}'")
         return title, len(all_chapters), all_chapters, image_url, content_id, None, None, None, None
 
     async def _get_page_info(self, url: str, fast: bool = False):
@@ -160,6 +162,7 @@ class KakaoProvider(BaseProvider):
             has_next = data['pageInfo']['hasNextPage']
             cursor = data['pageInfo']['endCursor']
             
+        logger.info(f"[Kakao] Metadata Parsed (Page): Title='{title}', Chapters='{len(all_chapters)}', Image='{'Yes' if image_url else 'No'}'")
         return title, len(all_chapters), all_chapters, image_url, series_id, None, None, None, None
 
     async def scrape_chapter(self, task, output_dir: str):

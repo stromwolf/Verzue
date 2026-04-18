@@ -143,8 +143,11 @@ class MechaProvider(BaseProvider):
     async def get_series_info(self, url: str, fast: bool = False):
         auth_session = await self._get_authenticated_session()
         base_series_url = url.split('?')[0]
+        logger.info(f"[Mecha] 🔍 Series Info Requested: {base_series_url} (mode={'fast' if fast else 'full'})")
         try:
-            res = await auth_session.get(f"{base_series_url}?page=1", timeout=30)
+            p1_url = f"{base_series_url}?page=1"
+            logger.debug(f"[Mecha] Fetching Page 1: {p1_url}")
+            res = await auth_session.get(p1_url, timeout=30)
             if res.status_code != 200: 
                 raise ScraperError(f"Mecha error: {res.status_code}", code="SC_002")
         except RequestsError as e:
@@ -175,6 +178,8 @@ class MechaProvider(BaseProvider):
             if m:
                 total_reported = int(m.group(1))
                 max_page = math.ceil(total_reported / 10)
+        
+        logger.info(f"[Mecha] Metadata Parsed: Title='{title}', Total='{total_reported}', MaxPage='{max_page}', Image='{'Yes' if image_url else 'No'}'")
 
         all_chapters = []
         seen_ids = set()
@@ -185,9 +190,13 @@ class MechaProvider(BaseProvider):
             # Even in fast mode, we return what was on page 1
             # But we skip the 'last page' sync below
         elif max_page > 1:
-            res_last = await auth_session.get(f"{base_series_url}?page={max_page}", timeout=15)
+            last_pg_url = f"{base_series_url}?page={max_page}"
+            logger.debug(f"[Mecha] Fetching Last Page: {last_pg_url}")
+            res_last = await auth_session.get(last_pg_url, timeout=15)
             if res_last.status_code == 200:
                 all_chapters.extend(self._parse_page_chapters(BeautifulSoup(res_last.text, 'html.parser'), seen_ids))
+            else:
+                logger.warning(f"[Mecha] Last Page returned HTTP {res_last.status_code}")
 
         all_chapters.sort(key=lambda x: int(x['id']))
         
