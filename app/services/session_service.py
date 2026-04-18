@@ -8,12 +8,23 @@ from app.core.events import EventBus
 logger = logging.getLogger("SessionService")
 
 class SessionService:
+    _instance = None
     # S-GRADE: Global Async Locks to prevent concurrent auto-login attempts
     _refresh_locks: dict[str, asyncio.Lock] = {}
 
+    def __new__(cls):
+        # ─── Enforce singleton pattern ─────────────────────────────────────
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
     def __init__(self):
+        if self._initialized:
+            return
         self.redis = RedisManager()
         self._last_emit = {} # platform -> timestamp
+        self._initialized = True
 
     def get_refresh_lock(self, platform: str, account_id: str = "primary") -> asyncio.Lock:
         """Returns or creates an asyncio.Lock for the specific (platform, account) pair."""

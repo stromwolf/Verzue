@@ -34,8 +34,12 @@ class CookieStatusCog(commands.Cog):
         self.dashboard_loop.start()
         self.daily_ping_loop.start()
         
-        # Subscribe to Reactive Events
-        EventBus.subscribe("session_status_changed", self.on_session_change)
+        # ─── Only subscribe ONCE — use a class-level guard ─────────────────────
+        if not getattr(CookieStatusCog, "_event_bound", False):
+            EventBus.subscribe("session_status_changed", self.on_session_change)
+            CookieStatusCog._event_bound = True
+        else:
+            logger.info("[StatusUI] EventBus already bound (another instance); skipping subscribe.")
 
     def cog_unload(self):
         self.dashboard_loop.cancel()
