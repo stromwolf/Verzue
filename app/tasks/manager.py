@@ -43,6 +43,16 @@ class TaskQueue:
 
     async def boot(self):
         """One-shot startup sequence. Call exactly once before workers spin up."""
+        # 0. Seed sessions from disk if Redis is cold
+        #    This MUST happen before workers start, so the first task doesn't
+        #    trigger an unnecessary login.
+        try:
+            from app.services.session_service import SessionService
+            session_service = SessionService()
+            await session_service.seed_from_disk()
+        except Exception as e:
+            logger.warning(f"⚠️ Disk seed failed (non-fatal): {e}")
+
         # 1. Register this process as an alive worker (starts heartbeat loop)
         await self.redis.queue.register_worker()
         # 2. Sweep dead workers' processing lists back to global queue

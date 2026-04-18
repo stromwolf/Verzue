@@ -2,6 +2,10 @@ import logging
 import random
 import time
 import asyncio
+import json
+import os
+import tempfile
+import glob
 from app.services.redis_manager import RedisManager
 from app.core.events import EventBus
 
@@ -100,21 +104,132 @@ class SessionService:
     async def update_session_cookies(self, platform: str, account_id: str, cookies: list):
         """
         Updates a session's cookies and resets status to HEALTHY.
+        Write-through: persists to disk so sessions survive cold Redis.
         """
         session = await self.redis.get_session(platform, account_id)
         if not session:
-            # Create a basic session object if it doesn't exist
             session = {
                 "account_id": account_id,
-                "platform": platform
+                "platform": platform,
             }
 
         session["cookies"] = cookies
         session["status"] = "HEALTHY"
+        session["updated_at"] = time.time()
         session.pop("error_reason", None)
         await self.redis.set_session(platform, account_id, session)
         logger.info(f"✅ Session updated and refreshed: {platform}:{account_id}")
+
+        # ── Write-through to disk (atomic) ──────────────────────────────
+        try:
+            disk_dir = os.path.join(os.getcwd(), "data", "secrets", platform)
+            os.makedirs(disk_dir, exist_ok=True)
+            disk_path = os.path.join(disk_dir, f"session_{account_id}.json")
+
+            # Atomic write: tmp → rename prevents partial reads on crash
+            fd, tmp_path = tempfile.mkstemp(dir=disk_dir, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(session, f, indent=2)
+                os.replace(tmp_path, disk_path)  # atomic on POSIX
+            except Exception:
+                # Clean up temp file if rename failed
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+            logger.debug(f"💾 Session write-through to disk: {disk_path}")
+        except Exception as e:
+            # Disk failure is non-fatal — Redis is the primary store
+            logger.warning(f"⚠️ Disk write-through failed for {platform}:{account_id}: {e}")
+
         await self._emit_status_change(platform)
+
+    async def seed_from_disk(self):
+        """
+        Boot-time recovery: if Redis has no sessions for a platform, try to
+        load the last-known-good session from disk.
+
+        Call once during startup (in TaskQueue.boot or main.py) BEFORE any
+        tasks or healers run.
+        """
+        base = os.path.join(os.getcwd(), "data", "secrets")
+        if not os.path.isdir(base):
+            return
+
+        platforms_seeded = []
+
+        for platform_dir in os.listdir(base):
+            platform_path = os.path.join(base, platform_dir)
+            if not os.path.isdir(platform_path):
+                continue
+
+            # Check if Redis already has sessions for this platform
+            existing = await self.redis.list_sessions(platform_dir)
+            if existing:
+                continue  # Redis is warm — nothing to do
+
+            # Look for session_*.json files (new format) or cookies.json (legacy)
+            session_files = glob.glob(os.path.join(platform_path, "session_*.json"))
+            legacy_file = os.path.join(platform_path, "cookies.json")
+
+            loaded = False
+
+            for sf in session_files:
+                try:
+                    with open(sf, "r") as f:
+                        session_data = json.load(f)
+
+                    account_id = session_data.get("account_id", "primary")
+                    cookies = session_data.get("cookies", [])
+
+                    if not cookies:
+                        continue
+
+                    # Don't blindly trust the status from disk — mark as HEALTHY
+                    # and let the first actual task validate via shallow check.
+                    session_data["status"] = "HEALTHY"
+                    session_data["seeded_from_disk"] = True
+                    await self.redis.set_session(platform_dir, account_id, session_data)
+                    logger.info(
+                        f"🌱 Seeded {platform_dir}:{account_id} from disk "
+                        f"({len(cookies)} cookies)"
+                    )
+                    loaded = True
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to seed from {sf}: {e}")
+
+            # Legacy fallback: old cookies.json (flat cookie list, no session wrapper)
+            if not loaded and os.path.exists(legacy_file):
+                try:
+                    with open(legacy_file, "r") as f:
+                        cookies = json.load(f)
+
+                    if isinstance(cookies, list) and cookies:
+                        session_data = {
+                            "account_id": "primary",
+                            "platform": platform_dir,
+                            "cookies": cookies,
+                            "status": "HEALTHY",
+                            "seeded_from_disk": True,
+                        }
+                        await self.redis.set_session(platform_dir, "primary", session_data)
+                        logger.info(
+                            f"🌱 Seeded {platform_dir}:primary from legacy cookies.json "
+                            f"({len(cookies)} cookies)"
+                        )
+                        loaded = True
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to seed from legacy {legacy_file}: {e}")
+
+            if loaded:
+                platforms_seeded.append(platform_dir)
+
+        if platforms_seeded:
+            logger.info(f"🌱 Disk seed complete. Platforms recovered: {', '.join(platforms_seeded)}")
+        else:
+            logger.debug("🌱 Disk seed: all platforms already warm in Redis (or no disk backups found).")
 
     async def get_authenticated_session(
         self,
