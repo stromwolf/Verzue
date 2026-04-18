@@ -1658,8 +1658,15 @@ class DashboardCog(commands.Cog):
         try:
             route = discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original')
             await self.bot.http.request(route, json=analyzing_payload)
+        except discord.HTTPException as e:
+            if e.status == 429:
+                logger.warning(f"[Dashboard] Rate limited on analyzing PATCH, continuing anyway...")
+                # discord.py already retried — we can safely continue
+            else:
+                logger.error(f"[Dashboard] Interaction expired or PATCH failed: {e}", exc_info=True)
+                return
         except Exception as e:
-            logger.error(f"[Dashboard] Interaction expired or PATCH failed: {type(e).__name__}: {e}", exc_info=True)
+            logger.error(f"[Dashboard] Analyzing PATCH failed: {type(e).__name__}: {e}", exc_info=True)
             return
 
         try:
@@ -1785,12 +1792,17 @@ class DashboardCog(commands.Cog):
                 
         except Exception as e:
             if _dashboard_sent:
-                logger.warning(f"[{req_id}] ⚠️ Post-send exception (dashboard already live, ignoring): {e}")
+                logger.warning(f"[{req_id}] ⚠️ Post-send exception (dashboard already live, ignoring): {type(e).__name__}: {e}")
                 return
 
             logger.error(f"[{req_id}] ❌ Failed to fetch metadata: {e}", exc_info=True)
-            # 🟢 S-GRADE: Dispatch to Admin Sentinel
-            await self.bot.dispatch_error(e, interaction=interaction)
+            
+            # ─── Don't sentinel-report rate limit errors — they're transient ────────
+            is_rate_limit = isinstance(e, discord.HTTPException) and e.status == 429
+            if not is_rate_limit:
+                # 🟢 S-GRADE: Dispatch to Admin Sentinel (Only for real fatal errors)
+                await self.bot.dispatch_error(e, interaction=interaction)
+            # ────────────────────────────────────────────────────────────────────────
             
             err_type = type(e).__name__
             err_msg = str(e).splitlines()[0] if str(e) else "Unknown Error"
@@ -1798,6 +1810,8 @@ class DashboardCog(commands.Cog):
             # 🟢 ALWAYS show the real error, not just a generic message
             if err_type in ["ScraperError", "MechaException"]:
                 display_content = f"### ❌ Extraction Failed\n> {err_msg}"
+            elif is_rate_limit:
+                display_content = "### ⏳ Rate Limited\n> Discord is busy. Please try again in a moment."
             else:
                 display_content = (
                     f"### ❌ Unexpected Error\n"
