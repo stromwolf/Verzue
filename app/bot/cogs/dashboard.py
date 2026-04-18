@@ -1449,7 +1449,7 @@ class DashboardCog(commands.Cog):
         if expected_domain and expected_domain not in url.lower():
             # Use followup since we deferred. MUST USE V2 structure for V2-deferred messages.
             embed_payload = {
-                "flags": 32832, # Ephemeral + V2
+                "flags": 32768, # V2 (Removing 64/Ephemeral to test stability)
                 "components": [{
                     "type": 17,
                     "components": [
@@ -1463,7 +1463,7 @@ class DashboardCog(commands.Cog):
                                 {
                                     "type": 2, "style": 2, "label": "Back to Dashboard",
                                     "custom_id": "v2Dash_Home"
-                                }
+                               }
                             ]
                         }
                     ]
@@ -1471,7 +1471,7 @@ class DashboardCog(commands.Cog):
             }
             logger.warning(f"[Dashboard] ⛔ Domain Mismatch: Expected {expected_domain} for platform {platform}, got {url}")
             await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'), json=embed_payload)
-            return 
+            return
 
         if action == "subscribe":
             # 🟢 INSTANT CHECK: Extract series_id from URL and check local records
@@ -1610,8 +1610,8 @@ class DashboardCog(commands.Cog):
                     }
                 ]
 
-                trigger_payload = {
-                    "flags": 32832,
+            trigger_payload = {
+                    "flags": 32768,
                     "components": [{
                         "type": 17,
                         "components": trigger_components
@@ -1624,7 +1624,7 @@ class DashboardCog(commands.Cog):
             except Exception as e:
                 logger.error(f"Failed to analyze for subscription: {e}", exc_info=True)
                 error_p = {
-                    "flags": 32832, 
+                    "flags": 32768, 
                     "components": [{
                         "type": 17, 
                         "components": [
@@ -1645,7 +1645,7 @@ class DashboardCog(commands.Cog):
             return
 
         analyzing_payload = {
-            "flags": 32832,
+            "flags": 32768,
             "components": [{
                 "type": 17,
                 "components": [{
@@ -1695,12 +1695,18 @@ class DashboardCog(commands.Cog):
             # Diagnostic Log before unpack
             logger.debug(f"[{req_id}] get_series_info returned {len(data)} values: {[type(v).__name__ for v in data]}")
             logger.info(f"[{req_id}] ✅ Handoff: Metadata retrieved successfully.")
-            title, total_chapters, chapter_list, image_url, series_id, release_day, release_time, status_label, genre_label = data
-            
+            try:
+                title, total_chapters, chapter_list, image_url, series_id, \
+                    release_day, release_time, status_label, genre_label = data
+                logger.info(f"[{req_id}] ✅ Unpack OK: title='{title}', chapters={len(chapter_list)}")
+            except Exception as e:
+                logger.error(f"[{req_id}] ❌ UNPACK FAILED ({len(data)} values): {e}", exc_info=True)
+                raise
+                
             # 🟢 NOVEL REJECTION (User Request - Mar 27)
             if status_label == "Novel":
                 error_payload = {
-                    "flags": 32832,
+                    "flags": 32768,
                     "components": [{
                         "type": 17,
                         "components": [{
@@ -1712,7 +1718,6 @@ class DashboardCog(commands.Cog):
                 await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'), json=error_payload)
                 return
 
-            
             # 🟢 TITLE OVERRIDE: Check if the group has a custom English title for this series
             guild_id = interaction.guild.id if interaction.guild else 0
             channel_id_origin = interaction.channel.id
@@ -1726,29 +1731,40 @@ class DashboardCog(commands.Cog):
                     logger.info(f"[{req_id}] 🏷️ Title Override: '{title}' → '{custom_title}' (Group: {group_name})")
                     title = custom_title
             
-            ctx_data = {
-                'url': url, 
-                'title': title, 
-                'original_title': original_title,
-                'chapters': chapter_list, 
-                'total_chapters': total_chapters, 
-                'image_url': image_url, 
-                'series_id': series_id, 
-                'status_label': status_label,
-                'genre_label': genre_label,
-                'req_id': req_id, 
-                'user': interaction.user
-            }
-            service_type = platform.lower().replace(" ", "").replace(".jp", "").replace("comic", "")
+            try:
+                ctx_data = {
+                    'url': url, 
+                    'title': title, 
+                    'original_title': original_title,
+                    'chapters': chapter_list, 
+                    'total_chapters': total_chapters, 
+                    'image_url': image_url, 
+                    'series_id': series_id, 
+                    'status_label': status_label,
+                    'genre_label': genre_label,
+                    'req_id': req_id, 
+                    'user': interaction.user
+                }
+                service_type = platform.lower().replace(" ", "").replace(".jp", "").replace("comic", "")
+                
+                view = UniversalDashboard(self.bot, ctx_data, service_type)
+                view.interaction = interaction
+                logger.info(f"[{req_id}] ✅ Dashboard view constructed OK")
+            except Exception as e:
+                logger.error(f"[{req_id}] ❌ VIEW CONSTRUCTION FAILED: {e}", exc_info=True)
+                raise
             
-            view = UniversalDashboard(self.bot, ctx_data, service_type)
-            view.interaction = interaction
-            
-            # 🟢 NO "content": "" here!
-            payload_data = {"flags": 32832, "components": view.build_v2_payload()}
-            
-            route = discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original')
-            await self.bot.http.request(route, json=payload_data)
+            try:
+                # 🟢 NO "content": "" here!
+                payload_data = {"flags": 32768, "components": view.build_v2_payload()}
+                logger.info(f"[{req_id}] ✅ Payload built OK, sending PATCH...")
+                
+                route = discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original')
+                await self.bot.http.request(route, json=payload_data)
+                logger.info(f"[{req_id}] ✅ Dashboard sent successfully")
+            except Exception as e:
+                logger.error(f"[{req_id}] ❌ PATCH FAILED: {e}", exc_info=True)
+                raise
             
             if service_type == "mecha":
                 browser = getattr(self.bot.task_queue, "browser_service", None)
@@ -1773,9 +1789,8 @@ class DashboardCog(commands.Cog):
                     f"-# Come <@1216284053049704600>. New Error"
                 )
 
-            # Match V2 format for errors so Discord doesn't crash on the PATCH
             error_payload = {
-                "flags": 32832,
+                "flags": 32768,
                 "components": [{
                     "type": 17,
                     "components": [
