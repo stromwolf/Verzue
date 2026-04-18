@@ -88,7 +88,12 @@ class UniversalDashboard:
         if self.service_type in ["mecha", "jumptoon"] and self.total_chapters > len(self.all_chapters):
             self._bg_scanning = True
             logger.info(f"[{self.req_id}] 📡 Initial Load: {len(self.all_chapters)}/{self.total_chapters} chapters. Starting Background Scan.")
-            self._full_scan_task = asyncio.create_task(self._perform_full_scan())
+            
+            async def _delayed_scan():
+                await asyncio.sleep(1.5)  # Let the PATCH response return and message_id get stored
+                await self._perform_full_scan()
+
+            self._full_scan_task = asyncio.create_task(_delayed_scan())
 
     async def _auto_timeout_loop(self):
         """Background loop to clear memory if abandoned for >30 minutes."""
@@ -612,6 +617,7 @@ class UniversalDashboard:
         For Jumptoon: single gather-all call (provider handles parallelism internally).
         For Mecha: sequential incremental scan (preserved from original behavior).
         """
+        _did_work = False
         try:
             logger.info(f"[{self.req_id}] 📡 Starting background scan for {self.service_type}...")
             scraper = self.bot.task_queue.provider_manager.get_provider_for_url(self.url)
@@ -641,6 +647,7 @@ class UniversalDashboard:
                 )
 
                 if new_chaps:
+                    _did_work = True
                     self.all_chapters.extend(new_chaps)
                     self.all_chapters.sort(key=self._jumptoon_sort_key)
 
@@ -668,6 +675,7 @@ class UniversalDashboard:
                 )
 
                 if new_chaps:
+                    _did_work = True
                     self.all_chapters.extend(new_chaps)
 
                     # Generic numeric sort (works for Mecha; Jumptoon uses its own above)
@@ -689,6 +697,7 @@ class UniversalDashboard:
                         self._latest_ui_update = now
 
             # Final update once fully complete
+            _did_work = True
             logger.info(f"[{self.req_id}] ✅ Background scan complete. "
                         f"Total mapped: {len(self.all_chapters)}")
             self.trigger_refresh()
@@ -696,10 +705,12 @@ class UniversalDashboard:
 
         except Exception as e:
             logger.error(f"[{self.req_id}] ❌ Background full scan failed: {e}")
+            _did_work = False
         finally:
             self._bg_scanning = False
-            self.trigger_refresh()
-            self._latest_ui_update = time.time()
+            if _did_work:
+                self.trigger_refresh()
+                self._latest_ui_update = time.time()
 
     @staticmethod
     def _jumptoon_sort_key(ch):
