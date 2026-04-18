@@ -90,7 +90,16 @@ class UniversalDashboard:
             logger.info(f"[{self.req_id}] 📡 Initial Load: {len(self.all_chapters)}/{self.total_chapters} chapters. Starting Background Scan.")
             
             async def _delayed_scan():
-                await asyncio.sleep(1.5)  # Let the PATCH response return and message_id get stored
+                # Wait until message_id is set (max 5s) before triggering any refresh
+                for _ in range(50):  # 50 × 0.1s = 5s max wait
+                    if self.message_id is not None:
+                        break
+                    await asyncio.sleep(0.1)
+                
+                if self.message_id is None:
+                    logger.warning(f"[{self.req_id}] Background scan aborted: message_id never set.")
+                    return
+                    
                 await self._perform_full_scan()
 
             self._full_scan_task = asyncio.create_task(_delayed_scan())

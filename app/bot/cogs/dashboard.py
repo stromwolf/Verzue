@@ -1695,6 +1695,8 @@ class DashboardCog(commands.Cog):
             # Diagnostic Log before unpack
             logger.debug(f"[{req_id}] get_series_info returned {len(data)} values: {[type(v).__name__ for v in data]}")
             logger.info(f"[{req_id}] ✅ Handoff: Metadata retrieved successfully.")
+            _dashboard_sent = False
+            
             try:
                 title, total_chapters, chapter_list, image_url, series_id, \
                     release_day, release_time, status_label, genre_label = data
@@ -1762,6 +1764,7 @@ class DashboardCog(commands.Cog):
                 route = discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original')
                 response = await self.bot.http.request(route, json=payload_data)
                 logger.info(f"[{req_id}] ✅ Dashboard sent successfully")
+                _dashboard_sent = True
                 
                 # ─── Store the message ID for background updates ──────────────────
                 try:
@@ -1781,6 +1784,10 @@ class DashboardCog(commands.Cog):
                     asyncio.create_task(browser.start())
                 
         except Exception as e:
+            if _dashboard_sent:
+                logger.warning(f"[{req_id}] ⚠️ Post-send exception (dashboard already live, ignoring): {e}")
+                return
+
             logger.error(f"[{req_id}] ❌ Failed to fetch metadata: {e}", exc_info=True)
             # 🟢 S-GRADE: Dispatch to Admin Sentinel
             await self.bot.dispatch_error(e, interaction=interaction)
