@@ -229,13 +229,14 @@ class MechaBot(commands.Bot):
             self.logger.error(f"Failed to notify waiter: {e}")
 
     # --- S-GRADE: GLOBAL CRASH SENTINEL ---
-    async def dispatch_error(self, error: Exception, ctx: commands.Context = None, interaction: discord.Interaction = None, event: str = None, code: str = None):
-        """Standardized crash reporter that dispatches reports to the admin legacy channel."""
+    async def dispatch_error(self, error: Exception, ctx: commands.Context = None, 
+                              interaction: discord.Interaction = None, 
+                              event: str = None, code: str = None):
+        """Standardized crash reporter with full diagnostic context."""
         import traceback
         self.logger.error(f"Sentinel Dispatch [{event or 'Unknown'}]: {error}", exc_info=True)
 
         try:
-            # 1. Resolve Admin Channel (Persistent)
             admin_channel = self.get_channel(Settings.ADMIN_LOG_CHANNEL_ID)
             if not admin_channel:
                 try:
@@ -244,25 +245,64 @@ class MechaBot(commands.Bot):
                     self.logger.error("Sentinel failed to fetch admin channel!")
                     return
 
-            # 🟢 S-GRADE: Extract Error Code
-            error_code = code or getattr(error, "code", "SY_002") # Default to System Logic Crash if no code
-            
-            # 2. Build Report Embed
-            title = "💥 Command Crash Detected" if (ctx or interaction) else "💀 Critical System Event Error"
-            if event: title = f"💀 System Error: {event}"
-            
-            color = 0xc0392b if (ctx or interaction) else 0x000000
-            
+            # ─── Classify the error ────────────────────────────────────────────
+            error_type = type(error).__name__
+            error_code = code or getattr(error, "code", None)
+            error_msg = str(error).splitlines()[0] if str(error) else "No message"
+            full_tb = traceback.format_exc()
+            # Trim traceback to last 1800 chars to fit Discord embed
+            tb_snippet = full_tb[-1800:] if len(full_tb) > 1800 else full_tb
+            if tb_snippet == "NoneType: None\n":
+                tb_snippet = f"{error_type}: {error_msg}"
+
+            # ─── Resolve source context ────────────────────────────────────────
+            source_lines = []
+            if interaction:
+                source_lines.append(f"**User:** {interaction.user} (`{interaction.user.id}`)")
+                source_lines.append(f"**Channel:** <#{interaction.channel_id}>")
+                if hasattr(interaction, 'data') and interaction.data:
+                    cmd = interaction.data.get('name') or interaction.data.get('custom_id', '')
+                    if cmd:
+                        source_lines.append(f"**Command/Action:** `{cmd}`")
+            if ctx:
+                source_lines.append(f"**User:** {ctx.author} (`{ctx.author.id}`)")
+                source_lines.append(f"**Channel:** <#{ctx.channel.id}>")
+                source_lines.append(f"**Message:** `{ctx.message.content[:100]}`")
+            if event:
+                source_lines.append(f"**Event:** `{event}`")
+            if error_code:
+                source_lines.append(f"**Error Code:** `{error_code}`")
+
+            # ─── Build embed ───────────────────────────────────────────────────
+            # Color: red for user-triggered, black for system
+            color = 0xe74c3c if (ctx or interaction) else 0x2c2f33
+
             embed = discord.Embed(
-                title=title,
-                description=f"Come <@1216284053049704600>. New Error",
+                title=f"💥 `{error_type}` — {error_msg[:100]}",
                 color=color,
                 timestamp=discord.utils.utcnow()
             )
-            
-            embed.set_footer(text="Iron Sentinel System Active")
-            
-            await admin_channel.send(content="Come <@1216284053049704600>. New Error", embed=embed)
+
+            if source_lines:
+                embed.add_field(
+                    name="📍 Source",
+                    value="\n".join(source_lines),
+                    inline=False
+                )
+
+            embed.add_field(
+                name="🔍 Traceback",
+                value=f"```python\n{tb_snippet}\n```",
+                inline=False
+            )
+
+            embed.set_footer(text=f"Iron Sentinel  •  Bot: {self.user}  •  Identity: {self.identity}")
+
+            await admin_channel.send(
+                content=f"<@1216284053049704600> 🚨 New error in **{self.identity}** bot",
+                embed=embed
+            )
+
         except Exception as dispatch_e:
             self.logger.error(f"Sentinel failed to dispatch report: {dispatch_e}")
 
