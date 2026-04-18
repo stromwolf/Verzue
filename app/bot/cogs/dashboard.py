@@ -1669,6 +1669,7 @@ class DashboardCog(commands.Cog):
             logger.error(f"[Dashboard] Analyzing PATCH failed: {type(e).__name__}: {e}", exc_info=True)
             return
 
+        _dashboard_sent = False
         try:
             from app.core.logger import req_id_context
             from app.bot.common.view import UniversalDashboard
@@ -1702,7 +1703,6 @@ class DashboardCog(commands.Cog):
             # Diagnostic Log before unpack
             logger.debug(f"[{req_id}] get_series_info returned {len(data)} values: {[type(v).__name__ for v in data]}")
             logger.info(f"[{req_id}] ✅ Handoff: Metadata retrieved successfully.")
-            _dashboard_sent = False
             
             try:
                 title, total_chapters, chapter_list, image_url, series_id, \

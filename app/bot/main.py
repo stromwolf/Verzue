@@ -250,8 +250,8 @@ class MechaBot(commands.Bot):
             error_code = code or getattr(error, "code", None)
             error_msg = str(error).splitlines()[0] if str(error) else "No message"
             full_tb = traceback.format_exc()
-            # Trim traceback to last 1800 chars to fit Discord embed
-            tb_snippet = full_tb[-1800:] if len(full_tb) > 1800 else full_tb
+            # Trim traceback to last 900 chars to fit Discord embed
+            tb_snippet = full_tb[-900:] if len(full_tb) > 900 else full_tb
             if tb_snippet == "NoneType: None\n":
                 tb_snippet = f"{error_type}: {error_msg}"
 
