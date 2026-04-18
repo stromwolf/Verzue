@@ -1644,6 +1644,7 @@ class DashboardCog(commands.Cog):
                 await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original'), json=error_p)
             return
 
+        _dashboard_sent = False
         analyzing_payload = {
             "flags": 32768,
             "components": [{
@@ -1669,7 +1670,7 @@ class DashboardCog(commands.Cog):
             logger.error(f"[Dashboard] Analyzing PATCH failed: {type(e).__name__}: {e}", exc_info=True)
             return
 
-        _dashboard_sent = False
+
         try:
             from app.core.logger import req_id_context
             from app.bot.common.view import UniversalDashboard

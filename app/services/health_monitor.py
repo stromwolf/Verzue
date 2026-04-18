@@ -69,7 +69,7 @@ class HealthMonitor:
             ssr = (success / total_req * 100) if total_req > 10 else 100
             
             if status == "HEALTHY":
-                if ssr < 30: # Danger Zone
+                if ssr < 10: # Only mark AT_RISK on near-total failure
                     logger.warning(f"⚠️ [Platform:{platform}] High Failure Rate ({ssr:.1f}%). Marking as AT_RISK.")
                     session["status"] = "AT_RISK"
                     await self.redis.set_session(platform, aid, session)

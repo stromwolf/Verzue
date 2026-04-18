@@ -50,10 +50,15 @@ class SessionService:
         # S-Grade: Batch retrieval to avoid O(N) database latency
         sessions = await self.redis.get_sessions_batch(platform, account_ids)
         healthy_sessions = [s for s in sessions if s and s.get("status") == "HEALTHY"]
-
         if not healthy_sessions:
-            logger.error(f"❌ No HEALTHY sessions available for {platform}!")
-            return None
+            # Fallback: use AT_RISK sessions rather than failing completely
+            at_risk = [s for s in sessions if s and s.get("status") == "AT_RISK"]
+            if at_risk:
+                logger.warning(f"⚠️ No HEALTHY sessions for {platform}, falling back to {len(at_risk)} AT_RISK session(s).")
+                healthy_sessions = at_risk
+            else:
+                logger.error(f"❌ No HEALTHY or AT_RISK sessions available for {platform}!")
+                return None
 
         # Random rotation
         chosen = random.choice(healthy_sessions)
