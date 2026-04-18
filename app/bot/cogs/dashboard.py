@@ -1692,6 +1692,8 @@ class DashboardCog(commands.Cog):
             logger.debug(f"[{req_id}] Calling scraper.get_series_info(url={url})")
             data = await scraper.get_series_info(url)
                 
+            # Diagnostic Log before unpack
+            logger.debug(f"[{req_id}] get_series_info returned {len(data)} values: {[type(v).__name__ for v in data]}")
             logger.info(f"[{req_id}] ✅ Handoff: Metadata retrieved successfully.")
             title, total_chapters, chapter_list, image_url, series_id, release_day, release_time, status_label, genre_label = data
             
@@ -1732,6 +1734,8 @@ class DashboardCog(commands.Cog):
                 'total_chapters': total_chapters, 
                 'image_url': image_url, 
                 'series_id': series_id, 
+                'status_label': status_label,
+                'genre_label': genre_label,
                 'req_id': req_id, 
                 'user': interaction.user
             }
@@ -1759,10 +1763,15 @@ class DashboardCog(commands.Cog):
             err_type = type(e).__name__
             err_msg = str(e).splitlines()[0] if str(e) else "Unknown Error"
             
+            # 🟢 ALWAYS show the real error, not just a generic message
             if err_type in ["ScraperError", "MechaException"]:
                 display_content = f"### ❌ Extraction Failed\n> {err_msg}"
             else:
-                display_content = f"### ❌ Unexpected Error\n> Come <@1216284053049704600>. New Error"
+                display_content = (
+                    f"### ❌ Unexpected Error\n"
+                    f"> `{err_type}: {err_msg}`\n"
+                    f"-# Come <@1216284053049704600>. New Error"
+                )
 
             # Match V2 format for errors so Discord doesn't crash on the PATCH
             error_payload = {
