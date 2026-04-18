@@ -1610,7 +1610,7 @@ class DashboardCog(commands.Cog):
                     }
                 ]
 
-            trigger_payload = {
+                trigger_payload = {
                     "flags": 32768,
                     "components": [{
                         "type": 17,
