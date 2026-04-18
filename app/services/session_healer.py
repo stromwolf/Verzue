@@ -97,6 +97,36 @@ class SessionHealer:
                 
                 if not success:
                     logger.warning(f"🤷 Automated login failed for {platform}. No further healing strategy.")
+
+            elif platform == "jumptoon":
+                # ─── Jumptoon: No auto-login, but validate + ritual ───────────────
+                # If ritual alone doesn't fix it, mark as EXPIRED so the dashboard
+                # shows a clear "re-add cookies" error instead of silent 0 chapters.
+                logger.info(f"🎭 [Jumptoon] No auto-login available. Running ritual to test liveness...")
+                provider = self.provider_manager.get_provider("jumptoon")
+                if provider:
+                    try:
+                        session_obj = await self.redis.get_session(platform, account_id)
+                        if session_obj:
+                            from curl_cffi.requests import AsyncSession
+                            async with AsyncSession(impersonate="chrome142") as test_session:
+                                for c in session_obj.get("cookies", []):
+                                    test_session.cookies.set(
+                                        c['name'], c['value'],
+                                        domain=c.get('domain', 'jumptoon.com')
+                                    )
+                                is_valid = await provider.is_session_valid(test_session)
+
+                            if not is_valid:
+                                logger.error(
+                                    f"❌ [Jumptoon] Session {account_id} is DEAD after ritual. "
+                                    f"Marking EXPIRED — re-add cookies via /add-cookies."
+                                )
+                                session_obj["status"] = "EXPIRED"
+                                await self.redis.set_session(platform, account_id, session_obj)
+                                return  # skip ritual — it won't help
+                    except Exception as e:
+                        logger.warning(f"[Jumptoon] Liveness check failed: {e}")
             else:
                 logger.warning(f"🤷 No healing strategy for platform: {platform}")
             

@@ -370,8 +370,6 @@ class JumptoonProvider(BaseProvider):
                 image_url = image_url.split("?")[0]
             image_url += "?auto=avif-webp&width=3840"
         
-        logger.info(f"[Jumptoon] Metadata Parsed: Title='{title}', Total='{total_chapters}', Status='{status_label}'")
-
         # Status + release day
         status_label = None
         if "読切" in html_content:
@@ -385,6 +383,12 @@ class JumptoonProvider(BaseProvider):
             release_day = day_match.group(1).capitalize()
 
         release_time = JUMPTOON_RELEASE_TIME_UTC if release_day else None
+
+        # Log AFTER everything is resolved
+        logger.info(
+            f"[Jumptoon] Metadata Parsed: Title='{title}', "
+            f"Total='{total_chapters}', Status='{status_label}'"
+        )
 
         # ─── Step 2: Fetch chapters from /episodes/?page=X ───────────────────────
         pg_size = 30
@@ -427,18 +431,30 @@ class JumptoonProvider(BaseProvider):
                     release_day, None, status_label, None)
 
         # ── DEFAULT MODE: page 1 + last page in PARALLEL from /episodes/ ─────────
-        async def fetch_episodes_page(page_num: int):
+        async def fetch_episodes_page(page_num: int, retry_after_ritual: bool = True):
             try:
-                r = await self._jumptoon_gated_get(
-                    auth_session, f"{episodes_base}?page={page_num}", timeout=30
-                )
-                if r.status_code in (301, 302, 303, 307, 308):
-                    logger.warning(f"[Jumptoon] episodes p{page_num} redirected — auth may be stale")
-                    return page_num, None
-                if r.status_code == 200:
-                    return page_num, r.text
-                logger.warning(f"[Jumptoon] episodes p{page_num} → HTTP {r.status_code}")
+                url_p = f"{episodes_base}?page={page_num}"
+                p_res = await self._jumptoon_gated_get(auth_session, url_p, timeout=30)
+                if p_res.status_code == 200:
+                    return page_num, p_res.text
                 return page_num, None
+
+            except ScraperError as e:
+                # RL_003 = redirect loop = session expired mid-flight
+                # Retry ONCE by running the ritual inline, then re-acquiring a fresh session
+                if getattr(e, 'code', None) == 'RL_003' and retry_after_ritual:
+                    logger.warning(f"[Jumptoon] RL_003 on p{page_num} — running inline ritual & retrying...")
+                    try:
+                        await self.run_ritual(auth_session)
+                        await asyncio.sleep(2.0)  # brief pause after warm-up
+                    except Exception as ritual_err:
+                        logger.warning(f"[Jumptoon] Inline ritual failed: {ritual_err}")
+                    # retry once, no further recursion
+                    return await fetch_episodes_page(page_num, retry_after_ritual=False)
+
+                logger.warning(f"[Jumptoon] episodes p{page_num} fetch failed: {e}")
+                return page_num, None
+
             except Exception as e:
                 logger.warning(f"[Jumptoon] episodes p{page_num} fetch failed: {e}")
                 return page_num, None
@@ -474,6 +490,20 @@ class JumptoonProvider(BaseProvider):
 
         logger.info(f"[Jumptoon] ✅ Foreground done: {len(all_chapters)} chapters "
                     f"(p1+last of {total_pages}), background will fill the rest")
+
+        if not all_chapters and total_chapters > 0:
+            logger.error(
+                f"[Jumptoon] ⚠️ Metadata succeeded but 0 chapters fetched "
+                f"(expected {total_chapters}). Session likely expired."
+            )
+            # Don't raise — let the dashboard show with a warning,
+            # background scan will attempt recovery.
+            # But do flag the session for healing.
+            if self.active_account_id:
+                await self.session_service.report_session_failure(
+                    "jumptoon", self.active_account_id,
+                    "0 chapters fetched despite valid metadata — session likely expired"
+                )
 
         return (title, total_chapters, all_chapters, image_url, series_id,
                 release_day, release_time, status_label, None)
