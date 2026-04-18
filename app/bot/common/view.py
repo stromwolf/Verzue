@@ -61,7 +61,7 @@ class UniversalDashboard:
             self.bot.task_queue.browser_service.inc_session()
 
         self.page, self.per_page = 1, 10
-        self.max_page = math.ceil(self.total_chapters / self.per_page) if self.total_chapters else 1
+        self.max_page = max(1, math.ceil(self.total_chapters / self.per_page)) if self.total_chapters else 1
         self.selected_indices, self.active_tasks = set(), []
         
         self.phases = {"analyze": "waiting", "purchase": "waiting", "download": "waiting"}
@@ -507,14 +507,20 @@ class UniversalDashboard:
             else:
                 inner_components.append({"type": 10, "content": header_text})
 
-            inner_components.append({"type": 14, "spacing": 1})
+            # Safety: guarantee desc is non-empty and within Discord's 4000-char limit
+            if not desc.strip() or desc.strip() == "### Chapter List":
+                desc = "### Chapter List\n-# *No chapters loaded yet. Background scan in progress...*"
+            if len(desc) > 3900:
+                desc = desc[:3900] + "\n-# *...truncated*"
+
+            inner_components.append({"type": 14, "divider": True, "spacing": 1})
             inner_components.append({"type": 10, "content": desc})
             inner_components.append({"type": 10, "content": selection_text})
-            inner_components.append({"type": 14, "spacing": 1})
+            inner_components.append({"type": 14, "divider": True, "spacing": 1})
             
             options = []
             s_page = max(1, self.page - 12)
-            e_page = min(self.max_page, s_page + 24)
+            e_page = min(max(self.max_page, 1), s_page + 24)
             for p in range(s_page, e_page + 1):
                 opt = {"label": f"Page {p}", "value": str(p), "emoji": {"name": "📄"}}
                 if p == self.page:
@@ -523,12 +529,14 @@ class UniversalDashboard:
                     opt["default"] = True
                 options.append(opt)
             
-            inner_components.append({
-                "type": 1, 
-                "components": [{
-                    "type": 3, "custom_id": f"page_select_{self.req_id}", "options": options
-                }]
-            })
+            # Safety: never emit an empty-options select, and only show if > 1 page
+            if len(options) > 1:
+                inner_components.append({
+                    "type": 1, 
+                    "components": [{
+                        "type": 3, "custom_id": f"page_select_{self.req_id}", "options": options
+                    }]
+                })
 
             action_buttons = [{"type": 2, "style": 1, "label": "Select Chapters", "custom_id": f"btn_open_menu_{self.req_id}"}]
             if len(self.selected_indices) > 0:
