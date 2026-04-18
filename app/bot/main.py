@@ -56,11 +56,15 @@ class MechaBot(commands.Bot):
                     self.logger.error(f"❌ Failed to load {ext}: {e}")
 
         # --- EVENT SUBSCRIPTIONS ---
-        EventBus.subscribe("upload_zip_to_discord", self.handle_zip_upload)
-        EventBus.subscribe("send_direct_link", self.handle_direct_link)
-        EventBus.subscribe("task_failed", self.handle_task_failure)
-        EventBus.subscribe("subscription_added", self.handle_subscription_added)
-        EventBus.subscribe("notify_waiter", self.handle_waiter_notification)
+        if self.identity == "Main":
+            EventBus.subscribe("upload_zip_to_discord", self.handle_zip_upload)
+            EventBus.subscribe("send_direct_link", self.handle_direct_link)
+            EventBus.subscribe("task_failed", self.handle_task_failure)
+            EventBus.subscribe("subscription_added", self.handle_subscription_added)
+            EventBus.subscribe("notify_waiter", self.handle_waiter_notification)
+            # Redis connectivity alerts
+            EventBus.subscribe("redis_lost", self.handle_redis_lost)
+            EventBus.subscribe("redis_connected", self.handle_redis_connected)
 
         # 🟢 FIX: Initialize Poller EARLY — before worker/boot calls that might fail
         from app.tasks.poller import AutoDownloadPoller
