@@ -62,14 +62,17 @@ class HelperSlashCog(commands.Cog):
         servers="Optional: Comma-separated Server IDs to link (e.g. 123, 456)"
     )
     async def add_group(self, interaction: discord.Interaction, name: str, website: str, emoji: str | None = None, servers: str | None = None):
+        if not await self.interaction_check(interaction):
+            return
+
         if not name.strip():
-            return await interaction.response.send_message("❌ Cannot create an empty group name.", ephemeral=True)
+            return await interaction.followup.send("❌ Cannot create an empty group name.", ephemeral=True)
             
         clean_name = name.strip()
         clean_website = website.strip()
         
         if clean_name in self.bot.app_state.group_profiles:
-            return await interaction.response.send_message(f"⚠️ Group **{clean_name}** already exists in the registry.", ephemeral=True)
+            return await interaction.followup.send(f"⚠️ Group **{clean_name}** already exists in the registry.", ephemeral=True)
             
         self.bot.app_state.group_profiles.add(clean_name)
         self.bot.app_state.save_group_registry()
@@ -107,7 +110,7 @@ class HelperSlashCog(commands.Cog):
                 self.bot.app_state.save_group_registry()
                 linked_str = f"\n🔗 **Linked Servers:** {', '.join(f'`{s}`' for s in success_ids)}"
 
-        await interaction.response.send_message(f"✅ **Group Profile Created:** `{clean_name}`\n🌐 **Website:** <{clean_website}>{linked_str}\nYou can now use `/register-server` to assign more servers.")
+        await interaction.followup.send(f"✅ **Group Profile Created:** `{clean_name}`\n🌐 **Website:** <{clean_website}>{linked_str}\nYou can now use `/register-server` to assign more servers.")
 
     # --- AUTOCOMPLETE HELPER ---
     async def group_name_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
@@ -133,10 +136,10 @@ class HelperSlashCog(commands.Cog):
             return
 
         if name not in self.bot.app_state.group_profiles:
-            return await interaction.response.send_message(f"❌ **Unknown Group:** `{name}` is not a registered group profile.", ephemeral=True)
+            return await interaction.followup.send(f"❌ **Unknown Group:** `{name}` is not a registered group profile.", ephemeral=True)
 
         if not website and not note and not emoji and not new_name:
-            return await interaction.response.send_message("⚠️ No changes provided. Please specify a new website, note, emoji, or new name.", ephemeral=True)
+            return await interaction.followup.send("⚠️ No changes provided. Please specify a new website, note, emoji, or new name.", ephemeral=True)
 
         try:
             from app.services.group_manager import save_group
@@ -165,18 +168,12 @@ class HelperSlashCog(commands.Cog):
                     await self.initiate_group_rename(interaction, name, clean_new)
                     msg += f"\n📩 **Rename Request Sent:** rename `{name}` → `{clean_new}` (Awaiting owner approval)"
 
-            if interaction.response.is_done():
-                await interaction.followup.send(msg)
-            else:
-                await interaction.response.send_message(msg)
+            await interaction.followup.send(msg)
             
             logger.info(f"[GroupManager] Updated profile via Helper UI: {name}")
         except Exception:
             logger.error(f"Failed to edit group profile")
-            if interaction.response.is_done():
-                await interaction.followup.send(f"Come <@1216284053049704600>. New Error", ephemeral=True)
-            else:
-                await interaction.response.send_message(f"Come <@1216284053049704600>. New Error", ephemeral=True)
+            await interaction.followup.send(f"Come <@1216284053049704600>. New Error", ephemeral=True)
 
     async def initiate_group_rename(self, interaction: discord.Interaction, old_name: str, new_name: str):
         """Logic to send DM to owner for rename confirmation."""
@@ -216,7 +213,7 @@ class HelperSlashCog(commands.Cog):
             return
 
         if name not in self.bot.app_state.group_profiles:
-            return await interaction.response.send_message(f"❌ **Unknown Group:** `{name}` is not a registered group profile.", ephemeral=True)
+            return await interaction.followup.send(f"❌ **Unknown Group:** `{name}` is not a registered group profile.", ephemeral=True)
             
         ids = [s.strip() for s in server.split(",") if s.strip()]
         success_ids = []
@@ -225,16 +222,16 @@ class HelperSlashCog(commands.Cog):
         if channel:
             # Channel case: restricted to one server, usually one ID
             if len(ids) > 1:
-                return await interaction.response.send_message("❌ **Error.** Channel-level mapping only supports one Server ID at a time.", ephemeral=True)
+                return await interaction.followup.send("❌ **Error.** Channel-level mapping only supports one Server ID at a time.", ephemeral=True)
             
             try:
                 target_server_id = int(ids[0])
                 target_channel_id = int(channel.strip())
             except ValueError:
-                return await interaction.response.send_message("❌ **Invalid ID.** Please provide numeric IDs.", ephemeral=True)
+                return await interaction.followup.send("❌ **Invalid ID.** Please provide numeric IDs.", ephemeral=True)
 
             if target_server_id != 1419393318147719170:
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     "❌ **Restriction.** Channel-level mapping is only permitted for Server `1419393318147719170`.", 
                     ephemeral=True
                 )
@@ -252,7 +249,7 @@ class HelperSlashCog(commands.Cog):
                     continue
             
             if not success_ids:
-                return await interaction.response.send_message("❌ **Invalid Server ID(s).** Please provide numeric IDs.", ephemeral=True)
+                return await interaction.followup.send("❌ **Invalid Server ID(s).** Please provide numeric IDs.", ephemeral=True)
             
             target_display = f"Server(s) {', '.join(f'`{s}`' for s in success_ids)}"
             
@@ -263,7 +260,7 @@ class HelperSlashCog(commands.Cog):
             description=f"{target_display} now linked to **{name}**.\nThe `/dashboard` will now identify as *Dashboard of {name}* in that scope.",
             color=0x2ecc21
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
         logger.info(f"[HelperCogs] Registered {target_display} -> {name} via /register-server")
 
     # --- 2.5 GROUP LIST ---
@@ -273,7 +270,7 @@ class HelperSlashCog(commands.Cog):
             return
 
         if not self.bot.app_state.group_profiles:
-            return await interaction.response.send_message("ℹ️ No Group Profiles have been registered yet.", ephemeral=True)
+            return await interaction.followup.send("ℹ️ No Group Profiles have been registered yet.", ephemeral=True)
 
         embed = discord.Embed(
             title="📋 Registered Group Profiles",
@@ -301,20 +298,23 @@ class HelperSlashCog(commands.Cog):
                 inline=False
             )
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
     # --- 5. SUB LIST ---
     @app_commands.command(name="sub-list", description="[Admin] List all active subscriptions for a specific group")
     @app_commands.describe(group_name="The name of the group profile to list subscriptions for")
     @app_commands.autocomplete(group_name=group_name_autocomplete)
     async def sub_list(self, interaction: discord.Interaction, group_name: str):
+        if not await self.interaction_check(interaction):
+            return
+
         if group_name not in self.bot.app_state.group_profiles:
-            return await interaction.response.send_message(f"❌ **Unknown Group:** `{group_name}` is not a registered group profile.", ephemeral=True)
+            return await interaction.followup.send(f"❌ **Unknown Group:** `{group_name}` is not a registered group profile.", ephemeral=True)
 
         data = load_group(group_name)
         subs = data.get("subscriptions", [])
 
         if not subs:
-            return await interaction.response.send_message(f"ℹ️ No active subscriptions for **{group_name}**.")
+            return await interaction.followup.send(f"ℹ️ No active subscriptions for **{group_name}**.")
 
         desc = f"Active Subscriptions for **{group_name}**:\n\n"
         for sub in subs:
@@ -330,7 +330,7 @@ class HelperSlashCog(commands.Cog):
             description=desc,
             color=0x3498db
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 
 
@@ -346,7 +346,7 @@ class HelperSlashCog(commands.Cog):
             return
 
         if group not in self.bot.app_state.group_profiles:
-            return await interaction.response.send_message(f"❌ **Unknown Group:** `{group}` is not a registered group profile.", ephemeral=True)
+            return await interaction.followup.send(f"❌ **Unknown Group:** `{group}` is not a registered group profile.", ephemeral=True)
 
         clean_url = series.strip()
         if clean_url.startswith("<") and clean_url.endswith(">"):
@@ -356,10 +356,10 @@ class HelperSlashCog(commands.Cog):
         success = remove_subscription(group, clean_url)
 
         if success:
-            await interaction.response.send_message(f"✅ **Subscription Removed:** Series at <{clean_url}> has been removed from **{group}**.")
+            await interaction.followup.send(f"✅ **Subscription Removed:** Series at <{clean_url}> has been removed from **{group}**.")
             logger.info(f"[HelperCogs] Removed subscription for {group}: {clean_url}")
         else:
-            await interaction.response.send_message(f"⚠️ **Subscription Not Found:** Series at <{clean_url}> was not found in the subscription list for **{group}**.", ephemeral=True)
+            await interaction.followup.send(f"⚠️ **Subscription Not Found:** Series at <{clean_url}> was not found in the subscription list for **{group}**.", ephemeral=True)
 
 
     # --- 8. ADMIN MANAGEMENT ---
@@ -373,7 +373,7 @@ class HelperSlashCog(commands.Cog):
         self.bot.app_state.cdn_allowed_users.add(user.id)
         self.bot.app_state.save_cdn_users()
         
-        await interaction.response.send_message(f"✅ **Access Granted:** <@{user.id}> can now use helper bot admin commands.", ephemeral=False)
+        await interaction.followup.send(f"✅ **Access Granted:** <@{user.id}> can now use helper bot admin commands.", ephemeral=False)
 
     @app_commands.command(name="remove-admin", description="[Admin] Revoke a user's access to admin commands.")
     @app_commands.describe(user="The user to de-authorize")
@@ -384,9 +384,9 @@ class HelperSlashCog(commands.Cog):
         if user.id in self.bot.app_state.cdn_allowed_users:
             self.bot.app_state.cdn_allowed_users.remove(user.id)
             self.bot.app_state.save_cdn_users()
-            await interaction.response.send_message(f"🗑️ **Access Revoked:** <@{user.id}> can no longer use admin commands.", ephemeral=False)
+            await interaction.followup.send(f"🗑️ **Access Revoked:** <@{user.id}> can no longer use admin commands.", ephemeral=False)
         else:
-            await interaction.response.send_message(f"⚠️ User <@{user.id}> was not in the admin list.", ephemeral=True)
+            await interaction.followup.send(f"⚠️ User <@{user.id}> was not in the admin list.", ephemeral=True)
 
     @app_commands.command(name="admin-list", description="[Admin] List all users with admin command access.")
     async def admin_list(self, interaction: discord.Interaction):
@@ -394,7 +394,7 @@ class HelperSlashCog(commands.Cog):
             return
 
         if not self.bot.app_state.cdn_allowed_users:
-            return await interaction.response.send_message("ℹ️ No users are currently in the admin list.", ephemeral=True)
+            return await interaction.followup.send("ℹ️ No users are currently in the admin list.", ephemeral=True)
 
         desc = "## Authorized Admin Users\n"
         for user_id in self.bot.app_state.cdn_allowed_users:
@@ -405,7 +405,7 @@ class HelperSlashCog(commands.Cog):
             description=desc,
             color=0x3498db
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     # --- 7. CHANGE TITLE ---
 
@@ -422,7 +422,7 @@ class HelperSlashCog(commands.Cog):
 
         # Validate group exists
         if group_name not in self.bot.app_state.group_profiles:
-            return await interaction.response.send_message(f"❌ **Unknown Group:** `{group_name}` is not a registered group profile.", ephemeral=True)
+            return await interaction.followup.send(f"❌ **Unknown Group:** `{group_name}` is not a registered group profile.", ephemeral=True)
 
         # Validate URL against supported platforms
         supported_domains = ["mechacomic.jp", "jumptoon.com", "piccoma.com", "kakao.com", "kuaikanmanhua.com", "ac.qq.com"]
@@ -431,14 +431,14 @@ class HelperSlashCog(commands.Cog):
             clean_url = clean_url[1:-1]
 
         if not any(d in clean_url.lower() for d in supported_domains):
-            return await interaction.response.send_message(
+            return await interaction.followup.send(
                 f"❌ **Unsupported Platform.**\nThe URL must be from one of: {', '.join(f'`{d}`' for d in supported_domains)}",
                 ephemeral=True
             )
 
         clean_name = english_name.strip()
         if not clean_name:
-            return await interaction.response.send_message("❌ English name cannot be empty.", ephemeral=True)
+            return await interaction.followup.send("❌ English name cannot be empty.", ephemeral=True)
 
         from app.services.group_manager import set_title_override
         set_title_override(group_name, clean_url, clean_name)
@@ -457,7 +457,7 @@ class HelperSlashCog(commands.Cog):
             ),
             color=0x2ecc71
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="remove-group", description="[Admin] Completely remove a group profile (Requires Owner Confirmation)")
     @app_commands.describe(group_name="Select the group profile to delete")
@@ -475,10 +475,7 @@ class HelperSlashCog(commands.Cog):
         from app.services.group_manager import _group_filename
         if group_name not in self.bot.app_state.group_profiles or not _group_filename(group_name).exists():
             msg = f"❌ **Unknown Group:** `{group_name}` does not exist."
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True)
+            await interaction.followup.send(msg, ephemeral=True)
             return
 
         try:
@@ -497,24 +494,15 @@ class HelperSlashCog(commands.Cog):
             
             # Followup or message depending on interaction state
             msg = f"📩 Confirmation request for **{group_name}** sent to **{owner.name}**."
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True)
+            await interaction.followup.send(msg, ephemeral=True)
             
         except discord.Forbidden:
             msg = "❌ I cannot send DMs to the owner. Please ensure they have DMs enabled."
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True)
+            await interaction.followup.send(msg, ephemeral=True)
         except Exception as e:
             logger.error(f"Failed to initiate group removal: {e}")
             msg = f"❌ Failed to initiate removal: {e}"
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True)
+            await interaction.followup.send(msg, ephemeral=True)
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):

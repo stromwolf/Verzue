@@ -52,7 +52,10 @@ def _acquire_pid_lock(force: bool = False) -> None:
 async def main() -> None:
     logger = setup_logging()
     
-    logger.info("system.start", extra={"component": "entrypoint"})
+    import uuid
+    session_id = uuid.uuid4().hex[:6]
+    logger.info("system.start", extra={"component": "entrypoint", "session_id": session_id})
+    print(f"\n>>> Verzue Bot Starting | Session: {session_id} <<<\n")
     _acquire_pid_lock(force="--force" in sys.argv)
 
     # Google Drive (non-fatal — continues in degraded mode)
