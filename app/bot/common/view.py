@@ -40,6 +40,8 @@ class UniversalDashboard:
     _last_hash: int
     retry_active: bool
     existing_links: dict[str, Any]
+    message_id: Optional[int]
+    channel_id: Optional[int]
 
     def __init__(self, bot, ctx_data, service_type):
         self.bot = bot
@@ -50,6 +52,8 @@ class UniversalDashboard:
         self.image_url, self.req_id, self.series_id, self.user = ctx_data['image_url'], ctx_data['req_id'], ctx_data['series_id'], ctx_data['user']
         self.status_label = ctx_data.get('status_label')
         self.genre_label = ctx_data.get('genre_label')
+        self.message_id: Optional[int] = None
+        self.channel_id: Optional[int] = None
         self.service_type, self.color = service_type, COLORS.get(service_type, 0x2b2d31)
         
         
@@ -536,13 +540,13 @@ class UniversalDashboard:
         self.last_interaction_time = time.time()
         
         # 🟢 MANDATORY: For V2 Components (Flag 32768), the 'content' key MUST be omitted entirely.
-        # Even 'content': "" will trigger a 400 Bad Request error from Discord.
         payload_data = {
             "flags": 32768, 
             "components": self.build_v2_payload()
         }
         # Final safety: remove ANY top-level content field
         payload_data.pop("content", None)
+        
         try:
             if interaction:
                 if interaction.response.is_done():
@@ -551,7 +555,7 @@ class UniversalDashboard:
                     await self.bot.http.request(route, json=payload_data)
                 else:
                     # 🟢 INITIAL RESPONSE: Use UPDATE_MESSAGE (Type 7)
-                    payload = {"type": 7, "data": payload_data} # UPDATE_MESSAGE
+                    payload = {"type": 7, "data": payload_data} 
                     route = discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback')
                     try:
                         await self.bot.http.request(route, json=payload)
@@ -563,6 +567,17 @@ class UniversalDashboard:
                         else:
                             raise e
             else:
+                # ─── Background update — no live interaction token ────────────────
+                # 1. PRIMARY: Channel message PATCH (never expires)
+                if getattr(self, "message_id", None) and getattr(self, "channel_id", None):
+                    route = discord.http.Route(
+                        'PATCH', 
+                        f'/channels/{self.channel_id}/messages/{self.message_id}'
+                    )
+                    await self.bot.http.request(route, json=payload_data)
+                    return
+
+                # 2. FALLBACK: Webhook token (expires in 15 min)
                 if not self.interaction: return
                 try:
                     # Primary Route: Interaction Webhook (Fast, but expires in 15 mins)

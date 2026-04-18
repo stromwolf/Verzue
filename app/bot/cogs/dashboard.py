@@ -1760,8 +1760,17 @@ class DashboardCog(commands.Cog):
                 logger.info(f"[{req_id}] ✅ Payload built OK, sending PATCH...")
                 
                 route = discord.http.Route('PATCH', f'/webhooks/{interaction.application_id}/{interaction.token}/messages/@original')
-                await self.bot.http.request(route, json=payload_data)
+                response = await self.bot.http.request(route, json=payload_data)
                 logger.info(f"[{req_id}] ✅ Dashboard sent successfully")
+                
+                # ─── Store the message ID for background updates ──────────────────
+                try:
+                    if isinstance(response, dict) and response.get("id"):
+                        view.message_id = int(response["id"])
+                        view.channel_id = interaction.channel_id
+                        logger.info(f"[{req_id}] 📌 Message ID stored: {view.message_id}")
+                except Exception as e:
+                    logger.warning(f"[{req_id}] Could not store message ID: {e}")
             except Exception as e:
                 logger.error(f"[{req_id}] ❌ PATCH FAILED: {e}", exc_info=True)
                 raise
