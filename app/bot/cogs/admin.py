@@ -392,10 +392,31 @@ class AdminCog(commands.Cog):
 
                 # ── Fetch fresh metadata ───────────────────────────────────────
                 try:
-                    scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
+                    # Primary: route by URL
+                    scraper = None
+                    if url:
+                        try:
+                            scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
+                        except Exception:
+                            pass  # fall through to platform fallback
+
+                    # Fallback: route by platform field (handles empty/malformed URLs)
+                    if not scraper and sub_platform:
+                        try:
+                            scraper = self.bot.task_queue.provider_manager.get_provider(sub_platform)
+                        except Exception:
+                            pass
+
                     if not scraper:
                         failed += 1
                         results_log.append((title, old_day, None, "❓"))
+                        logger.warning(f"[ReSchedule] No scraper for '{title}' (url={url!r}, platform={sub_platform!r})")
+                        continue
+
+                    if not url:
+                        failed += 1
+                        results_log.append((title, old_day, None, "❓"))
+                        logger.warning(f"[ReSchedule] Empty URL for '{title}', cannot fetch metadata")
                         continue
 
                     scrape_data = await scraper.get_series_info(url, fast=True)
