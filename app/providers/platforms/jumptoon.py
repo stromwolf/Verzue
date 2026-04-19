@@ -345,26 +345,44 @@ class JumptoonProvider(BaseProvider):
                 if t:
                     title = t.group(1).strip().split('|')[0].strip().split(' | ')[0].strip()
 
-        # Poster
+        # Poster — target seriesThumbnailV2ImageUrl exclusively (the canonical square poster)
         image_url = None
         img_match = re.search(
-            r'"(?:seriesHeroImageUrl|seriesThumbnailV2ImageUrl|src)"\s*:\s*"(https://assets\.jumptoon\.com/series/[^"]+)"',
+            r'"seriesThumbnailV2ImageUrl"\s*:\s*"(https://assets\.jumptoon\.com/series/[^"]+\.png)"',
             clean_html
         )
         if img_match:
             image_url = img_match.group(1)
             if Settings.DEVELOPER_MODE:
-                logger.debug(f"🧪 [Developer] Image detected via JSON/Props: {image_url}")
-        if not image_url or "static.jumptoon.com" in image_url:
-            og_match = re.search(r'<meta[^>]+(?:property|name)="og:image"[^>]+content="(https:[^"]+)"',
-                                 html_content, re.I)
-            if not og_match:
-                og_match = re.search(r'<meta[^>]+content="(https:[^"]+)"[^>]+(?:property|name)="og:image"',
-                                     html_content, re.I)
-            if og_match:
-                candidate = og_match.group(1)
-                if "static.jumptoon.com" not in candidate:
-                    image_url = candidate
+                logger.debug(f"🧪 [Developer] Poster via seriesThumbnailV2ImageUrl: {image_url}")
+
+        # Fallback 1: seriesHeroImageUrl (if thumbnail key is absent)
+        if not image_url:
+            hero_match = re.search(
+                r'"seriesHeroImageUrl"\s*:\s*"(https://assets\.jumptoon\.com/series/[^"]+\.png)"',
+                clean_html
+            )
+            if hero_match:
+                image_url = hero_match.group(1)
+                if Settings.DEVELOPER_MODE:
+                    logger.debug(f"🧪 [Developer] Poster via seriesHeroImageUrl fallback: {image_url}")
+
+        # Fallback 2: OG meta tag (last resort, but never static.jumptoon.com)
+        if not image_url:
+            for og_pat in (
+                r'<meta[^>]+(?:property|name)="og:image"[^>]+content="(https:[^"]+)"',
+                r'<meta[^>]+content="(https:[^"]+)"[^>]+(?:property|name)="og:image"',
+            ):
+                og_match = re.search(og_pat, html_content, re.I)
+                if og_match:
+                    candidate = og_match.group(1)
+                    if "static.jumptoon.com" not in candidate:
+                        image_url = candidate
+                        if Settings.DEVELOPER_MODE:
+                            logger.debug(f"🧪 [Developer] Poster via OG fallback: {image_url}")
+                        break
+
+        # Final sizing/format parameters
         if image_url:
             if "?" in image_url:
                 image_url = image_url.split("?")[0]

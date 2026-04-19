@@ -14,18 +14,16 @@ The provider uses a two-tiered extraction strategy to ensure high reliability:
 
 ## 1. Discovery Mechanisms
 
-### A. Series Detail Page (get_series_info)
-When fetching info for a specific series, the provider scans the raw HTML for Next.js component props.
-
 #### 🟢 Priority 1: JSON-Heuristic & Component Props
-The provider searches for specific keys typically used by Jumptoon's "Hero" or "Thumbnail" components. It specifically prioritizes the `assets.jumptoon.com` domain to avoid capturing generic UI assets.
+The provider searches for specific keys typically used by Jumptoon's "Hero" or "Thumbnail" components. It specifically prioritizes the `assets.jumptoon.com` domain and requires a `.png` extension to avoid capturing generic UI assets or episode thumbnails.
 
 ```python
 # Regex pattern used in JumptoonProvider.get_series_info
-img_match = re.search(
-    r'"(?:seriesHeroImageUrl|seriesThumbnailV2ImageUrl|src)"\s*:\s*"(https://assets\.jumptoon\.com/series/[^"]+)"', 
-    clean_html
-)
+# 1. Primary: Canonical square poster thumbnail
+re.search(r'"seriesThumbnailV2ImageUrl"\s*:\s*"(https://assets\.jumptoon\.com/series/[^"]+\.png)"', clean_html)
+
+# 2. Secondary Fallback: Hero banner image
+re.search(r'"seriesHeroImageUrl"\s*:\s*"(https://assets\.jumptoon\.com/series/[^"]+\.png)"', clean_html)
 ```
 
 #### 🟡 Priority 2: Meta Tag Fallback
@@ -90,7 +88,8 @@ The implementation is located in [jumptoon.py](file:///e:/Code%20Files/Verzue/ap
 ### Regular Expressions used for Image Detection
 | Target | Regex |
 | :--- | :--- |
-| **JSON Props** | `"(?:seriesHeroImageUrl|seriesThumbnailV2ImageUrl|src)"\s*:\s*"(https://assets\.jumptoon\.com/series/[^"]+)"` |
+| **JSON Props (Primary)** | `"seriesThumbnailV2ImageUrl"\s*:\s*"(https://assets\.jumptoon\.com/series/[^"]+\.png)"` |
+| **JSON Props (Hero)** | `"seriesHeroImageUrl"\s*:\s*"(https://assets\.jumptoon\.com/series/[^"]+\.png)"` |
 | **RSC Stream** | `\\"src\\":\\"(https://assets.jumptoon.com/series/{sid}/[^\\"]+\.(?:png|jpg|webp))\\"` |
 | **OG Meta** | `<meta[^>]+(?:property|name)="og:image"[^>]+content="(https:[^"]+)"` |
 
