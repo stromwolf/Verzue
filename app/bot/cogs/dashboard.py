@@ -272,7 +272,7 @@ class DashboardCog(commands.Cog):
         emoji_other = "<:Calendar_U:1485261652713803906>"
 
         for i, sub in enumerate(visible_subs, 1):
-            current_day = sub.get("release_day") or "Unscheduled"
+            current_day = sub.get("release_day") or "Hiatus"
             
             # Show day header if it changed OR if it's the first sub on this page
             if current_day != last_day:
@@ -393,7 +393,7 @@ class DashboardCog(commands.Cog):
         original_title = sub.get("series_title", "Unknown")
         
         # Status Logic (Derive from day/metadata)
-        day = sub.get("release_day") or "Unscheduled"
+        day = sub.get("release_day") or "Hiatus"
         status_text = f"🟢 Ongoing (Release at {day})"
         # (Future: check a dedicated 'status' field if we ever add it to the scraper/sub)
         

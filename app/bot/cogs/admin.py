@@ -465,7 +465,7 @@ class AdminCog(commands.Cog):
         if results_log:
             log_lines = []
             for (t, old, new, emoji) in results_log[:15]:
-                old_str = old or "Unscheduled"
+                old_str = old or "Hiatus"
                 new_str = new or "—"
                 log_lines.append(f"{emoji} **{t}**\n`{old_str}` → `{new_str}`")
             if len(results_log) > 15:

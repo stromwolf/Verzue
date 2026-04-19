@@ -150,6 +150,10 @@ class PiccomaProvider(BaseProvider):
         status_items = soup.select('ul.PCM-productStatus li')
         for li in status_items:
             text = li.get_text(strip=True)
+            # Hiatus detection
+            if "休載" in text:
+                status_label = "Hiatus"
+                continue
             for jp_day, en_day in day_map.items():
                 if jp_day in text:
                     release_day, release_time = en_day, "15:00"
