@@ -145,7 +145,7 @@ class PiccomaProvider(BaseProvider):
         # 2. Extract Metadata
         release_day, release_time = None, None
         day_map = {"日曜": "Saturday", "月曜": "Sunday", "火曜": "Monday", "水曜": "Tuesday", "木曜": "Wednesday", "金曜": "Thursday", "土曜": "Friday"}
-        status_label = "Completed" if "完結" in res.text else None
+        status_label = None
 
         status_items = soup.select('ul.PCM-productStatus li')
         for li in status_items:
@@ -153,6 +153,10 @@ class PiccomaProvider(BaseProvider):
             # Hiatus detection
             if "休載" in text:
                 status_label = "Hiatus"
+                continue
+            # Completion detection
+            if "完結" in text:
+                status_label = "Completed"
                 continue
             for jp_day, en_day in day_map.items():
                 if jp_day in text:

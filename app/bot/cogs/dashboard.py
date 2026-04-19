@@ -231,8 +231,8 @@ class DashboardCog(commands.Cog):
         if platform_filter and platform_filter != "all":
             subs = [s for s in subs if s.get("platform", "").lower() == platform_filter.lower()]
 
-        # Sunday-start day order
-        day_order = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+        # Sort order — Completed goes after Hiatus
+        day_order = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Hiatus", "Completed"]
         
         # Get Current Day (UTC+9 for JST context)
         # 🟢 Day Rollover: Use UTC to match AutoPoller
@@ -241,7 +241,14 @@ class DashboardCog(commands.Cog):
 
         # Sort by Day -> Time -> Title
         def get_sort_key(s):
-            day = s.get("release_day")
+            status = (s.get("status") or "").lower()
+            if status == "completed":
+                day = "Completed"
+            elif status == "hiatus":
+                day = "Hiatus"
+            else:
+                day = s.get("release_day") or "Hiatus"
+            
             d_idx = day_order.index(day) if day in day_order else 7
             time = s.get("release_time", "99:99")
             url = _clean_url(s.get("series_url") or "")
@@ -272,12 +279,26 @@ class DashboardCog(commands.Cog):
         emoji_other = "<:Calendar_U:1485261652713803906>"
 
         for i, sub in enumerate(visible_subs, 1):
-            current_day = sub.get("release_day") or "Hiatus"
+            status = (sub.get("status") or "").lower()
+            if status == "completed":
+                current_day = "Completed"
+            elif status == "hiatus":
+                current_day = "Hiatus"
+            else:
+                current_day = sub.get("release_day") or "Hiatus"
             
             # Show day header if it changed OR if it's the first sub on this page
             if current_day != last_day:
-                emoji = emoji_today if current_day == today_name else emoji_other
-                day_display = f"{current_day} (Today)" if current_day == today_name else current_day
+                if current_day == "Hiatus":
+                    emoji = "💤"
+                    day_display = "Hiatus"
+                elif current_day == "Completed":
+                    emoji = "✅"
+                    day_display = "Completed"
+                else:
+                    emoji = emoji_today if current_day == today_name else emoji_other
+                    day_display = f"{current_day} (Today)" if current_day == today_name else current_day
+                
                 content += f"\n### {emoji} {day_display}\n"
                 last_day = current_day
 
@@ -393,8 +414,14 @@ class DashboardCog(commands.Cog):
         original_title = sub.get("series_title", "Unknown")
         
         # Status Logic (Derive from day/metadata)
-        day = sub.get("release_day") or "Hiatus"
-        status_text = f"🟢 Ongoing (Release at {day})"
+        status = (sub.get("status") or "").lower()
+        if status == "completed":
+            status_text = "✅ Completed"
+        elif status == "hiatus":
+            status_text = "💤 Hiatus"
+        else:
+            day = sub.get("release_day") or "Hiatus"
+            status_text = f"🟢 Ongoing (Release at {day})"
         # (Future: check a dedicated 'status' field if we ever add it to the scraper/sub)
         
         # Resolve Names for monospaced display (Mentions don't work in code blocks)
