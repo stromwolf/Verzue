@@ -12,8 +12,10 @@ from bs4 import BeautifulSoup
 from curl_cffi import requests as curl_requests
 from curl_cffi.requests import AsyncSession, RequestsError
 from curl_cffi.requests.exceptions import TooManyRedirects
+from app.providers.base import BaseProvider
+from app.services.session_service import SessionService
+from app.services.redis_manager import RedisManager
 from app.core.exceptions import ScraperError
-from app.services.rate_limiter import PlatformRateLimiter
 from config.settings import Settings
 
 logger = logging.getLogger("JumptoonProvider")
@@ -138,6 +140,7 @@ class JumptoonProvider(BaseProvider):
           2. Module semaphore (process concurrency cap: 6)
           3. 429/403 backoff with jitter
         """
+        from app.services.rate_limiter import PlatformRateLimiter
         limiter = PlatformRateLimiter.get("jumptoon")
         last_err = None
 

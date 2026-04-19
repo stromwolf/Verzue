@@ -14,7 +14,6 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 from app.providers.curl_compat import AsyncSession, RequestsError, ProxyError
 from app.core.exceptions import ScraperError, MechaException
-from app.services.rate_limiter import PlatformRateLimiter
 from config.settings import Settings
 
 logger = logging.getLogger("MechaProvider")
@@ -141,6 +140,8 @@ class MechaProvider(BaseProvider):
         auth_session = await self._get_authenticated_session()
         base_series_url = url.split('?')[0]
         logger.info(f"[Mecha] 🔍 Series Info Requested: {base_series_url} (mode={'fast' if fast else 'full'})")
+        
+        from app.services.rate_limiter import PlatformRateLimiter
         try:
             p1_url = f"{base_series_url}?page=1"
             logger.debug(f"[Mecha] Fetching Page 1: {p1_url}")
@@ -255,6 +256,7 @@ class MechaProvider(BaseProvider):
         extra_chapters = []
         skip_pages = skip_pages or []
         
+        from app.services.rate_limiter import PlatformRateLimiter
         for p in range(1, total_pages + 1):
             if p in skip_pages: continue
             async with PlatformRateLimiter.get("mecha").acquire():
@@ -283,8 +285,10 @@ class MechaProvider(BaseProvider):
         version = qs.get('ver', [''])[0]
         
         # Manifest
+        from app.services.rate_limiter import PlatformRateLimiter
         try:
-            manifest_res = await auth_session.get(contents_vertical_url, timeout=15)
+            async with PlatformRateLimiter.get("mecha").acquire():
+                manifest_res = await auth_session.get(contents_vertical_url, timeout=15)
             manifest = manifest_res.json()
         except ProxyError as e:
             raise ScraperError("Proxy Access Denied (403) during manifest fetch.", code="PX_403")
@@ -293,7 +297,8 @@ class MechaProvider(BaseProvider):
         
         # CryptoKey
         key_url = urljoin(self.BASE_URL, qs.get('cryptokey', [f"/viewer_cryptokey/chapter/{real_id}"])[0])
-        key_res = await auth_session.get(key_url, timeout=15)
+        async with PlatformRateLimiter.get("mecha").acquire():
+            key_res = await auth_session.get(key_url, timeout=15)
         key = binascii.unhexlify(key_res.text.strip())
 
         img_tasks = []
@@ -310,6 +315,7 @@ class MechaProvider(BaseProvider):
 
         # 🧤 S-Grade: Fixed Concurrency (10)
         async def fetch_one(t):
+            from app.services.rate_limiter import PlatformRateLimiter
             async with PlatformRateLimiter.get("mecha").acquire():
                 img_url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
                 try:
