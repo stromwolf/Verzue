@@ -20,7 +20,7 @@ When a series is checked, the provider first visits the base series URL:
 
 It extracts the following metadata from the raw HTML:
 - **Total Chapter Count**: Extracted via regex from JSON-like hydration strings (e.g., `totalEpisodeCount` or `totalCount`).
-- **Release Day**: Extracted from `publishDayNames` in the hydrated page state.
+- **Release Day**: Parsed from Japanese schedule text (e.g., `毎週日曜更新`) in the raw HTML, then shifted to UTC. For example, `Sunday` JST is mapped to `Saturday` UTC to account for the 00:00 JST release time.
 - **Series Status**: Checks for labels like "読切" (Oneshot) or "完結" (Completed).
 
 ### B. Chapter Discovery (Hydrated Data Parsing)

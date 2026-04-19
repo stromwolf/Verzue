@@ -13,6 +13,36 @@ class ProgressBar:
         self.completed = 0
         self.episode_id = episode_id
         self._last_percent = -1
+        
+        # 🔧 FIX: Immediately push the status to the view on construction
+        # This guarantees Discord sees "Downloading..." before gather() runs
+        self._push_status_immediately()
+
+    def _push_status_immediately(self):
+        """Force-sets the task status and triggers a refresh BEFORE the concurrent work begins."""
+        try:
+            from app.bot.common.view import UniversalDashboard
+            from app.models.chapter import TaskStatus
+            view = UniversalDashboard.active_views.get(self.req_id)
+            if not view:
+                return
+                
+            new_status = TaskStatus.DOWNLOADING if self.label == "Downloading" else TaskStatus.UPLOADING
+            updated = False
+            for t in view.active_tasks:
+                if self.episode_id and str(t.episode_id) != str(self.episode_id):
+                    continue
+                    
+                if t.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+                    if t.status != new_status:
+                        t.status = new_status
+                        updated = True
+                    break
+                    
+            if updated:
+                view.trigger_refresh()
+        except:
+            pass
 
     def update(self, current: int = None):
         if current is not None:
@@ -68,7 +98,7 @@ class ProgressBar:
                         if self.episode_id or updated:
                             break
                 
-                if updated:
+                if updated and percent > 0:
                     view.trigger_refresh()
         except: pass
 

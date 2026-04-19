@@ -396,9 +396,41 @@ class JumptoonProvider(BaseProvider):
             status_label = "Completed"
 
         release_day = None
-        day_match = re.search(r'"publishDayNames"\s*:\s*\["([^"]+)"\]', clean_html)
-        if day_match:
-            release_day = day_match.group(1).capitalize()
+
+        # Primary: Parse Japanese day text from the schedule span
+        # e.g. "毎週日曜更新" → "Sunday" → shift to Saturday (00:00 JST = 15:00 UTC prev day)
+        JP_DAY_MAP = {
+            "月曜": "Sunday",    "Monday": "Sunday",
+            "火曜": "Monday",    "Tuesday": "Monday",
+            "水曜": "Tuesday",   "Wednesday": "Tuesday",
+            "木曜": "Wednesday", "Thursday": "Wednesday",
+            "金曜": "Thursday",  "Friday": "Thursday",
+            "土曜": "Friday",    "Saturday": "Friday",
+            "日曜": "Saturday",  "Sunday": "Saturday",
+        }
+
+        schedule_match = re.search(r'毎週([月火水木金土日]曜)更新', html_content)
+        if schedule_match:
+            jp_day = schedule_match.group(1)
+            release_day = JP_DAY_MAP.get(jp_day)
+            logger.info(f"[Jumptoon] Schedule detected: {jp_day} JST → {release_day} UTC")
+
+        # Fallback: publishDayNames JSON key (in case Next.js payload has it)
+        if not release_day:
+            day_match = re.search(r'"publishDayNames"\s*:\s*\[(?:\\?"|\")([^\]"\\]+)(?:\\?"|\")', clean_html)
+            if day_match:
+                jst_day = day_match.group(1).strip().capitalize()
+                # Try direct map, then partial match
+                release_day = JP_DAY_MAP.get(jst_day) or JP_DAY_MAP.get(
+                    next((k for k in JP_DAY_MAP.keys() if jst_day.lower() in k.lower()), None)
+                )
+                if release_day:
+                    logger.info(f"[Jumptoon] Schedule from JSON fallback: {jst_day} → {release_day}")
+                else:
+                    release_day = jst_day # last resort
+
+        if not release_day:
+            logger.warning(f"[Jumptoon] ⚠️ release_day not detected for {series_id}. Schedule span or publishDayNames absent.")
 
         release_time = JUMPTOON_RELEASE_TIME_UTC if release_day else None
 
