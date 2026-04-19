@@ -12,10 +12,8 @@ from bs4 import BeautifulSoup
 from curl_cffi import requests as curl_requests
 from curl_cffi.requests import AsyncSession, RequestsError
 from curl_cffi.requests.exceptions import TooManyRedirects
-from app.providers.base import BaseProvider
-from app.services.session_service import SessionService
-from app.services.redis_manager import RedisManager
 from app.core.exceptions import ScraperError
+from app.services.rate_limiter import PlatformRateLimiter
 from config.settings import Settings
 
 logger = logging.getLogger("JumptoonProvider")
@@ -28,10 +26,7 @@ JUMPTOON_RELEASE_TIME_UTC = "15:00"
 # MODULE-LEVEL RATE-LIMIT PRIMITIVES
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Layer 1: Process-wide semaphore capping concurrent Jumptoon page requests.
-# Sized for one user's worst-case (2 foreground + 4 background = 6).
-# Multiple concurrent users fairly share these 6 slots.
-JUMPTOON_METADATA_SEMAPHORE = asyncio.Semaphore(6)
+# Layer 1: Global rate + concurrency enforced via app.services.rate_limiter.
 
 # Layer 2: Per-series lock registry. When 5 users open the same series at once,
 # only 1 actually fetches — the rest await the cached result.
@@ -143,23 +138,11 @@ class JumptoonProvider(BaseProvider):
           2. Module semaphore (process concurrency cap: 6)
           3. 429/403 backoff with jitter
         """
+        limiter = PlatformRateLimiter.get("jumptoon")
         last_err = None
-        for attempt in range(max_retries + 1):
-            try:
-                allowed, wait_time = await self.redis.get_token(
-                    "platform:jumptoon",
-                    rate=8,
-                    capacity=15
-                )
-                if not allowed:
-                    sleep_for = min(wait_time or 0.15, 2.0)
-                    logger.debug(f"[Jumptoon] Token bucket wait: {sleep_for:.2f}s")
-                    await asyncio.sleep(sleep_for)
-                    continue
-            except Exception as e:
-                logger.debug(f"[Jumptoon] Token bucket unavailable ({e}); falling back to semaphore")
 
-            async with JUMPTOON_METADATA_SEMAPHORE:
+        for attempt in range(max_retries + 1):
+            async with limiter.acquire():
                 try:
                     res = await auth_session.get(
                         url, 

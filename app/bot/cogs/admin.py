@@ -311,5 +311,151 @@ class AdminCog(commands.Cog):
         except Exception as e:
             await ctx.send(f"⚠️ **Error checking backups**: `{e}`")
 
+    @commands.command(name="re-schedule")
+    @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
+    async def reschedule(self, ctx, platform: str = None):
+        """
+        Usage:
+          $re-schedule              — re-check ALL subscriptions across all groups
+          $re-schedule jumptoon     — only Jumptoon subs
+          $re-schedule piccoma      — only Piccoma subs
+          $re-schedule mecha        — only Mecha subs
+
+        Fetches fresh metadata for every unscheduled (or all) subscription
+        and writes the detected UTC release day back to disk + Redis.
+        """
+        from app.services.group_manager import (
+            load_group, save_group, _group_filename
+        )
+        from config.settings import Settings
+
+        # ── Normalize platform filter ──────────────────────────────────────────
+        platform_filter = platform.lower().strip() if platform else None
+        VALID_PLATFORMS = {"jumptoon", "piccoma", "mecha"}
+        if platform_filter and platform_filter not in VALID_PLATFORMS:
+            return await ctx.send(
+                f"❌ Unknown platform `{platform_filter}`. "
+                f"Valid options: `jumptoon`, `piccoma`, `mecha` (or omit for all)."
+            )
+
+        # ── Discover all group JSON files ──────────────────────────────────────
+        if not Settings.GROUPS_DIR.exists():
+            return await ctx.send("❌ Groups directory not found.")
+
+        all_groups = [p.stem.replace("_", " ") for p in Settings.GROUPS_DIR.glob("*.json")]
+        if not all_groups:
+            return await ctx.send("ℹ️ No group profiles found.")
+
+        label = f"`{platform_filter}`" if platform_filter else "**all platforms**"
+        status_msg = await ctx.send(
+            f"🔄 **Re-Schedule started** for {label}...\n"
+            f"-# Scanning {len(all_groups)} group(s). This may take a while."
+        )
+
+        # ── Counters ───────────────────────────────────────────────────────────
+        total      = 0   # subs inspected
+        updated    = 0   # subs that got a day written
+        skipped    = 0   # already had a day (not re-checked to save API calls)
+        failed     = 0   # scraper raised an exception
+        no_day     = 0   # scraper returned None for release_day
+
+        results_log = []  # (title, old_day, new_day, status_emoji)
+
+        for group_name in all_groups:
+            data = load_group(group_name)
+            subs = data.get("subscriptions", [])
+            changed = False
+
+            for sub in subs:
+                url   = sub.get("series_url", "")
+                title = sub.get("series_title", sub.get("series_id", "Unknown"))
+
+                # ── Platform filter ────────────────────────────────────────────
+                sub_platform = sub.get("platform", "").lower()
+                if not sub_platform:
+                    # Infer from URL as fallback
+                    if   "jumptoon" in url.lower(): sub_platform = "jumptoon"
+                    elif "piccoma"  in url.lower(): sub_platform = "piccoma"
+                    elif "mecha"    in url.lower(): sub_platform = "mecha"
+
+                if platform_filter and sub_platform != platform_filter:
+                    continue
+
+                total += 1
+                old_day = sub.get("release_day")
+
+                # ── Skip already-scheduled subs ────────────────────────────────
+                # Remove this block if you want a full force-refresh for everyone
+                if old_day:
+                    skipped += 1
+                    continue
+
+                # ── Fetch fresh metadata ───────────────────────────────────────
+                try:
+                    scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
+                    if not scraper:
+                        failed += 1
+                        results_log.append((title, old_day, None, "❓"))
+                        continue
+
+                    scrape_data = await scraper.get_series_info(url, fast=True)
+                    _, _, _, _, _, release_day, release_time, _, _ = scrape_data
+
+                    if release_day:
+                        sub["release_day"]  = release_day
+                        sub["release_time"] = release_time or "15:00"
+                        changed = True
+                        updated += 1
+                        results_log.append((title, old_day, release_day, "✅"))
+                        logger.info(
+                            f"[ReSchedule] {group_name} | {title}: "
+                            f"{old_day or 'None'} → {release_day}"
+                        )
+                    else:
+                        no_day += 1
+                        results_log.append((title, old_day, None, "⚠️"))
+                        logger.warning(f"[ReSchedule] No day detected for {title} ({url})")
+
+                except Exception as e:
+                    failed += 1
+                    results_log.append((title, old_day, None, "❌"))
+                    logger.error(f"[ReSchedule] Failed for {title}: {e}")
+
+                # ── Small delay to avoid rate-hammering the providers ──────────
+                await asyncio.sleep(1.5)
+
+            # ── Persist if anything changed ────────────────────────────────────
+            if changed:
+                save_group(group_name, data)
+
+        # ── Build summary embed ────────────────────────────────────────────────
+        embed = discord.Embed(
+            title="📅 Re-Schedule Complete",
+            color=0x2ecc71 if not failed else 0xe67e22
+        )
+        embed.add_field(name="Platform",  value=label,           inline=True)
+        embed.add_field(name="Inspected", value=str(total),      inline=True)
+        embed.add_field(name="Skipped (had day)", value=str(skipped), inline=True)
+        embed.add_field(name="✅ Updated",  value=str(updated),  inline=True)
+        embed.add_field(name="⚠️ No Day Found", value=str(no_day), inline=True)
+        embed.add_field(name="❌ Errors",   value=str(failed),   inline=True)
+
+        # ── Detailed log (only changed/failed rows, max 15 to stay under embed limit) ──
+        if results_log:
+            log_lines = []
+            for (t, old, new, emoji) in results_log[:15]:
+                old_str = old or "Unscheduled"
+                new_str = new or "—"
+                log_lines.append(f"{emoji} **{t}**\n`{old_str}` → `{new_str}`")
+            if len(results_log) > 15:
+                log_lines.append(f"*...and {len(results_log) - 15} more (check logs)*")
+            embed.add_field(
+                name="Details",
+                value="\n".join(log_lines),
+                inline=False
+            )
+
+        await status_msg.edit(content=None, embed=embed)
+
 async def setup(bot):
     await bot.add_cog(AdminCog(bot))

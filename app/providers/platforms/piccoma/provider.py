@@ -8,6 +8,7 @@ from app.providers.curl_compat import AsyncSession, RequestsError, ProxyError
 
 from app.providers.base import BaseProvider
 from app.core.exceptions import ScraperError
+from app.services.rate_limiter import PlatformRateLimiter
 from config.settings import Settings
 
 try:
@@ -45,7 +46,7 @@ class PiccomaProvider(BaseProvider):
         self.helpers = PiccomaHelpers(self)
         self.default_headers = PiccomaHelpers.get_navigation_headers()
         
-        self._download_semaphore = asyncio.Semaphore(10)
+        self.default_headers = PiccomaHelpers.get_navigation_headers()
         
         # Initialize survivors
         self.session_manager = PiccomaSession(self)
@@ -104,13 +105,14 @@ class PiccomaProvider(BaseProvider):
         
         try:
             if fast:
-                res = await auth_session.get(product_url, timeout=20)
+                async with PlatformRateLimiter.get("piccoma").acquire():
+                    res = await auth_session.get(product_url, timeout=20)
                 ep_res = None
             else:
-                # S+ Refinement: Sequential requests are safer for many proxy providers
-                # to avoid 'CONNECT tunnel failed (403)' or concurrency limits.
-                res = await auth_session.get(product_url, timeout=20)
-                ep_res = await auth_session.get(episodes_url, timeout=20)
+                async with PlatformRateLimiter.get("piccoma").acquire():
+                    res = await auth_session.get(product_url, timeout=20)
+                async with PlatformRateLimiter.get("piccoma").acquire():
+                    ep_res = await auth_session.get(episodes_url, timeout=20)
                 
             if res.status_code != 200: 
                 raise ScraperError(f"Failed to fetch series: {res.status_code}")
@@ -274,7 +276,8 @@ class PiccomaProvider(BaseProvider):
         viewer_nav_headers = self._build_browser_headers(referer=episodes_referer)
 
         async def _fetch_viewer_with_trace(session):
-            _res = await session.get(task.url, timeout=30, headers=viewer_nav_headers)
+            async with PlatformRateLimiter.get("piccoma").acquire():
+                _res = await session.get(task.url, timeout=30, headers=viewer_nav_headers)
             _final_url = str(getattr(_res, "url", task.url))
             _redirect_chain = []
             for _h in getattr(_res, "history", []) or []:
@@ -426,7 +429,8 @@ class PiccomaProvider(BaseProvider):
             logger.info(f"[Piccoma] Chapter {chapter_id} {reason}, attempting fast purchase/unlock.")
             if await self.fast_purchase(task):
                 auth_session = await self._get_authenticated_session(domain, account_id=account_id)
-                res = await auth_session.get(task.url, timeout=30, headers=viewer_nav_headers)
+                async with PlatformRateLimiter.get("piccoma").acquire():
+                    res = await auth_session.get(task.url, timeout=30, headers=viewer_nav_headers)
                 final_url = str(getattr(res, "url", task.url))
             else:
                 logger.error(f"  ❌ [Piccoma] Fast purchase failed for {chapter_id}")
@@ -475,7 +479,7 @@ class PiccomaProvider(BaseProvider):
         progress.update(0)
 
         async def process_one(img_data, i):
-            async with self._download_semaphore:
+            async with PlatformRateLimiter.get("piccoma").acquire():
                 await self._download_robust(auth_session, img_data, i+1, output_dir, region)
             progress.update(i + 1)
 

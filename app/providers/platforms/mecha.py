@@ -13,10 +13,8 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 from app.providers.curl_compat import AsyncSession, RequestsError, ProxyError
-from app.providers.base import BaseProvider
-from app.services.session_service import SessionService
-from app.services.login_service import LoginService
 from app.core.exceptions import ScraperError, MechaException
+from app.services.rate_limiter import PlatformRateLimiter
 from config.settings import Settings
 
 logger = logging.getLogger("MechaProvider")
@@ -38,8 +36,7 @@ class MechaProvider(BaseProvider):
             'Sec-Fetch-Dest': 'document',
             'Sec-Fetch-Mode': 'navigate',
         }
-        # S-Grade Backpressure
-        self._download_semaphore = asyncio.Semaphore(10)
+        # S-Grade Backpressure: Rate-limited globally via app.services.rate_limiter.
 
     async def _get_authenticated_session(self):
         session_obj = await self.session_service.get_active_session("mecha")
@@ -147,7 +144,8 @@ class MechaProvider(BaseProvider):
         try:
             p1_url = f"{base_series_url}?page=1"
             logger.debug(f"[Mecha] Fetching Page 1: {p1_url}")
-            res = await auth_session.get(p1_url, timeout=30)
+            async with PlatformRateLimiter.get("mecha").acquire():
+                res = await auth_session.get(p1_url, timeout=30)
             if res.status_code != 200: 
                 raise ScraperError(f"Mecha error: {res.status_code}", code="SC_002")
         except RequestsError as e:
@@ -192,7 +190,8 @@ class MechaProvider(BaseProvider):
         elif max_page > 1:
             last_pg_url = f"{base_series_url}?page={max_page}"
             logger.debug(f"[Mecha] Fetching Last Page: {last_pg_url}")
-            res_last = await auth_session.get(last_pg_url, timeout=15)
+            async with PlatformRateLimiter.get("mecha").acquire():
+                res_last = await auth_session.get(last_pg_url, timeout=15)
             if res_last.status_code == 200:
                 all_chapters.extend(self._parse_page_chapters(BeautifulSoup(res_last.text, 'html.parser'), seen_ids))
             else:
@@ -258,7 +257,8 @@ class MechaProvider(BaseProvider):
         
         for p in range(1, total_pages + 1):
             if p in skip_pages: continue
-            res = await auth_session.get(f"{base_series_url}?page={p}", timeout=15)
+            async with PlatformRateLimiter.get("mecha").acquire():
+                res = await auth_session.get(f"{base_series_url}?page={p}", timeout=15)
             if res.status_code == 200:
                 extra_chapters.extend(self._parse_page_chapters(BeautifulSoup(res.text, 'html.parser'), seen_ids))
         return extra_chapters
@@ -310,7 +310,7 @@ class MechaProvider(BaseProvider):
 
         # 🧤 S-Grade: Fixed Concurrency (10)
         async def fetch_one(t):
-            async with self._download_semaphore:
+            async with PlatformRateLimiter.get("mecha").acquire():
                 img_url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
                 try:
                     t_get = auth_session.get(img_url, timeout=30)
