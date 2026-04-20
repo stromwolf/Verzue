@@ -34,8 +34,7 @@ class AutoDownloadPoller:
         self.poll_loop.start()
         # 🟢 High-frequency window (15:00 - 15:05 UTC)
         self.high_freq_poll_loop.start()
-        # 🟢 Hiatus Sweep (Every 30 minutes)
-        self.smart_batch_poll_loop.start()
+
 
     @tasks.loop(time=datetime.time(hour=15, minute=5, tzinfo=datetime.timezone.utc))
     async def poll_loop(self):
@@ -56,31 +55,8 @@ class AutoDownloadPoller:
         logger.info(f"⚡ [AutoPoller] High-frequency window active ({now.strftime('%H:%M:%S')} UTC). Checking targets...")
         await self._check_high_freq_targets()
 
-    @tasks.loop(minutes=30)
-    async def smart_batch_poll_loop(self):
-        """🟢 Hiatus Series Sweep (Checked once every 24 hours)."""
-        all_subs = get_all_subscriptions()
-        if not all_subs: return
 
-        now_ts = time.time()
-        hiatus_subs = [(g, s) for g, s in all_subs if s and (s.get("status") or "").lower() == "hiatus"]
-        
-        if not hiatus_subs: return
 
-        for g_name, sub in hiatus_subs:
-            s_id = sub["series_id"]
-            last_check_key = f"verzue:poller:last_check:{s_id}"
-            last_check_raw = await self.bot.redis_brain.client.get(last_check_key)
-            last_check = float(last_check_raw) if last_check_raw else 0
-            
-            if (now_ts - last_check) >= 86400:
-                try:
-                    logger.info(f"💤 [SmartPoller] Checking Hiatus series: {sub.get('series_title')}")
-                    await self.bot.redis_brain.client.set(last_check_key, str(now_ts), ex=172800)
-                    await self._check_single_sub(g_name, sub)
-                    await asyncio.sleep(5)
-                except Exception as e:
-                    logger.error(f"❌ [SmartPoller] Hiatus check failed for {sub.get('series_title')}: {e}")
 
     @poll_loop.before_loop
     @high_freq_poll_loop.before_loop
@@ -142,33 +118,57 @@ class AutoDownloadPoller:
             if not all_subs: return
 
             today_name = datetime.datetime.now(datetime.timezone.utc).strftime("%A")
+            
             todays_subs = []
+            hiatus_subs = []
+
             for group_name, sub in all_subs:
-                if not sub or (sub.get("status") or "").lower() == "completed":
+                if not sub: continue
+                status = (sub.get("status") or "").lower()
+                if status == "completed": continue
+                
+                if status == "hiatus":
+                    hiatus_subs.append((group_name, sub))
                     continue
                 
                 rel_day = (sub.get("release_day") or "").lower()
-                if not rel_day or rel_day == today_name.lower():
+                if rel_day == today_name.lower():
                     todays_subs.append((group_name, sub))
 
-            if not todays_subs: return
-
+            # ── Phase 1: Today's weeklies ──
             mecha_targets = [t for t in todays_subs if "mecha" in t[1].get("platform", "").lower()]
             other_targets = [t for t in todays_subs if "mecha" not in t[1].get("platform", "").lower()]
 
             semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
-            async def check_with_semaphore(group_name, sub):
+            async def check_with_semaphore(gn, sub):
                 async with semaphore:
-                    return await self._check_single_sub(group_name, sub)
+                    return await self._check_single_sub(gn, sub)
 
-            tasks_list = [check_with_semaphore(gn, sub) for gn, sub in other_targets]
-            results = await asyncio.gather(*tasks_list, return_exceptions=True)
-            
+            results = await asyncio.gather(*[check_with_semaphore(gn, s) for gn, s in other_targets], return_exceptions=True)
             if mecha_targets:
                 await self._check_mecha_batch(mecha_targets)
 
-            found_new = sum(1 for r in results if r is True)
-            logger.info(f"✅ [AutoPoller] Poll complete. New chapters found: {found_new}")
+            logger.info(f"✅ [AutoPoller] Weeklies done. Found: {sum(1 for r in results if r is True)}")
+
+            # ── Phase 2: Hiatus sweep (sequential, gated by 24h Redis key) ──
+            now_ts = time.time()
+            for g_name, sub in hiatus_subs:
+                s_id = sub["series_id"]
+                last_check_key = f"verzue:poller:last_check:{s_id}"
+                last_check_raw = await self.bot.redis_brain.client.get(last_check_key)
+                last_check = float(last_check_raw) if last_check_raw else 0
+                
+                if (now_ts - last_check) < 86400:
+                    continue
+                    
+                try:
+                    logger.info(f"💤 [AutoPoller] Hiatus check: {sub.get('series_title')}")
+                    await self.bot.redis_brain.client.set(last_check_key, str(now_ts), ex=172800)
+                    await self._check_single_sub(g_name, sub)
+                    await asyncio.sleep(5)
+                except Exception as e:
+                    logger.error(f"❌ [AutoPoller] Hiatus check failed for {sub.get('series_title')}: {e}")
+
         finally:
             self.is_checking = False
 
@@ -214,14 +214,32 @@ class AutoDownloadPoller:
             
             # S-GRADE: Status Auto-Detection
             new_status = status_label if status_label else "Weekly"
+            old_status = (sub.get("status") or "Weekly").lower()
+
             if new_status != sub.get("status", "Weekly"):
                 data_json = load_group(group_name)
                 for s in data_json["subscriptions"]:
                     if s["series_id"] == series_id:
                         s["status"] = new_status
+                        # 🆕 Clear release_day so dashboard sorts into Hiatus bucket
+                        if new_status.lower() == "hiatus":
+                            s["release_day"] = None
                         save_group(group_name, data_json)
+                        sub["status"] = new_status          # keep in-memory ref in sync
+                        sub["release_day"] = s.get("release_day")
                         logger.info(f"🏷️ [AutoPoller] Status updated: {title} → {new_status}")
                         break
+
+                # 🆕 Notify channel that series went on hiatus
+                if new_status.lower() == "hiatus" and old_status != "hiatus":
+                    await self.notifier._notify_hiatus(
+                        group_name=group_name,
+                        sub=sub,
+                        series_title=title,
+                        series_id=series_id,
+                        image_url=image_url,
+                    )
+
 
             # ✅ Piccoma UP flag integration
             latest_is_up = latest_chapter.get('is_up', False) if latest_chapter else False

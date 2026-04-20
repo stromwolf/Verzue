@@ -157,3 +157,81 @@ class PollerNotifier:
             req_id_context.reset(t1)
             group_name_context.reset(t2)
             log_category_context.reset(t3)
+    async def _notify_hiatus(
+        self,
+        *,
+        group_name: str,
+        sub: dict,
+        series_title: str,
+        series_id: str,
+        image_url: str | None = None,
+    ):
+        """Notifies subscription channel that a series has gone on hiatus."""
+        try:
+            channel = self.bot.get_channel(sub["channel_id"])
+            if not channel:
+                logger.warning(f"[AutoPoller] Hiatus notify: channel {sub['channel_id']} not found.")
+                return
+
+            admin = get_admin_settings(group_name)
+            role_id = admin.get("role_id")
+            role_ping = f"<@&{role_id}> " if role_id else ""
+
+            series_url = sub.get("series_url", "")
+
+            payload = {
+                "flags": 32768,
+                "content": f"{role_ping}",
+                "components": [{
+                    "type": 17,
+                    "accent_color": 0xF4A460,   # warm amber = hiatus vibe
+                    "components": [
+                        {
+                            "type": 10,
+                            "content": (
+                                f"## 💤 Series on Hiatus\n"
+                                f"**[{series_title}]({series_url})** has gone on hiatus.\n"
+                                f"-# Updates will resume once the series is back. Hiatus checks run daily."
+                            )
+                        }
+                    ]
+                }]
+            }
+
+            # Attach poster if available
+            files = []
+            if image_url:
+                try:
+                    res = curl_requests.get(image_url, timeout=10, impersonate="chrome")
+                    if res.status_code == 200:
+                        files.append(discord.File(io.BytesIO(res.content), filename="poster.png"))
+                        # inject attachment ref into content block
+                        payload["components"][0]["components"].insert(0, {
+                            "type": 11,  # media gallery
+                            "items": [{"media": {"url": "attachment://poster.png"}}]
+                        })
+                except Exception as e:
+                    logger.warning(f"[AutoPoller] Hiatus poster fetch failed: {e}")
+
+            route = discord.http.Route('POST', '/channels/{channel_id}/messages', channel_id=channel.id)
+
+            if files:
+                import json as json_lib
+                from aiohttp import FormData
+                form = FormData()
+                form.add_field("payload_json", json_lib.dumps(payload), content_type="application/json")
+                for idx, f in enumerate(files):
+                    f.fp.seek(0)
+                    form.add_field(f"files[{idx}]", f.fp, filename=f.filename, content_type="image/png")
+                url_str = f"https://discord.com/api/v10{route.url}"
+                headers = {"Authorization": f"Bot {self.bot.http.token}"}
+                async with self.bot.http._HTTPClient__session.post(url_str, data=form, headers=headers) as resp:
+                    if resp.status not in (200, 201, 204):
+                        logger.error(f"❌ Hiatus notify failed: {resp.status} {await resp.text()}")
+            else:
+                await self.bot.http.request(route, json=payload)
+
+            logger.info(f"💤 [AutoPoller] Hiatus notification sent for {series_title} in {group_name}")
+
+        except Exception as e:
+            logger.error(f"❌ [AutoPoller] _notify_hiatus failed for {series_title}: {e}")
