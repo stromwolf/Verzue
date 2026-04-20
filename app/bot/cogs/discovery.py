@@ -275,7 +275,7 @@ class Discovery(commands.Cog):
                     for idx, f in enumerate(files):
                         f.fp.seek(0)
                         form.add_field(f"files[{idx}]", f.fp, filename=f.filename, content_type="image/png")
-                    url_str = f"https://discord.com/api/v10{route.url}"
+                    url_str = f"https://discord.com/api/v10/channels/{ctx.channel.id}/messages"
                     headers = {"Authorization": f"Bot {self.bot.http.token}"}
                     async with self.bot.http._HTTPClient__session.post(url_str, data=form, headers=headers) as resp:
                         if resp.status not in (200, 201, 204):
