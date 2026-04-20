@@ -12,6 +12,7 @@ from app.services.group_manager import (
 from app.bot.common.notification_builder import (
     build_notification_payload,
     build_new_series_notification_payload,
+    build_hiatus_notification_payload,
 )
 from app.core.logger import req_id_context, group_name_context, log_category_context
 
@@ -175,43 +176,32 @@ class PollerNotifier:
 
             admin = get_admin_settings(group_name)
             role_id = admin.get("role_id")
-            role_ping = f"<@&{role_id}> " if role_id else ""
-
-            series_url = sub.get("series_url", "")
-
-            payload = {
-                "flags": 32768,
-                "content": f"{role_ping}",
-                "components": [{
-                    "type": 17,
-                    "accent_color": 0xF4A460,   # warm amber = hiatus vibe
-                    "components": [
-                        {
-                            "type": 10,
-                            "content": (
-                                f"## 💤 Series on Hiatus\n"
-                                f"**[{series_title}]({series_url})** has gone on hiatus.\n"
-                                f"-# Updates will resume once the series is back. Hiatus checks run daily."
-                            )
-                        }
-                    ]
-                }]
-            }
+            custom_title = get_title_override(group_name, sub["series_url"])
+            notification_id = get_next_notification_id(group_name)
 
             # Attach poster if available
             files = []
+            use_attachment_proxy = False
             if image_url:
                 try:
                     res = curl_requests.get(image_url, timeout=10, impersonate="chrome")
                     if res.status_code == 200:
                         files.append(discord.File(io.BytesIO(res.content), filename="poster.png"))
-                        # inject attachment ref into content block
-                        payload["components"][0]["components"].insert(0, {
-                            "type": 11,  # media gallery
-                            "items": [{"media": {"url": "attachment://poster.png"}}]
-                        })
+                        use_attachment_proxy = True
                 except Exception as e:
                     logger.warning(f"[AutoPoller] Hiatus poster fetch failed: {e}")
+
+            payload = build_hiatus_notification_payload(
+                platform=sub["platform"],
+                role_id=role_id,
+                series_title=series_title,
+                custom_title=custom_title,
+                poster_url=image_url,
+                series_url=sub["series_url"],
+                series_id=series_id,
+                notification_id=notification_id,
+                use_attachment_proxy=use_attachment_proxy,
+            )
 
             route = discord.http.Route('POST', '/channels/{channel_id}/messages', channel_id=channel.id)
 
@@ -235,3 +225,4 @@ class PollerNotifier:
 
         except Exception as e:
             logger.error(f"❌ [AutoPoller] _notify_hiatus failed for {series_title}: {e}")
+

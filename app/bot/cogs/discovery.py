@@ -7,7 +7,7 @@ import asyncio
 from app.core.logger import logger
 from app.providers.manager import ProviderManager
 from app.services.redis_manager import RedisManager
-from app.bot.common.notification_builder import build_new_series_notification_payload, build_notification_payload
+from app.bot.common.notification_builder import build_new_series_notification_payload, build_notification_payload, build_hiatus_notification_payload
 from app.models.chapter import ChapterTask
 from config.settings import Settings
 
@@ -218,8 +218,8 @@ class Discovery(commands.Cog):
         platform = platform.lower()
         if "mecha" in platform: platform = "mecha"
         elif "piccoma" in platform: platform = "piccoma"
-        elif "jumptoon" in platform: platform = "jumptoon"
         elif "kakao" in platform: platform = "kakao"
+        else: platform = "jumptoon"
 
         mocks = {
             "jumptoon": {
@@ -228,62 +228,21 @@ class Discovery(commands.Cog):
                 "url": "https://jumptoon.com/series/JT00138",
                 "poster_url": "https://assets.jumptoon.com/series/JT00138/episode/11/v2_0_0/20260310020123/83253720a97dd8e1caa50e3f75ec075b0978567ebcff56773dc1dc319b06ee0f.webp"
             },
-            "piccoma": {
-                "title": "Solo Leveling",
-                "series_id": "5535",
-                "url": "https://piccoma.com/web/product/5535",
-                "poster_url": None
-            },
-            "mecha": {
-                "title": "Blue Lock",
-                "series_id": "123456",
-                "url": "https://mechacomic.jp/books/123456",
-                "poster_url": None
-            },
+            "piccoma": {"title": "Solo Leveling", "series_id": "5535", "url": "https://piccoma.com/web/product/5535", "poster_url": None},
+            "mecha":   {"title": "Blue Lock",      "series_id": "123456", "url": "https://mechacomic.jp/books/123456", "poster_url": None},
         }
-
         mock = mocks.get(platform, mocks["jumptoon"])
 
-        # Reuse the same notifier internals — build payload directly
-        from app.bot.common.notification_builder import PLATFORM_COLORS
-        from datetime import datetime, timezone
-
-        platform_key = platform
-        accent_color = PLATFORM_COLORS.get(platform_key, 0xF4A460)
-        series_url = mock["url"]
-        series_title = mock["title"]
-
-        now_utc = datetime.now(timezone.utc).strftime('%H:%M UTC')
-
-        inner = [
-            {
-                "type": 10,
-                "content": (
-                    f"## 💤 Series on Hiatus\n"
-                    f"**[{series_title}]({series_url})** has gone on hiatus.\n"
-                    f"-# Updates will resume once the series is back. Hiatus checks run daily."
-                )
-            },
-            {"type": 14, "divider": True, "spacing": 1},
-            {"type": 10, "content": f"-# S-ID: {mock['series_id']} | Detected at: {now_utc}"}
-        ]
-
-        # Poster (if available)
-        if mock["poster_url"]:
-            inner.insert(0, {"type": 14, "divider": True, "spacing": 1})
-            inner.insert(0, {
-                "type": 12,
-                "items": [{"media": {"url": mock["poster_url"]}}]
-            })
-
-        payload = {
-            "flags": 32768,
-            "components": [{
-                "type": 17,
-                "accent_color": accent_color,
-                "components": inner
-            }]
-        }
+        payload = build_hiatus_notification_payload(
+            platform=platform,
+            role_id=None,
+            series_title=mock["title"],
+            custom_title=None,  # No override in mock
+            poster_url=mock["poster_url"],
+            series_url=mock["url"],
+            series_id=mock["series_id"],
+            notification_id=9999,
+        )
 
         try:
             route = discord.http.Route('POST', '/channels/{channel_id}/messages', channel_id=ctx.channel.id)
@@ -291,6 +250,7 @@ class Discovery(commands.Cog):
             logger.info(f"🧪 [Discovery] Hiatus UI preview sent by {ctx.author} (platform: {platform})")
         except Exception as e:
             await ctx.send(f"❌ Failed to render hiatus UI: `{e}`")
+
 
 
     @commands.Cog.listener()

@@ -225,3 +225,57 @@ def build_new_series_notification_payload(
         "flags": 32768,
         "components": components,
     }
+
+
+def build_hiatus_notification_payload(
+    *,
+    platform: str,
+    role_id: int | None,
+    series_title: str,
+    custom_title: str | None,
+    poster_url: str | None,
+    series_url: str,
+    series_id: str,
+    notification_id: int,
+    use_attachment_proxy: bool = False,
+) -> dict:
+    """Builds the Discord V2 payload for a hiatus notification."""
+    platform_key = platform.lower()
+    accent_color = PLATFORM_COLORS.get(platform_key, 0x2b2d31)
+    platform_display = PLATFORM_NAMES.get(platform_key, platform.upper())
+    platform_emoji = PLATFORM_EMOJIS.get(platform_key, "📖")
+
+    role_mention = f"<@&{role_id}>" if role_id else "@Updates"
+    header_text = f"New Hiatus {role_mention} of **[ {platform_emoji} [{platform_display}]({series_url}) ]**"
+
+    final_poster_url = "attachment://poster.png" if use_attachment_proxy else poster_url
+    title_text = f"## {custom_title or series_title}"
+    footer_text = f"-# N-ID: {notification_id} | S-ID: {series_id}"
+
+    inner: list[dict[str, Any]] = []
+
+    # 1. Header
+    inner.append({"type": 10, "content": header_text})
+    inner.append({"type": 14, "divider": True, "spacing": 1})
+
+    # 2. Poster
+    if final_poster_url:
+        inner.append({"type": 12, "items": [{"media": {"url": final_poster_url}}]})
+        inner.append({"type": 14, "divider": True, "spacing": 1})
+
+    # 3. Title + hiatus message
+    inner.append({
+        "type": 10,
+        "content": f"{title_text}\nThis series has gone on hiatus. Updates will resume once the series is back."
+    })
+    inner.append({"type": 14, "divider": True, "spacing": 1})
+
+    # 4. Footer
+    inner.append({"type": 10, "content": footer_text})
+
+    components = [{"type": 17, "accent_color": accent_color, "components": inner}]
+    payload = {"flags": 32768, "components": components}
+    if role_id:
+        payload["allowed_mentions"] = {"roles": [str(role_id)]}
+    return payload
+
