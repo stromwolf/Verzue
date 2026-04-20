@@ -213,43 +213,115 @@ class Discovery(commands.Cog):
             await ctx.send(f"❌ Failed to render V2 Component: `{e}`")
 
     @commands.command(name="test_hiatus_ui", aliases=["hiatus_ui"])
-    async def test_hiatus_ui(self, ctx, platform: str = "jumptoon"):
-        """Preview the hiatus notification card. Usage: $test_hiatus_ui [platform]"""
-        platform = platform.lower()
-        if "mecha" in platform: platform = "mecha"
-        elif "piccoma" in platform: platform = "piccoma"
-        elif "kakao" in platform: platform = "kakao"
-        else: platform = "jumptoon"
+    async def test_hiatus_ui(self, ctx, *, arg: str = None):
+        """
+        Usage:
+          $test_hiatus_ui                          → jumptoon mock
+          $test_hiatus_ui piccoma                  → piccoma mock  
+          $test_hiatus_ui https://piccoma.com/...  → live scrape
+        """
+        if arg and arg.startswith("http"):
+            # Live scrape mode
+            msg = await ctx.send(f"🔍 Scraping `{arg}`...")
+            try:
+                provider = self.pm.get_provider_for_url(arg)
+                if not provider:
+                    return await msg.edit(content=f"❌ Unsupported URL: `{arg}`")
+                
+                data = await provider.get_series_info(arg, fast=True)
+                title, _, _, image_url, series_id, _, _, _, _ = data
 
-        mocks = {
-            "jumptoon": {
-                "title": "The Rebirth of the S-Grade Ranker",
-                "series_id": "JT00138",
-                "url": "https://jumptoon.com/series/JT00138",
-                "poster_url": "https://assets.jumptoon.com/series/JT00138/episode/11/v2_0_0/20260310020123/83253720a97dd8e1caa50e3f75ec075b0978567ebcff56773dc1dc319b06ee0f.webp"
-            },
-            "piccoma": {"title": "Solo Leveling", "series_id": "5535", "url": "https://piccoma.com/web/product/5535", "poster_url": None},
-            "mecha":   {"title": "Blue Lock",      "series_id": "123456", "url": "https://mechacomic.jp/books/123456", "poster_url": None},
-        }
-        mock = mocks.get(platform, mocks["jumptoon"])
+                # Detect platform from URL
+                url_lower = arg.lower()
+                if "mechacomic.jp" in url_lower: platform = "mecha"
+                elif "jumptoon.com" in url_lower: platform = "jumptoon"
+                elif "piccoma.com" in url_lower: platform = "piccoma"
+                elif "kakao.com" in url_lower: platform = "kakao"
+                else: platform = "jumptoon"
 
-        payload = build_hiatus_notification_payload(
-            platform=platform,
-            role_id=None,
-            series_title=mock["title"],
-            custom_title=None,  # No override in mock
-            poster_url=mock["poster_url"],
-            series_url=mock["url"],
-            series_id=mock["series_id"],
-            notification_id=9999,
-        )
+                files = []
+                use_attachment_proxy = False
+                if image_url:
+                    try:
+                        from curl_cffi import requests as curl_requests
+                        import io
+                        res = curl_requests.get(image_url, timeout=10, impersonate="chrome")
+                        if res.status_code == 200:
+                            files.append(discord.File(io.BytesIO(res.content), filename="poster.png"))
+                            use_attachment_proxy = True
+                    except Exception as e:
+                        logger.warning(f"Poster fetch failed: {e}")
 
-        try:
-            route = discord.http.Route('POST', '/channels/{channel_id}/messages', channel_id=ctx.channel.id)
-            await self.bot.http.request(route, json=payload)
-            logger.info(f"🧪 [Discovery] Hiatus UI preview sent by {ctx.author} (platform: {platform})")
-        except Exception as e:
-            await ctx.send(f"❌ Failed to render hiatus UI: `{e}`")
+                payload = build_hiatus_notification_payload(
+                    platform=platform,
+                    role_id=None,
+                    series_title=title,
+                    custom_title=None,
+                    poster_url=image_url,
+                    series_url=arg,
+                    series_id=series_id,
+                    notification_id=9999,
+                    use_attachment_proxy=use_attachment_proxy,
+                )
+
+                await msg.delete()
+
+                route = discord.http.Route('POST', '/channels/{channel_id}/messages', channel_id=ctx.channel.id)
+                if files:
+                    from aiohttp import FormData
+                    import json as json_lib
+                    form = FormData()
+                    form.add_field("payload_json", json_lib.dumps(payload), content_type="application/json")
+                    for idx, f in enumerate(files):
+                        f.fp.seek(0)
+                        form.add_field(f"files[{idx}]", f.fp, filename=f.filename, content_type="image/png")
+                    url_str = f"https://discord.com/api/v10{route.url}"
+                    headers = {"Authorization": f"Bot {self.bot.http.token}"}
+                    async with self.bot.http._HTTPClient__session.post(url_str, data=form, headers=headers) as resp:
+                        if resp.status not in (200, 201, 204):
+                            await ctx.send(f"❌ Failed: `{resp.status} {await resp.text()}`")
+                else:
+                    await self.bot.http.request(route, json=payload)
+
+                logger.info(f"🧪 [Discovery] Hiatus UI live preview by {ctx.author} ({arg})")
+
+            except Exception as e:
+                logger.error(f"Hiatus UI live test error: {e}")
+                await ctx.send(f"❌ Failed: `{e}`")
+
+        else:
+            # Mock mode (existing logic)
+            platform = (arg or "jumptoon").lower()
+            if "mecha" in platform: platform = "mecha"
+            elif "piccoma" in platform: platform = "piccoma"
+            elif "kakao" in platform: platform = "kakao"
+            else: platform = "jumptoon"
+
+            mocks = {
+                "jumptoon": {"title": "The Rebirth of the S-Grade Ranker", "series_id": "JT00138", "url": "https://jumptoon.com/series/JT00138", "poster_url": "https://assets.jumptoon.com/series/JT00138/episode/11/v2_0_0/20260310020123/83253720a97dd8e1caa50e3f75ec075b0978567ebcff56773dc1dc319b06ee0f.webp"},
+                "piccoma":  {"title": "Solo Leveling", "series_id": "5535", "url": "https://piccoma.com/web/product/5535", "poster_url": None},
+                "mecha":    {"title": "Blue Lock", "series_id": "123456", "url": "https://mechacomic.jp/books/123456", "poster_url": None},
+            }
+            mock = mocks.get(platform, mocks["jumptoon"])
+
+            payload = build_hiatus_notification_payload(
+                platform=platform,
+                role_id=None,
+                series_title=mock["title"],
+                custom_title=None,
+                poster_url=mock["poster_url"],
+                series_url=mock["url"],
+                series_id=mock["series_id"],
+                notification_id=9999,
+            )
+
+            try:
+                route = discord.http.Route('POST', '/channels/{channel_id}/messages', channel_id=ctx.channel.id)
+                await self.bot.http.request(route, json=payload)
+                logger.info(f"🧪 [Discovery] Hiatus UI preview sent by {ctx.author} (platform: {platform})")
+            except Exception as e:
+                await ctx.send(f"❌ Failed to render hiatus UI: `{e}`")
+
 
 
 
