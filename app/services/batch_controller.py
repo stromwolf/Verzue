@@ -59,9 +59,9 @@ class BatchController:
                             supportsAllDrives=True
                         ).execute
                     )
-                    expected_name = f"[{series_id}] - {original_title or title}"
+                    expected_series_name = f"[{series_id}] - {original_title or title}"
                     is_trashed = folder_meta.get("trashed", False)
-                    name_ok = folder_meta.get("name", "").strip() == expected_name.strip()
+                    name_ok = folder_meta.get("name", "").strip() == expected_series_name.strip()
 
                     if is_trashed or not name_ok:
                         logger.warning(f"⚠️ Drive cache stale (trashed={is_trashed}, name_ok={name_ok}) — re-resolving folders")
@@ -100,10 +100,13 @@ class BatchController:
                 
                 # 1c. Series Folder (Search by [ID] prefix)
                 prefix = f"[{series_id}]"
-                logger.info(f"🔍 Searching for series folder with prefix '{prefix}' for '{original_title}'...")
-                folder_data = await asyncio.to_thread(self.uploader.find_folder_by_prefix, prefix, platform_id)
                 
-                target_series_name = f"{prefix} - {original_title or title}"
+                # 🟢 POLICY: Parent Series Folder always uses original scraped title
+                series_resolve_name = original_title or title
+                target_series_name = f"{prefix} - {series_resolve_name}"
+                
+                logger.info(f"🔍 Searching for series folder with prefix '{prefix}' for '{series_resolve_name}'...")
+                folder_data = await asyncio.to_thread(self.uploader.find_folder_by_prefix, prefix, platform_id)
                 
                 if not folder_data:
                     logger.info(f"📁 Creating new series folder: '{target_series_name}'")
@@ -112,6 +115,7 @@ class BatchController:
                     drive_series_id = folder_data['id']
                     current_name = folder_data['name']
                     if current_name.strip() != target_series_name.strip():
+                        # This handles title changes on the platform side or manual fixes
                         logger.info(f"🔄 Renaming series folder: '{current_name}' -> '{target_series_name}'")
                         await asyncio.to_thread(self.uploader.rename_file, drive_series_id, target_series_name)
                     else:

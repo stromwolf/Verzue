@@ -440,11 +440,21 @@ class HelperSlashCog(commands.Cog):
         if not clean_name:
             return await interaction.followup.send("❌ English name cannot be empty.", ephemeral=True)
 
-        from app.services.group_manager import set_title_override
+        from app.services.group_manager import set_title_override, load_group, _clean_url
         set_title_override(group_name, clean_url, clean_name)
+        
+        # 🟢 S-GRADE: Retrieve original scraped title for background sync
+        group_data = load_group(group_name)
+        subs = group_data.get("subscriptions", [])
+        clean_target = _clean_url(clean_url)
+        original_title = next((s.get("series_title") for s in subs if _clean_url(s.get("series_url", "")) == clean_target), None)
 
         # 🟢 Sync Rename on Google Drive (Background)
-        asyncio.create_task(sync_group_folder_name(self.bot, group_name, clean_url, clean_name))
+        asyncio.create_task(sync_group_folder_name(
+            self.bot, group_name, clean_url, 
+            override_title=clean_name,
+            original_title=original_title
+        ))
 
         embed = discord.Embed(
             title="✅ Title Override Saved",
@@ -460,56 +470,74 @@ class HelperSlashCog(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="sync-drive-titles", description="[Admin] Sync all title overrides to Drive folder names")
-    @app_commands.describe(group_name="Group to sync, or leave blank for all groups")
+    @app_commands.describe(
+        group_name="Group to sync, or leave blank for all groups",
+        fix_series_folders="If True, restores series folder names to original scraped title"
+    )
     @app_commands.autocomplete(group_name=group_name_autocomplete)
-    async def sync_drive_titles(self, interaction: discord.Interaction, group_name: str | None = None):
+    async def sync_drive_titles(self, interaction: discord.Interaction, group_name: str | None = None, fix_series_folders: bool = False):
         """Backfill command to sync existing title overrides to GDrive folder names."""
         if not await self.interaction_check(interaction):
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         from app.services.group_manager import load_group
         from app.services.gdrive.sync_service import sync_group_folder_name
 
-        targets = []
+        targets = [] # (group_name, url, override_title, original_title)
         
+        groups_to_scan = []
         if group_name:
             if group_name not in self.bot.app_state.group_profiles:
                 return await interaction.followup.send(f"❌ **Unknown Group:** `{group_name}`", ephemeral=True)
-            
-            data = load_group(group_name)
-            for url, title in data.get("title_overrides", {}).items():
-                targets.append((group_name, url, title))
+            groups_to_scan = [group_name]
         else:
             # All groups
             if not Settings.GROUPS_DIR.exists():
                 return await interaction.followup.send("❌ No groups directory found.", ephemeral=True)
             
             for path in Settings.GROUPS_DIR.glob("*.json"):
-                # Skip the registry file itself if it's there
                 if path.name == "registry.json": continue
-                
-                gname = path.stem.replace('_', ' ')
-                data = load_group(gname)
-                for url, title in data.get("title_overrides", {}).items():
-                    targets.append((gname, url, title))
+                groups_to_scan.append(path.stem.replace('_', ' '))
+
+        for gname in groups_to_scan:
+            data = load_group(gname)
+            overrides = data.get("title_overrides", {})
+            subs = data.get("subscriptions", [])
+            
+            # Map url -> original title
+            from app.services.group_manager import _clean_url
+            original_map = {
+                _clean_url(s.get("series_url", "")): s.get("series_title")
+                for s in subs if s.get("series_url")
+            }
+            
+            for url, override in overrides.items():
+                original = original_map.get(_clean_url(url))
+                targets.append((gname, url, override, original))
 
         if not targets:
             return await interaction.followup.send("ℹ️ No title overrides found to sync.", ephemeral=True)
 
-        await interaction.followup.send(f"🔄 **Syncing {len(targets)} title override(s)** to Drive...", ephemeral=True)
+        await interaction.followup.send(f"🔄 **Processing {len(targets)} series** across {len(groups_to_scan)} group(s)...", ephemeral=True)
 
         success, failed = 0, 0
-        for gname, url, title in targets:
+        for gname, url, override, original in targets:
             try:
-                # We reuse the fixed background sync logic
-                await sync_group_folder_name(self.bot, gname, url, title)
+                await sync_group_folder_name(
+                    self.bot, gname, url, 
+                    override_title=override,
+                    original_title=original,
+                    fix_series_folder=fix_series_folders
+                )
                 success += 1
             except Exception as e:
                 logger.error(f"Sync failed for {gname} / {url}: {e}")
                 failed += 1
 
         await interaction.followup.send(
-            f"✅ **Sync complete:** {success} renamed, {failed} failed.",
+            f"✅ **Sync complete:** {success} synced, {failed} failed.",
             ephemeral=True
         )
         
