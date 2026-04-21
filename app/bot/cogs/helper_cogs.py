@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from discord import app_commands
 from discord.ext import commands
 from config.settings import Settings
-from app.services.group_manager import load_group, add_subscription, rename_group_profile
+from app.services.group_manager import load_group, add_subscription, rename_group_profile, update_last_chapter, get_all_subscriptions
 from app.services.redis_manager import RedisManager
 from app.services.session_service import SessionService
 from app.core.events import EventBus
@@ -903,6 +903,118 @@ class HelperSlashCog(commands.Cog):
             await interaction.followup.send(f"✅ **Refresh Successful:** Cookies for **{platform}** have been updated automatically.", ephemeral=True)
         else:
             await interaction.followup.send(f"❌ **Refresh Failed:** Automated login for **{platform}** could not be completed. Check logs.", ephemeral=True)
+
+    # --- 13. CHECKPOINT SYNC ---
+
+    @app_commands.command(
+        name="sync-checkpoint",
+        description="[Admin] Silently advance last-known chapter to current latest, preventing spam after downtime."
+    )
+    @app_commands.describe(
+        group="The group profile name to sync",
+        series="Series URL to sync (leave blank = sync ALL subscriptions in the group)"
+    )
+    @app_commands.autocomplete(group=group_name_autocomplete)
+    async def sync_checkpoint(
+        self,
+        interaction: discord.Interaction,
+        group: str,
+        series: str = None,
+    ):
+        if not await self.interaction_check(interaction):
+            return
+
+        # Defer happens in interaction_check if not already done, but we want it ephemeral for this too
+        # interaction_check defers if not done, so we are good.
+
+        scraper_manager = self.main_bot.task_queue.provider_manager
+
+        async def _sync_one(group_name: str, sub: dict) -> tuple[str, bool, str]:
+            """Returns (title, success, new_id)"""
+            try:
+                scraper = scraper_manager.get_provider_for_url(sub["series_url"])
+                if not scraper:
+                    return sub.get("series_title", "?"), False, "No scraper found"
+                
+                data = await scraper.get_series_info(sub["series_url"])
+                _, _, chapter_list, _, _, _, _, _, _ = data
+                if not chapter_list:
+                    return sub["series_title"], False, "no chapters"
+                
+                latest_id = str(chapter_list[-1]["id"])
+                old_id = str(sub.get("last_known_chapter_id", "0"))
+                
+                if latest_id == old_id:
+                    return sub["series_title"], True, f"already current ({latest_id})"
+                
+                update_last_chapter(group_name, sub["series_id"], latest_id)
+                return sub["series_title"], True, f"{old_id} → {latest_id}"
+            except Exception as e:
+                return sub.get("series_title", "?"), False, str(e)
+
+        results = []
+
+        if series:
+            # Single series mode
+            series = series.strip("<>")
+            all_subs = get_all_subscriptions()
+            # Find the specific sub in the specified group, or search globally if group matches
+            target = next(
+                ((gn, s) for gn, s in all_subs if gn == group and s.get("series_url", "").rstrip("/") == series.rstrip("/")),
+                None
+            )
+            
+            if not target:
+                # Try global search if not in specific group
+                target = next(
+                    ((gn, s) for gn, s in all_subs if s.get("series_url", "").rstrip("/") == series.rstrip("/")),
+                    None
+                )
+            
+            if not target:
+                return await interaction.followup.send("❌ Series not found in subscriptions.", ephemeral=True)
+            
+            gn, sub = target
+            title, ok, info = await _sync_one(gn, sub)
+            results.append((title, ok, info))
+        else:
+            # Bulk mode — filter by group
+            data = load_group(group)
+            subs = data.get("subscriptions", [])
+            if not subs:
+                return await interaction.followup.send(f"❌ No subscriptions in `{group}`.", ephemeral=True)
+
+            import asyncio
+            sem = asyncio.Semaphore(5)  # don't hammer scrapers
+            async def _guarded(sub):
+                async with sem:
+                    return await _sync_one(group, sub)
+
+            results = await asyncio.gather(*[_guarded(s) for s in subs])
+
+        # Build report
+        lines = []
+        for title, ok, info in results:
+            icon = "✅" if ok else "❌"
+            lines.append(f"{icon} **{title}** — `{info}`")
+
+        report = "\n".join(lines) or "Nothing to report."
+        
+        # Split report into chunks if too long (Discord limit ~2000 chars)
+        header = f"🔖 **Checkpoint Sync Complete** (`{group}`)\n\n"
+        if len(header + report) > 1900:
+            # Send in chunks
+            await interaction.followup.send(header + "See below for details:", ephemeral=True)
+            current_chunk = ""
+            for line in lines:
+                if len(current_chunk + line) > 1900:
+                    await interaction.followup.send(current_chunk, ephemeral=True)
+                    current_chunk = ""
+                current_chunk += line + "\n"
+            if current_chunk:
+                await interaction.followup.send(current_chunk, ephemeral=True)
+        else:
+            await interaction.followup.send(header + report, ephemeral=True)
 
 class GroupRemovalConfirmationView(discord.ui.View):
     def __init__(self, group_name, requester):

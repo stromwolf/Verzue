@@ -227,6 +227,63 @@ def build_new_series_notification_payload(
     }
 
 
+def build_new_series_notification_payload_with_drive(
+    *,
+    platform: str,
+    series_title: str,
+    poster_url: str | None,
+    series_url: str,
+    series_id: str,
+    drive_url: str,
+) -> dict:
+    """Same as build_new_series_notification_payload but Preview → Drive link button."""
+    platform_key = platform.lower()
+    accent_color = PLATFORM_COLORS.get(platform_key, 0x2b2d31)
+    platform_display = PLATFORM_NAMES.get(platform_key, platform.upper())
+    platform_emoji = PLATFORM_EMOJIS.get(platform_key, "🆕")
+
+    now_utc = datetime.now(timezone.utc).strftime('%H:%M UTC')
+    footer_text = f"-# S-ID: {series_id} | Detected at: {now_utc}"
+
+    inner: list[dict[str, Any]] = []
+    inner.append({"type": 10, "content": f"-# New Series @Updates of **[ {platform_emoji} [{platform_display}]({series_url}) ]**"})
+    inner.append({"type": 14, "divider": True, "spacing": 1})
+
+    if poster_url:
+        inner.append({"type": 12, "items": [{"media": {"url": poster_url}}]})
+        inner.append({"type": 14, "divider": True, "spacing": 1})
+
+    inner.append({"type": 10, "content": f"## {series_title}"})
+    inner.append({"type": 14, "divider": True, "spacing": 1})
+
+    inner.append({
+        "type": 1,
+        "components": [
+            {
+                "type": 2,
+                "style": 5,          # Link button
+                "label": "Preview",
+                "emoji": {"id": "1482676886680113172", "name": "drive"},
+                "url": drive_url,    # ← Drive link replaces custom_id
+            },
+            {
+                "type": 2,
+                "style": 3,
+                "label": "Download All",
+                "emoji": {"id": "1486828932425846994", "name": "download_all"},
+                "custom_id": f"discovery:download_all:{platform_key}:{series_id}",
+            }
+        ]
+    })
+    inner.append({"type": 14, "divider": True, "spacing": 1})
+    inner.append({"type": 10, "content": footer_text})
+
+    return {
+        "flags": 32768,
+        "components": [{"type": 17, "accent_color": accent_color, "components": inner}],
+    }
+
+
 def build_hiatus_notification_payload(
     *,
     platform: str,

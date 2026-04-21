@@ -487,7 +487,7 @@ class PiccomaProvider(BaseProvider):
         progress.update(0)
 
         async def process_one(img_data, i):
-            async with PlatformRateLimiter.get("piccoma").acquire():
+            async with PlatformRateLimiter.get("piccoma").acquire(download=True):
                 await self._download_robust(auth_session, img_data, i+1, output_dir, region)
             progress.update(i + 1)
 

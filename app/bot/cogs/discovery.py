@@ -433,7 +433,7 @@ class Discovery(commands.Cog):
                 await interaction.followup.send(f"❌ Failed to start download: `{e}`", ephemeral=True)
 
     async def _handle_preview_first(self, interaction: discord.Interaction, platform: str, series_id: str):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         try:
             provider = self.pm.get_provider(platform)
             url = f"{provider.BASE_URL}{provider.SERIES_PATH}{series_id}"
@@ -445,57 +445,87 @@ class Discovery(commands.Cog):
             if not chapter_list:
                 return await interaction.followup.send("⚠️ No chapters found for preview.", ephemeral=True)
             
-            # Find the FIRST chapter (already sorted by provider)
+            # Tell user download started (ephemeral — only they see it)
+            await interaction.followup.send("⏳ Downloading Ch.1 for preview...", ephemeral=True)
+
             first_ch = chapter_list[0]
             
-            # Queue for Download
-            group_name = self.bot.app_state.server_map.get(interaction.guild_id, Settings.DEFAULT_CLIENT_NAME)
-            ch_url = f"{url}/episodes/{first_ch['id']}" if platform == "jumptoon" else first_ch.get("url")
-            
-            # 3. Queue for Preview Preview via BatchController
+            # Queue for Download via BatchController
             from app.services.batch_controller import BatchController
             controller = BatchController(self.bot)
             
-            # 🟢 S-GRADE: UI Transformation
-            from app.bot.common.view import UniversalDashboard
-            ctx_data = {
-                'url': url, 'title': title, 'chapters': chapter_list,
-                'image_url': image_url, 'req_id': f"PREVIEW-{series_id[:4]}",
-                'series_id': series_id, 'user': interaction.user.id,
-                'status_label': status_label, 'genre_label': genre_label
-            }
-            view = UniversalDashboard(self.bot, ctx_data, platform)
-            view.interaction = interaction
-            view.processing_mode = True
-            view.phases = {"analyze": "loading", "purchase": "waiting", "download": "waiting"}
-            await view.update_view(interaction)
-
-            # 🟢 Folder Resolution & Task Preparation
+            # 🟢 S-GRADE: Prepare task (no view_ref needed for background swap)
             tasks = await controller.prepare_batch(
                 interaction=interaction,
                 selected_indices=[0], # Preview always first chapter
                 all_chapters=chapter_list,
                 title=title,
                 url=url,
-                view_ref=view,
+                view_ref=None,
                 series_id=series_id
             )
             
             if not tasks: return
 
-            for t in tasks:
-                 view.active_tasks.append(t)
-                 await self.bot.task_queue.add_task(t)
+            task = tasks[0]
+            await self.bot.task_queue.add_task(task)
             
-            asyncio.create_task(view.monitor_tasks())
+            # 🟢 Background: wait for done → patch original message
+            asyncio.create_task(
+                self._swap_preview_button_on_done(
+                    task=task,
+                    interaction=interaction,
+                    platform=platform,
+                    series_id=series_id,
+                    series_url=url,
+                    series_title=title,
+                    poster_url=image_url,
+                )
+            )
             
         except Exception as e:
             logger.error(f"Preview Error: {e}")
-            await self.bot.dispatch_error(e, interaction=interaction, event=f"Discovery: {title if 'title' in locals() else 'Series'}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message(f"❌ Failed to start preview: `{e}`", ephemeral=True)
-            else:
-                await interaction.followup.send(f"❌ Failed to start preview: `{e}`", ephemeral=True)
+            await interaction.followup.send(f"❌ Failed: `{e}`", ephemeral=True)
+
+    async def _swap_preview_button_on_done(self, *, task, interaction, platform, series_id, series_url, series_title, poster_url):
+        """Polls task until done, then patches original notification msg with Drive link button."""
+        import asyncio
+        from app.models.chapter import TaskStatus
+
+        # Poll until terminal state
+        while task.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+            await asyncio.sleep(3)
+
+        if task.status == TaskStatus.FAILED:
+            await interaction.followup.send("❌ Preview download failed.", ephemeral=True)
+            return
+
+        drive_link = task.share_link  # 🟢 S-GRADE: Match model attribute
+        if not drive_link:
+            await interaction.followup.send("⚠️ Done but no Drive link found.", ephemeral=True)
+            return
+
+        # Rebuild notification payload with Preview → Drive link button
+        from app.bot.common.notification_builder import build_new_series_notification_payload_with_drive
+        new_payload = build_new_series_notification_payload_with_drive(
+            platform=platform,
+            series_title=series_title,
+            poster_url=poster_url,
+            series_url=series_url,
+            series_id=series_id,
+            drive_url=drive_link,
+        )
+
+        try:
+            route = discord.http.Route(
+                'PATCH',
+                '/channels/{channel_id}/messages/{message_id}',
+                channel_id=interaction.channel_id,
+                message_id=interaction.message.id,
+            )
+            await self.bot.http.request(route, json=new_payload)
+        except Exception as e:
+            logger.error(f"Preview button swap failed: {e}")
 
     async def _handle_download_all(self, interaction: discord.Interaction, platform: str, series_id: str):
         await interaction.response.defer()

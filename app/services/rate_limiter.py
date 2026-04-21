@@ -19,18 +19,19 @@ logger = logging.getLogger("PlatformRateLimiter")
 class PlatformLimits:
     rate: int          # tokens / second (sustained)
     capacity: int      # burst ceiling (token bucket max)
-    concurrency: int   # max simultaneous in-flight requests
+    concurrency: int   # total max simultaneous requests
+    download_reserved: int  # slots always reserved for image downloads
 
 
 # ── Defaults per platform ────────────────────────────────────────────────────
 PLATFORM_DEFAULTS: dict[str, PlatformLimits] = {
-    "jumptoon": PlatformLimits(rate=10, capacity=12, concurrency=6),
-    "piccoma":  PlatformLimits(rate=10, capacity=10, concurrency=4),
-    "mecha":    PlatformLimits(rate=10, capacity=8,  concurrency=4),
+    "jumptoon": PlatformLimits(rate=10, capacity=12, concurrency=10, download_reserved=4),
+    "piccoma":  PlatformLimits(rate=10, capacity=10, concurrency=10, download_reserved=4),
+    "mecha":    PlatformLimits(rate=10, capacity=10, concurrency=10, download_reserved=3),
 }
 
 # Fallback for unknown platforms
-_DEFAULT_LIMITS = PlatformLimits(rate=10, capacity=8, concurrency=4)
+_DEFAULT_LIMITS = PlatformLimits(rate=10, capacity=8, concurrency=10, download_reserved=3)
 
 
 class PlatformRateLimiter:
@@ -60,36 +61,45 @@ class PlatformRateLimiter:
         return cls._instances[key]
 
     def __init__(self, platform: str, limits: PlatformLimits):
-        self.platform    = platform
-        self.limits      = limits
-        self._semaphore  = asyncio.Semaphore(limits.concurrency)
+        self.platform = platform
+        self.limits   = limits
 
-        # Local token bucket (fallback when Redis is unavailable)
-        self._tokens     = float(limits.capacity)
+        # Total concurrency pool (metadata + downloads share this)
+        self._semaphore = asyncio.Semaphore(limits.concurrency)
+
+        # Download-exclusive semaphore — always keeps download_reserved slots
+        # available. Metadata never touches this semaphore.
+        self._download_semaphore = asyncio.Semaphore(limits.download_reserved)
+
+        self._tokens      = float(limits.capacity)
         self._last_refill = time.monotonic()
         self._bucket_lock = asyncio.Lock()
 
     # ── Public context manager ───────────────────────────────────────────────
 
     class _AcquireContext:
-        def __init__(self, limiter: "PlatformRateLimiter"):
+        def __init__(self, limiter: "PlatformRateLimiter", for_download: bool):
             self._limiter = limiter
+            self._for_download = for_download
 
         async def __aenter__(self):
             await self._limiter._wait_for_token()
             await self._limiter._semaphore.acquire()
+            if self._for_download:
+                await self._limiter._download_semaphore.acquire()
             return self
 
         async def __aexit__(self, *_):
+            if self._for_download:
+                self._limiter._download_semaphore.release()
             self._limiter._semaphore.release()
 
-    def acquire(self) -> "_AcquireContext":
+    def acquire(self, download: bool = False) -> "_AcquireContext":
         """
-        Usage:
-            async with PlatformRateLimiter.get("jumptoon").acquire():
-                ...
+        download=False → metadata/poller requests (no download slot consumed)
+        download=True  → image downloads (consumes both global + download slot)
         """
-        return self._AcquireContext(self)
+        return self._AcquireContext(self, for_download=download)
 
     # ── Token bucket (local fallback) ────────────────────────────────────────
 

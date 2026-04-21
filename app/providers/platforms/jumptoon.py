@@ -92,8 +92,7 @@ class JumptoonProvider(BaseProvider):
             'Accept-Language': 'ja,en-US;q=0.9',
             'Referer': 'https://jumptoon.com/'
         }
-        # S-Grade Backpressure Control: Restricted concurrency (3-5) to prevent bandwidth saturation
-        self._download_semaphore = asyncio.Semaphore(10)
+        # Image downloads are now managed via the global PlatformRateLimiter
 
     async def _get_authenticated_session(self):
         """Fetches a healthy session from the Vault and initializes an AsyncSession."""
@@ -896,9 +895,9 @@ class JumptoonProvider(BaseProvider):
         progress.update(stats["completed"])
 
         async def download_one(item):
+            from app.services.rate_limiter import PlatformRateLimiter
             logger.log(5, f"🔗 [Jumptoon] Downloading {item['file']}: {item['url']}")
-            async with self._download_semaphore:
-
+            async with PlatformRateLimiter.get("jumptoon").acquire(download=True):
                 await self._download_image_robust(auth_session, item['url'], item['file'], output_dir, item['seed'], item['width'])
             stats["completed"] += 1
             progress.update(stats["completed"])

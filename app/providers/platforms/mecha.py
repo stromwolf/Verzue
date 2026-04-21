@@ -319,7 +319,7 @@ class MechaProvider(BaseProvider):
         # 🧤 S-Grade: Fixed Concurrency (10)
         async def fetch_one(t):
             from app.services.rate_limiter import PlatformRateLimiter
-            async with PlatformRateLimiter.get("mecha").acquire():
+            async with PlatformRateLimiter.get("mecha").acquire(download=True):
                 img_url = f"{directory_url.rstrip('/')}/{t['src']}?ver={version}"
                 try:
                     t_get = auth_session.get(img_url, timeout=30)
