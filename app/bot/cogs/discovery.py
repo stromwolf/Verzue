@@ -20,37 +20,73 @@ class Discovery(commands.Cog):
         self.main_bot = bot if hasattr(bot, 'redis_brain') else getattr(bot, 'main_bot', None)
 
     @commands.command(name="test_ui")
-    async def test_discovery_ui(self, ctx, platform: str = "jumptoon"):
+    async def test_discovery_ui(self, ctx, platform: str = "jumptoon", url: str | None = None):
         """Debug command to visualize the New Series Detection UI for a specific platform."""
+        
+        # Support: $test_ui <url> directly (no platform needed)
+        if platform.startswith("http"):
+            url = platform
+            platform = "jumptoon"  # will be overridden below
+
         platform = platform.lower()
-        logger.info(f"🧪 [Discovery] Triggered $test UI preview for {platform} by {ctx.author}")
-        
-        # Mapping for mock data
-        mocks = {
-            "jumptoon": {
-                "title": "The Rebirth of the S-Grade Ranker",
-                "series_id": "JT00138",
-                "url": "https://jumptoon.com/series/JT00138",
-                "poster_url": "https://assets.jumptoon.com/series/JT00138/episode/11/v2_0_0/20260310020123/83253720a97dd8e1caa50e3f75ec075b0978567ebcff56773dc1dc319b06ee0f.webp"
-            },
-            "piccoma": {
-                "title": "Solo Leveling (Piccoma Edition)",
-                "series_id": "5535",
-                "url": "https://piccoma.com/web/product/5535",
-                "poster_url": "https://piccoma.com/web/product/5535" # Just a placeholder link
-            },
-            "mecha": {
-                "title": "Blue Lock (MechaComic)",
-                "series_id": "123456",
-                "url": "https://mechacomic.jp/books/123456",
-                "poster_url": "https://mechacomic.jp/books/123456" 
+        logger.info(f"🧪 [Discovery] Triggered $test UI preview (Platform: {platform}, URL: {url}) by {ctx.author}")
+
+        if url:
+            try:
+                msg = await ctx.send(f"🔍 **Scraping Live Data:** <{url}>")
+                provider = self.pm.get_provider_for_url(url)
+                if not provider:
+                    return await msg.edit(content=f"❌ Unsupported URL: `{url}`")
+
+                data = await provider.get_series_info(url)
+                title, _, _, image_url, series_id, _, _, _, _ = data
+
+                # Auto-detect platform from URL
+                url_lower = url.lower()
+                if "mechacomic.jp" in url_lower: platform = "mecha"
+                elif "jumptoon.com" in url_lower: platform = "jumptoon"
+                elif "piccoma.com" in url_lower: platform = "piccoma"
+                elif "kakao.com" in url_lower: platform = "kakao"
+                elif "kuaikanmanhua.com" in url_lower: platform = "kuaikan"
+                elif "ac.qq.com" in url_lower: platform = "acqq"
+
+                mock_series = {
+                    "title": title,
+                    "series_id": series_id,
+                    "url": url,
+                    "poster_url": image_url,
+                }
+                await msg.delete()
+            except Exception as e:
+                logger.error(f"Live Test Error: {e}")
+                return await ctx.send(f"❌ Failed to fetch live data: `{e}`")
+        else:
+            # Mapping for mock data
+            mocks = {
+                "jumptoon": {
+                    "title": "The Rebirth of the S-Grade Ranker",
+                    "series_id": "JT00138",
+                    "url": "https://jumptoon.com/series/JT00138",
+                    "poster_url": "https://assets.jumptoon.com/series/JT00138/episode/11/v2_0_0/20260310020123/83253720a97dd8e1caa50e3f75ec075b0978567ebcff56773dc1dc319b06ee0f.webp"
+                },
+                "piccoma": {
+                    "title": "Solo Leveling (Piccoma Edition)",
+                    "series_id": "5535",
+                    "url": "https://piccoma.com/web/product/5535",
+                    "poster_url": "https://piccoma.com/web/product/5535" # Just a placeholder link
+                },
+                "mecha": {
+                    "title": "Blue Lock (MechaComic)",
+                    "series_id": "123456",
+                    "url": "https://mechacomic.jp/books/123456",
+                    "poster_url": "https://mechacomic.jp/books/123456" 
+                }
             }
-        }
-        
-        mock_series = mocks.get(platform, mocks["jumptoon"])
+            mock_series = mocks.get(platform, mocks["jumptoon"])
+            platform = platform if platform in mocks else "jumptoon"
         
         payload = build_new_series_notification_payload(
-            platform=platform if platform in mocks else "jumptoon",
+            platform=platform,
             series_title=mock_series["title"],
             poster_url=mock_series["poster_url"],
             series_url=mock_series["url"],
@@ -376,9 +412,6 @@ class Discovery(commands.Cog):
             
             if not target_ch:
                 return await interaction.followup.send(f"⚠️ Chapter ID `{chapter_id}` not found in the current list.", ephemeral=True)
-
-            if target_ch.get("is_locked"):
-                return await interaction.followup.send("⚠️ This chapter is locked and cannot be downloaded.", ephemeral=True)
 
             # 3. Queue for Download via BatchController
             from app.services.batch_controller import BatchController
