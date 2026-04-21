@@ -19,6 +19,23 @@ class AdminCog(commands.Cog):
         self.bot = bot
         self.login_service = LoginService()
 
+    def _is_bot_admin(self, ctx) -> bool:
+        """
+        True if invoker is the bot owner OR an authorized bot admin.
+
+        Bot admins = ALLOWED_IDS (static config) + cdn_allowed_users (runtime list).
+        Deliberately excludes Discord server administrator permission —
+        server admins in foreign guilds must never control bot infrastructure.
+        """
+        if ctx.author.id == 1216284053049704600:
+            return True
+        if ctx.author.id in Settings.ALLOWED_IDS:
+            return True
+        # Runtime list managed via /add-admin
+        if hasattr(self.bot, 'app_state') and ctx.author.id in self.bot.app_state.cdn_allowed_users:
+            return True
+        return False
+
     async def cog_check(self, ctx):
         """
         Security Gatekeeper: Only allows users in ALLOWED_IDS
@@ -27,7 +44,7 @@ class AdminCog(commands.Cog):
         if not Settings.ALLOWED_IDS:
             return True  # Open access if no IDs are set (Dev Mode)
 
-        return ctx.author.id in Settings.ALLOWED_IDS or ctx.author.id == 1216284053049704600
+        return self._is_bot_admin(ctx)
 
     async def _wait_for_drain(self, ctx, action_name: str):
         """Helper to wait for active tasks to finish before an action."""
@@ -64,9 +81,13 @@ class AdminCog(commands.Cog):
         pass
 
     @commands.command(name="sync")
-    @commands.is_owner()  # PHASE 0: was check_any(is_owner, has_permissions(administrator)) — server admins must not sync global commands
+    # PHASE 0: no per-command decorator needed — cog_check gates entire AdminCog
+    # to owner + cdn_allowed_users (bot admins). Removed has_permissions(administrator=True)
+    # which let any Discord server admin where the bot is present run this.
     async def sync_commands(self, ctx):
-        """Forces a global sync of slash commands. [Owner Only]"""
+        """Forces a global sync of slash commands. [Bot Admin Only]"""
+        if not self._is_bot_admin(ctx):
+            return await ctx.send("❌ Bot admin only.", delete_after=5)
         await self._wait_for_drain(ctx, "sync")
 
         msg = await ctx.send("🔄 Syncing slash commands...")
@@ -81,10 +102,13 @@ class AdminCog(commands.Cog):
                 self.bot.task_queue.is_draining = False
 
     @commands.command(name="restart", aliases=["reboot", "reset"])
-    @commands.is_owner()  # PHASE 0: removed has_permissions(administrator=True) — any server admin could reboot production infra
+    # PHASE 0: no per-command decorator — cog_check handles auth.
+    # Removed has_permissions(administrator=True): Discord server admins must
+    # not be able to reboot production infra.
     async def restart_bot(self, ctx, target: str | None = None):
-        """Usage: $restart [Main|Testing]. Reboots the bot instance. [Owner Only]"""
-
+        """Usage: $restart [Main|Testing]. Reboots the bot instance. [Bot Admin Only]"""
+        if not self._is_bot_admin(ctx):
+            return await ctx.send("❌ Bot admin only.", delete_after=5)
         # Identity check
         if self.bot.token_str == Settings.TESTING_BOT_TOKEN or self.bot.token_str == getattr(Settings, 'STAGING_TOKEN', None):
             my_identity = "Testing"

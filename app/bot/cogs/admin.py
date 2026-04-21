@@ -21,6 +21,23 @@ class AdminCog(commands.Cog):
         self.bot = bot
         self.login_service = LoginService()
 
+    def _is_bot_admin(self, ctx) -> bool:
+        """
+        True if invoker is the bot owner OR an authorized bot admin.
+
+        Bot admins = ALLOWED_IDS (static config) + cdn_allowed_users (runtime list).
+        Deliberately excludes Discord server administrator permission —
+        server admins in foreign guilds must never control bot infrastructure.
+        """
+        if ctx.author.id == 1216284053049704600:
+            return True
+        if ctx.author.id in Settings.ALLOWED_IDS:
+            return True
+        # Runtime list managed via /add-admin
+        if hasattr(self.bot, 'app_state') and ctx.author.id in self.bot.app_state.cdn_allowed_users:
+            return True
+        return False
+
     async def cog_check(self, ctx):
         """
         Security Gatekeeper: Only allows users in ALLOWED_IDS 
@@ -29,7 +46,7 @@ class AdminCog(commands.Cog):
         if not Settings.ALLOWED_IDS:
             return True # Open access if no IDs are set (Dev Mode)
             
-        return ctx.author.id in Settings.ALLOWED_IDS or ctx.author.id == 1216284053049704600
+        return self._is_bot_admin(ctx)
 
 
     async def _wait_for_drain(self, ctx, action_name: str):
@@ -62,9 +79,11 @@ class AdminCog(commands.Cog):
         pass
 
     @commands.command(name="sync")
-    @commands.is_owner() # Restriction: Owner only. Admins in joined guilds cannot reboot production.
+    # Phase 0: cog_check gates entire AdminCog to bot admins.
     async def sync_commands(self, ctx):
-        """Forces a global sync of slash commands. [Owner/Admin Only]"""
+        """Forces a global sync of slash commands. [Bot Admin Only]"""
+        if not self._is_bot_admin(ctx):
+            return await ctx.send("❌ Bot admin only.", delete_after=5)
         # 🟢 S-GRADE: Graceful Check
         await self._wait_for_drain(ctx, "sync")
 
@@ -79,9 +98,11 @@ class AdminCog(commands.Cog):
                 self.bot.task_queue.is_draining = False
 
     @commands.command(name="restart", aliases=["reboot", "reset"])
-    @commands.is_owner() # Restriction: Owner only. Admins in joined guilds cannot reboot production.
+    # Phase 0: cog_check handles auth. Explicit check here for safety.
     async def restart_bot(self, ctx, target: str | None = None):
-        """Usage: $restart [Main|Testing]. Reboots the bot instance. [Owner/Admin Only]"""
+        """Usage: $restart [Main|Testing]. Reboots the bot instance. [Bot Admin Only]"""
+        if not self._is_bot_admin(ctx):
+            return await ctx.send("❌ Bot admin only.", delete_after=5)
 
         # 🟢 S-GRADE: Identity Check
         # Identify instance identity based on the token in use
@@ -200,9 +221,11 @@ class AdminCog(commands.Cog):
             await msg.edit(content=f"Come <@1216284053049704600>. New Error")
 
     @commands.group(name="clear_platform", invoke_without_command=True)
-    @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
+    # Phase 0: Bot admin only.
     async def clear_platform(self, ctx, platform: str):
         """Usage: $clear_platform <platform>. Purges all Redis sessions for a platform."""
+        if not self._is_bot_admin(ctx):
+            return await ctx.send("❌ Bot admin only.", delete_after=5)
         try:
             msg = await ctx.send(f"🧹 **Cleaning sessions for: {platform.capitalize()}...**")
             
@@ -230,9 +253,10 @@ class AdminCog(commands.Cog):
     # ==========================================
 
     @commands.command(name="qstats")
-    @commands.is_owner()
     async def queue_stats(self, ctx):
-        """Show current Redis queue depths and worker levels."""
+        """Show current Redis queue depths and worker levels. [Bot Admin Only]"""
+        if not self._is_bot_admin(ctx):
+            return await ctx.send("❌ Bot admin only.", delete_after=5)
         depths = await self.bot.task_queue.redis.queue.queue_depths()
         embed = discord.Embed(title="📊 Queue Depths", color=0x3498db)
         embed.add_field(name="Global (pending)", value=f"`{depths.get('global', 0)}`")
@@ -248,16 +272,18 @@ class AdminCog(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name="dlq_replay")
-    @commands.is_owner()
     async def replay_dead_letter(self, ctx, max_count: int = 100):
-        """Replay failed tasks back into the global queue."""
+        """Replay failed tasks back into the global queue. [Bot Admin Only]"""
+        if not self._is_bot_admin(ctx):
+            return await ctx.send("❌ Bot admin only.", delete_after=5)
         n = await self.bot.task_queue.redis.queue.replay_dead_letter(max_count=max_count)
         await ctx.send(f"♻️ Replayed **{n}** tasks from dead-letter back to global queue.")
 
     @commands.command(name="backup_status")
-    @commands.is_owner()
     async def backup_status(self, ctx):
-        """Usage: $backup_status. Checks the freshness of local snapshots."""
+        """Usage: $backup_status. Checks the freshness of local snapshots. [Bot Admin Only]"""
+        if not self._is_bot_admin(ctx):
+            return await ctx.send("❌ Bot admin only.", delete_after=5)
         import os
         from datetime import datetime
         
@@ -312,7 +338,7 @@ class AdminCog(commands.Cog):
             await ctx.send(f"⚠️ **Error checking backups**: `{e}`")
 
     @commands.command(name="re-schedule")
-    @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
+    # Phase 0: Bot admin only.
     async def reschedule(self, ctx, platform: str = None):
         """
         Usage:
@@ -322,8 +348,10 @@ class AdminCog(commands.Cog):
           $re-schedule mecha        — only Mecha subs
 
         Fetches fresh metadata for every unscheduled (or all) subscription
-        and writes the detected UTC release day back to disk + Redis.
+        and writes the detected UTC release day back to disk + Redis. [Bot Admin Only]
         """
+        if not self._is_bot_admin(ctx):
+            return await ctx.send("❌ Bot admin only.", delete_after=5)
         from app.services.group_manager import (
             load_group, save_group, _group_filename
         )
