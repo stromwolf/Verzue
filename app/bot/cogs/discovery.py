@@ -479,32 +479,71 @@ class Discovery(commands.Cog):
             if not chapter_list:
                 return await interaction.followup.send("⚠️ No chapters found for preview.", ephemeral=True)
             
-            # Tell user download started (ephemeral — only they see it)
-            await interaction.followup.send("⏳ Downloading Ch.1 for preview...", ephemeral=True)
-
             first_ch = chapter_list[0]
             
             # Queue for Download via BatchController
             from app.services.batch_controller import BatchController
             controller = BatchController(self.bot)
             
-            # 🟢 S-GRADE: Prepare task (no view_ref needed for background swap)
+            # 🟢 S-GRADE: Use a temporary shim to capture existing links from prepare_batch
+            class TempView:
+                def __init__(self):
+                    self.existing_links = {}
+                    self.active_tasks = []
+                    self._full_scan_task = None
+                    self.req_id = f"PRE-{series_id[:4]}"
+                def trigger_refresh(self): pass
+                
+            temp_view = TempView()
+
+            # 🟢 Resolve folder structure and check existence
             tasks = await controller.prepare_batch(
                 interaction=interaction,
                 selected_indices=[0], # Preview always first chapter
                 all_chapters=chapter_list,
                 title=title,
                 url=url,
-                view_ref=None,
+                view_ref=temp_view,
                 series_id=series_id
             )
             
-            if not tasks: return
+            # 🟢 CASE A: Chapter already exists on Google Drive — Swap instantly!
+            if not tasks:
+                # Resolve the key used in batch_controller (chapter_str)
+                chapter_str = first_ch.get('notation') or first_ch.get('number_text') or "1"
+                existing = temp_view.existing_links.get(chapter_str)
+                drive_link = existing.get("link") if isinstance(existing, dict) else existing
+                
+                if drive_link:
+                    logger.info(f"⚡ [Preview] Ch.1 already exists for '{title}'. Swapping button immediately.")
+                    from app.bot.common.notification_builder import build_new_series_notification_payload_with_drive
+                    new_payload = build_new_series_notification_payload_with_drive(
+                        platform=platform,
+                        series_title=title,
+                        poster_url=image_url,
+                        series_url=url,
+                        series_id=series_id,
+                        drive_url=drive_link,
+                    )
+                    route = discord.http.Route(
+                        'PATCH',
+                        '/channels/{channel_id}/messages/{message_id}',
+                        channel_id=interaction.channel_id,
+                        message_id=interaction.message.id,
+                    )
+                    await self.bot.http.request(route, json=new_payload)
+                    await interaction.followup.send("✅ Preview link is already available!", ephemeral=True)
+                else:
+                    await interaction.followup.send("⚠️ Chapter marked as existing but no link found in Drive.", ephemeral=True)
+                return
 
+            # 🟢 CASE B: Chapter needs to be downloaded
+            await interaction.followup.send("⏳ Downloading Ch.1 for preview...", ephemeral=True)
+            
             task = tasks[0]
             await self.bot.task_queue.add_task(task)
             
-            # 🟢 Background: wait for done → patch original message
+            # Background: wait for done → patch original message
             asyncio.create_task(
                 self._swap_preview_button_on_done(
                     task=task,
@@ -519,7 +558,7 @@ class Discovery(commands.Cog):
             
         except Exception as e:
             logger.error(f"Preview Error: {e}")
-            await interaction.followup.send(f"❌ Failed: `{e}`", ephemeral=True)
+            await interaction.followup.send(f"❌ Failed to start preview: `{e}`", ephemeral=True)
 
     async def _swap_preview_button_on_done(self, *, task, interaction, platform, series_id, series_url, series_title, poster_url):
         """Waits for task_completed event via EventBus, then patches original notification msg with Drive link button."""
