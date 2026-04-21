@@ -3,6 +3,7 @@ import asyncio
 import json
 from app.services.redis_manager import RedisManager
 from app.models.chapter import TaskStatus
+from app.core.events import EventBus
 
 logger = logging.getLogger("TaskListener")
 
@@ -93,3 +94,12 @@ class TaskListener:
         if updated:
             # Trigger a UI refresh if something changed
             view.trigger_refresh()
+            
+        # 🟢 S-GRADE: Emit to local EventBus for distributed listeners (like Discovery Preview)
+        await EventBus.emit("task_updated", task_dict)
+        
+        status_val = task_dict.get("status")
+        if status_val == TaskStatus.COMPLETED.value:
+            await EventBus.emit("task_completed", task_dict)
+        elif status_val == TaskStatus.FAILED.value:
+            await EventBus.emit("task_failed", task_dict, task_dict.get("error_message"))

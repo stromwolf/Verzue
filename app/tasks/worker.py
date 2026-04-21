@@ -189,6 +189,12 @@ class TaskWorker:
             await self._fast_upload(task, final_dir)
             task.status = TaskStatus.COMPLETED
             self._sync_view_status(task)
+            
+            # 🟢 S-GRADE: Store share_link in Redis for distributed link retrieval (e.g. Discovery Cog)
+            if task.share_link:
+                redis_key = f"verzue:share_link:{task.req_id}"
+                await redis_brain.client.set(redis_key, task.share_link, ex=3600)
+            
             logger.info(f"✅ BACKGROUND UPLOAD COMPLETE: [{task.series_title}] - {task.title}")
             await EventBus.emit("task_completed", task)
             

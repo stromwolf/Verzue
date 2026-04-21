@@ -9,6 +9,7 @@ from app.providers.manager import ProviderManager
 from app.services.redis_manager import RedisManager
 from app.bot.common.notification_builder import build_new_series_notification_payload, build_notification_payload, build_hiatus_notification_payload
 from app.models.chapter import ChapterTask
+from app.core.events import EventBus
 from config.settings import Settings
 
 class Discovery(commands.Cog):
@@ -521,35 +522,52 @@ class Discovery(commands.Cog):
             await interaction.followup.send(f"❌ Failed: `{e}`", ephemeral=True)
 
     async def _swap_preview_button_on_done(self, *, task, interaction, platform, series_id, series_url, series_title, poster_url):
-        """Polls task until done, then patches original notification msg with Drive link button."""
+        """Waits for task_completed event via EventBus, then patches original notification msg with Drive link button."""
         import asyncio
-        from app.models.chapter import TaskStatus
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
 
-        # Poll until terminal state
-        while task.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
-            await asyncio.sleep(3)
+        # 🟢 Define the event handlers
+        async def on_task_completed(event_data):
+            # event_data can be a task object (local) or a dict (bridged from Redis)
+            e_req_id = event_data.req_id if hasattr(event_data, "req_id") else event_data.get("req_id")
+            if e_req_id == task.req_id and not future.done():
+                future.set_result(True)
 
-        if task.status == TaskStatus.FAILED:
-            await interaction.followup.send("❌ Preview download failed.", ephemeral=True)
-            return
+        async def on_task_failed(failed_task, error):
+            e_req_id = failed_task.req_id if hasattr(failed_task, "req_id") else failed_task.get("req_id")
+            if e_req_id == task.req_id and not future.done():
+                future.set_exception(Exception(f"Task failed: {error}"))
 
-        drive_link = task.share_link  # 🟢 S-GRADE: Match model attribute
-        if not drive_link:
-            await interaction.followup.send("⚠️ Done but no Drive link found.", ephemeral=True)
-            return
-
-        # Rebuild notification payload with Preview → Drive link button
-        from app.bot.common.notification_builder import build_new_series_notification_payload_with_drive
-        new_payload = build_new_series_notification_payload_with_drive(
-            platform=platform,
-            series_title=series_title,
-            poster_url=poster_url,
-            series_url=series_url,
-            series_id=series_id,
-            drive_url=drive_link,
-        )
+        # 🟢 Subscribe to the global EventBus
+        EventBus.subscribe("task_completed", on_task_completed)
+        EventBus.subscribe("task_failed", on_task_failed)
 
         try:
+            # 10 minute timeout for preview download + upload
+            await asyncio.wait_for(future, timeout=600)
+            
+            # Event fired — fetch share_link from Redis (stored by the worker on completion)
+            redis_key = f"verzue:share_link:{task.req_id}"
+            # Use self.bot.redis_brain if it exists, otherwise resolve it
+            redis = getattr(self.bot, 'redis_brain', None) or RedisManager()
+            drive_link = await redis.client.get(redis_key)
+
+            if not drive_link:
+                logger.warning(f"⚠️ [Preview] Task {task.req_id} completed but no Drive link found in Redis.")
+                return
+
+            # PATCH the original notification message with the new button
+            from app.bot.common.notification_builder import build_new_series_notification_payload_with_drive
+            new_payload = build_new_series_notification_payload_with_drive(
+                platform=platform,
+                series_title=series_title,
+                poster_url=poster_url,
+                series_url=series_url,
+                series_id=series_id,
+                drive_url=drive_link,
+            )
+
             route = discord.http.Route(
                 'PATCH',
                 '/channels/{channel_id}/messages/{message_id}',
@@ -557,8 +575,16 @@ class Discovery(commands.Cog):
                 message_id=interaction.message.id,
             )
             await self.bot.http.request(route, json=new_payload)
+            logger.info(f"✅ [Preview] Successfully swapped button for '{series_title}' ({task.req_id})")
+
+        except asyncio.TimeoutError:
+            logger.warning(f"⏰ [Preview] Timeout waiting for task {task.req_id}")
         except Exception as e:
-            logger.error(f"Preview button swap failed: {e}")
+            logger.error(f"❌ [Preview] Failed to swap button: {e}")
+        finally:
+            # 🟢 CRITICAL: Unsubscribe to prevent memory leaks and redundant listener triggers
+            EventBus.unsubscribe("task_completed", on_task_completed)
+            EventBus.unsubscribe("task_failed", on_task_failed)
 
     async def _handle_download_all(self, interaction: discord.Interaction, platform: str, series_id: str):
         await interaction.response.defer()

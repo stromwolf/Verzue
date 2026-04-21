@@ -31,6 +31,18 @@ class EventBus:
         logger.debug(f"[EventBus] Subscribed {callback.__qualname__ if hasattr(callback, '__qualname__') else callback} to '{event_name}' ({len(cls._listeners[event_name])} total)")
 
     @classmethod
+    def unsubscribe(cls, event_name: str, callback: Callable):
+        if event_name in cls._listeners:
+            try:
+                # Use standard list removal. Comparison logic in subscribe ensures
+                # that what we added is what we remove.
+                cls._listeners[event_name].remove(callback)
+                logger.debug(f"[EventBus] Unsubscribed {callback.__qualname__ if hasattr(callback, '__qualname__') else callback} from '{event_name}' ({len(cls._listeners[event_name])} left)")
+            except ValueError:
+                # Callback wasn't in the list
+                pass
+
+    @classmethod
     async def emit(cls, event_name: str, *args, **kwargs):
         if event_name in cls._listeners:
             for callback in cls._listeners[event_name]:
