@@ -480,7 +480,8 @@ class HelperSlashCog(commands.Cog):
         if not await self.interaction_check(interaction):
             return
 
-        await interaction.response.defer(ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
 
         from app.services.group_manager import load_group
         from app.services.gdrive.sync_service import sync_group_folder_name
