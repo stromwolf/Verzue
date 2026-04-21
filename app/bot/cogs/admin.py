@@ -106,7 +106,7 @@ class AdminCog(commands.Cog):
 
         # 🟢 S-GRADE: Identity Check
         # Identify instance identity based on the token in use
-        if self.bot.token_str == Settings.TESTING_BOT_TOKEN or self.bot.token_str == Settings.STAGING_TOKEN:
+        if self.bot.token_str == Settings.TESTING_BOT_TOKEN or self.bot.token_str == getattr(Settings, 'STAGING_TOKEN', None):
             my_identity = "Testing"
         elif self.bot.token_str == Settings.ADMIN_BOT_TOKEN:
             my_identity = "Admin"
