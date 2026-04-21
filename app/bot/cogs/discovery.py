@@ -492,6 +492,9 @@ class Discovery(commands.Cog):
                     self.active_tasks = []
                     self._full_scan_task = None
                     self.req_id = f"PRE-{series_id[:4]}"
+                    self.phases = {"analyze": "loading", "purchase": "waiting", "download": "waiting"}
+                    self.purchase_count = 0
+                    self.any_waiters = False
                 def trigger_refresh(self): pass
                 
             temp_view = TempView()
