@@ -363,6 +363,36 @@ def get_interested_groups(series_url: str) -> list[tuple[str, str]]:
     return results
 
 
+def get_drive_folder_cache(group_name: str, series_url: str) -> dict:
+    """Returns cached Drive folder IDs for a series, or empty dict."""
+    data = load_group(group_name)
+    clean = _clean_url(series_url)
+    for sub in data.get("subscriptions", []):
+        if _clean_url(sub.get("series_url", "")) == clean:
+            return {
+                "platform_folder_id": sub.get("drive_platform_folder_id"),
+                "series_folder_id":   sub.get("drive_series_folder_id"),
+                "main_folder_id":     sub.get("drive_main_folder_id"),
+                "group_folder_id":    sub.get("drive_group_folder_id"),
+            }
+    return {}
+
+
+def set_drive_folder_cache(group_name: str, series_url: str, ids: dict):
+    """Persists resolved Drive folder IDs into the subscription entry."""
+    data = load_group(group_name)
+    clean = _clean_url(series_url)
+    for sub in data.get("subscriptions", []):
+        if _clean_url(sub.get("series_url", "")) == clean:
+            sub["drive_platform_folder_id"] = ids.get("platform_folder_id")
+            sub["drive_series_folder_id"]   = ids.get("series_folder_id")
+            sub["drive_main_folder_id"]     = ids.get("main_folder_id")
+            sub["drive_group_folder_id"]    = ids.get("group_folder_id")
+            save_group(group_name, data)
+            logger.info(f"[GroupManager] Drive folder cache saved for {series_url}")
+            return
+
+
 async def sync_index_to_redis():
     """One-time startup sync to populate Redis from JSON files."""
     logger.info("🔄 [GroupManager] Syncing local group data to Redis Index...")

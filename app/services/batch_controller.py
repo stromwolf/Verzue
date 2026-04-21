@@ -3,7 +3,9 @@ import logging
 import discord
 from config.settings import Settings
 from app.models.chapter import ChapterTask
-from app.services.group_manager import get_interested_groups
+from app.models.chapter import ChapterTask
+from app.services.group_manager import get_interested_groups, get_drive_folder_cache, set_drive_folder_cache
+from typing import List, Optional, Any, Dict
 from typing import List, Optional, Any, Dict
 
 logger = logging.getLogger("BatchController")
@@ -39,95 +41,114 @@ class BatchController:
                 return self._create_local_tasks(selected_indices, all_chapters, title, url, scan_group, interaction, series_id, req_id)
 
             # 1. SETUP DRIVE (Platform -> [ID] - Name -> MAIN/Group)
-            # Determine service for platform folder
-            service = "Unknown"
-            if "mechacomic.jp" in url: service = "Mecha"
-            elif "jumptoon.com" in url: service = "Jumptoon"
-            elif "piccoma" in url: service = "Piccoma"
-            elif "kakao.com" in url: service = "Kakao"
-            elif "qq.com" in url: service = "Tencent"
-            elif "kuaikanmanhua.com" in url: service = "Kuaikan"
+            _cache = get_drive_folder_cache(scan_group, url)
+            platform_id = _cache.get("platform_folder_id")
+            drive_series_id = _cache.get("series_folder_id")
+            main_id = _cache.get("main_folder_id")
+            requester_folder_id = _cache.get("group_folder_id")
 
-            # 1a. Raws Root Folder
-            try:
-                root_info = await asyncio.to_thread(self.uploader.client.get_service().files().get(fileId=Settings.GDRIVE_ROOT_ID, fields='name', supportsAllDrives=True).execute)
-                root_name = root_info.get('name', '').strip()
-                logger.info(f"🏠 Drive Root Name: '{root_name}' (ID: {Settings.GDRIVE_ROOT_ID})")
-                
-                if root_name.lower() == "raws":
-                    logger.info("🎯 Root is already 'Raws', skipping root-level folder creation.")
-                    raws_root_id = Settings.GDRIVE_ROOT_ID
-                else:
-                    raws_root_id = await asyncio.to_thread(self.uploader.create_folder, "Raws", Settings.GDRIVE_ROOT_ID)
-            except Exception as e:
-                logger.error(f"Failed to check root folder name: {e}")
-                raws_root_id = await asyncio.to_thread(self.uploader.create_folder, "Raws", Settings.GDRIVE_ROOT_ID)
+            _cache_hit = all([platform_id, drive_series_id, main_id, requester_folder_id])
 
-            # 1b. Platform Folder (e.g. Jumptoon)
-            platform_id = await asyncio.to_thread(self.uploader.create_folder, service, raws_root_id)
-            
-            # 1c. Series Folder (Search by [ID] prefix)
-            prefix = f"[{series_id}]"
-            logger.info(f"🔍 Searching for series folder with prefix '{prefix}' for '{original_title}'...")
-            folder_data = await asyncio.to_thread(self.uploader.find_folder_by_prefix, prefix, platform_id)
-            
-            target_series_name = f"{prefix} - {original_title or title}"
-            
-            if not folder_data:
-                logger.info(f"📁 Creating new series folder: '{target_series_name}'")
-                drive_series_id = await asyncio.to_thread(self.uploader.create_folder, target_series_name, platform_id)
+            if _cache_hit:
+                logger.info(f"⚡ Drive cache HIT for {series_id} — skipping GDrive folder resolution")
+                display_group = scan_group if " team" in scan_group.lower() else f"{scan_group} Team"
+                requester_folder = {"id": requester_folder_id, "name": f"{display_group} - {title}", "group": scan_group}
             else:
-                drive_series_id = folder_data['id']
-                current_name = folder_data['name']
-                if current_name.strip() != target_series_name.strip():
-                    logger.info(f"🔄 Renaming series folder: '{current_name}' -> '{target_series_name}'")
-                    await asyncio.to_thread(self.uploader.rename_file, drive_series_id, target_series_name)
+                # 1a. Raws Root Folder
+                try:
+                    root_info = await asyncio.to_thread(self.uploader.client.get_service().files().get(fileId=Settings.GDRIVE_ROOT_ID, fields='name', supportsAllDrives=True).execute)
+                    root_name = root_info.get('name', '').strip()
+                    logger.info(f"🏠 Drive Root Name: '{root_name}' (ID: {Settings.GDRIVE_ROOT_ID})")
+                    
+                    if root_name.lower() == "raws":
+                        logger.info("🎯 Root is already 'Raws', skipping root-level folder creation.")
+                        raws_root_id = Settings.GDRIVE_ROOT_ID
+                    else:
+                        raws_root_id = await asyncio.to_thread(self.uploader.create_folder, "Raws", Settings.GDRIVE_ROOT_ID)
+                except Exception as e:
+                    logger.error(f"Failed to check root folder name: {e}")
+                    raws_root_id = await asyncio.to_thread(self.uploader.create_folder, "Raws", Settings.GDRIVE_ROOT_ID)
+
+                # 1b. Platform Folder (e.g. Jumptoon)
+                platform_id = await asyncio.to_thread(self.uploader.create_folder, service, raws_root_id)
+                
+                # 1c. Series Folder (Search by [ID] prefix)
+                prefix = f"[{series_id}]"
+                logger.info(f"🔍 Searching for series folder with prefix '{prefix}' for '{original_title}'...")
+                folder_data = await asyncio.to_thread(self.uploader.find_folder_by_prefix, prefix, platform_id)
+                
+                target_series_name = f"{prefix} - {original_title or title}"
+                
+                if not folder_data:
+                    logger.info(f"📁 Creating new series folder: '{target_series_name}'")
+                    drive_series_id = await asyncio.to_thread(self.uploader.create_folder, target_series_name, platform_id)
                 else:
-                    logger.info(f"✅ Using existing series folder: '{current_name}'")
+                    drive_series_id = folder_data['id']
+                    current_name = folder_data['name']
+                    if current_name.strip() != target_series_name.strip():
+                        logger.info(f"🔄 Renaming series folder: '{current_name}' -> '{target_series_name}'")
+                        await asyncio.to_thread(self.uploader.rename_file, drive_series_id, target_series_name)
+                    else:
+                        logger.info(f"✅ Using existing series folder: '{current_name}'")
 
-            # 1d. MAIN & Multi-Group Folders in Parallel
-            interested_groups = get_interested_groups(url)
-            
-            current_group_in_list = False
-            for g_name, _ in interested_groups:
-                if g_name.lower() == scan_group.lower():
-                    current_group_in_list = True
-                    break
-            
-            if not current_group_in_list:
-                interested_groups.append((scan_group, title))
-
-            logger.info(f"📡 Parallel Setup: Creating MAIN and {len(interested_groups)} group folders...")
-
-            main_folder_coro = asyncio.to_thread(self.uploader.create_folder, "MAIN", drive_series_id)
-            group_folder_coros = []
-            for g_name, g_title in interested_groups:
-                display_group = g_name if " team" in g_name.lower() else f"{g_name} Team"
-                client_folder_name = f"{display_group} - {g_title}"
-                group_folder_coros.append(asyncio.to_thread(self.uploader.create_folder, client_folder_name, drive_series_id))
+                # 1d. MAIN & Multi-Group Folders in Parallel
+                interested_groups = get_interested_groups(url)
                 
-            results = await asyncio.gather(main_folder_coro, *group_folder_coros)
-            main_id = results[0]
-            
-            all_interested_folders = []
-            requester_folder = None
-            for i, (g_name, g_title) in enumerate(interested_groups):
-                c_id = results[i+1] # Skip index 0 (MAIN)
-                display_group = g_name if " team" in g_name.lower() else f"{g_name} Team"
-                client_folder_name = f"{display_group} - {g_title}"
+                current_group_in_list = False
+                for g_name, _ in interested_groups:
+                    if g_name.lower() == scan_group.lower():
+                        current_group_in_list = True
+                        break
                 
-                folder_info = {'id': c_id, 'name': client_folder_name, 'group': g_name}
-                all_interested_folders.append(folder_info)
-                if g_name.lower() == scan_group.lower():
-                    requester_folder = folder_info
+                if not current_group_in_list:
+                    interested_groups.append((scan_group, title))
 
-            # 1e. Parallel Permissions
-            logger.info("🌍 Parallel Permissions: Making folders public...")
-            permission_coros = [asyncio.to_thread(self.uploader.make_public, f['id']) for f in all_interested_folders]
-            permission_coros.append(asyncio.to_thread(self.uploader.make_public, main_id))
-            await asyncio.gather(*permission_coros)
+                logger.info(f"📡 Parallel Setup: Creating MAIN and {len(interested_groups)} group folders...")
 
-            main_manifest = await asyncio.to_thread(self.uploader.list_all_items, main_id)
+                main_folder_coro = asyncio.to_thread(self.uploader.create_folder, "MAIN", drive_series_id)
+                group_folder_coros = []
+                for g_name, g_title in interested_groups:
+                    display_group = g_name if " team" in g_name.lower() else f"{g_name} Team"
+                    client_folder_name = f"{display_group} - {g_title}"
+                    group_folder_coros.append(asyncio.to_thread(self.uploader.create_folder, client_folder_name, drive_series_id))
+                    
+                results = await asyncio.gather(main_folder_coro, *group_folder_coros)
+                main_id = results[0]
+                
+                all_interested_folders = []
+                requester_folder = None
+                for i, (g_name, g_title) in enumerate(interested_groups):
+                    c_id = results[i+1] # Skip index 0 (MAIN)
+                    display_group = g_name if " team" in g_name.lower() else f"{g_name} Team"
+                    client_folder_name = f"{display_group} - {g_title}"
+                    
+                    folder_info = {'id': c_id, 'name': client_folder_name, 'group': g_name}
+                    all_interested_folders.append(folder_info)
+                    if g_name.lower() == scan_group.lower():
+                        requester_folder = folder_info
+
+                # 1e. Parallel Permissions
+                logger.info("🌍 Parallel Permissions: Making folders public...")
+                permission_coros = [asyncio.to_thread(self.uploader.make_public, f['id']) for f in all_interested_folders]
+                permission_coros.append(asyncio.to_thread(self.uploader.make_public, main_id))
+                await asyncio.gather(*permission_coros)
+
+                # Persist the expanded cache
+                set_drive_folder_cache(scan_group, url, {
+                    "platform_folder_id": platform_id,
+                    "series_folder_id":   drive_series_id,
+                    "main_folder_id":     main_id,
+                    "group_folder_id":    requester_folder.get('id') if requester_folder else None,
+                })
+
+            # 2. CHAPTER SCANNING
+            try:
+                main_manifest = await asyncio.to_thread(self.uploader.list_all_items, main_id)
+            except Exception as e:
+                if "404" in str(e) or "notFound" in str(e).lower():
+                    logger.warning(f"⚠️ Cached Drive folder {main_id} not found — clearing cache and retrying")
+                    set_drive_folder_cache(scan_group, url, {})
+                raise
 
             tasks_to_queue = []
             chapters_to_unlock = []
@@ -211,6 +232,11 @@ class BatchController:
                 view_ref.trigger_refresh()
 
             return tasks_to_queue
+        except Exception as e:
+            if "404" in str(e) or "notFound" in str(e).lower():
+                logger.warning(f"⚠️ Stale GDrive folder cache detected for {series_id}. Invalidating...")
+                set_drive_folder_cache(scan_group, url, {})
+            raise
         finally:
             req_id_context.reset(t1)
             group_name_context.reset(t2)
