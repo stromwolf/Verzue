@@ -54,10 +54,6 @@ class PollerNotifier:
 
             # Get custom title override (Vault)
             custom_title = get_title_override(group_name, sub["series_url"])
-            
-            # 🟢 S-GRADE: Default to Chapter Number if no override
-            if not custom_title:
-                custom_title = chapter_number
 
             # Get next N-ID
             notification_id = get_next_notification_id(group_name)

@@ -67,11 +67,15 @@ def build_notification_payload(
         final_poster_url = "attachment://poster.png"
 
     # --- Title block ---
-    subtitle = f"-# **{chapter_number}**" if chapter_number else ""
+    chapter_subtitle = f"-# **{chapter_number}**" if chapter_number else ""
+    
     if custom_title:
-        title_text = f"## {custom_title}\n{subtitle}"
+        # Custom Title is Main, Original Title is Subtitle
+        original_subtitle = f"-# **{series_title}**\n" if series_title else ""
+        title_text = f"## {custom_title}\n{original_subtitle}{chapter_subtitle}"
     else:
-        title_text = f"## {series_title}\n{subtitle}"
+        # Original Title is Main
+        title_text = f"## {series_title}\n{chapter_subtitle}"
 
     # --- Footer IDs ---
     footer_text = f"-# N-ID: {notification_id} | S-ID: {series_id}"
