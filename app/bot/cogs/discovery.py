@@ -127,7 +127,7 @@ class Discovery(commands.Cog):
                 
                 mock_data = {
                     "title": title,
-                    "custom_title": latest_ch.get("title", "New Chapter"),
+                    "custom_title": None,  # No vault override in test context
                     "series_id": s_id or final_url.split("/")[-1],
                     "url": final_url,
                     "poster_url": image_url,
