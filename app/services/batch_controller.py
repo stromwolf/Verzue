@@ -6,7 +6,7 @@ from app.models.chapter import ChapterTask
 from app.models.chapter import ChapterTask
 from app.services.group_manager import get_interested_groups, get_drive_folder_cache, set_drive_folder_cache
 from typing import List, Optional, Any, Dict
-from typing import List, Optional, Any, Dict
+from app.core.utils import get_service_name, extract_series_id
 
 logger = logging.getLogger("BatchController")
 
@@ -96,7 +96,8 @@ class BatchController:
                     raws_root_id = await asyncio.to_thread(self.uploader.create_folder, "Raws", Settings.GDRIVE_ROOT_ID)
 
                 # 1b. Platform Folder (e.g. Jumptoon)
-                platform_id = await asyncio.to_thread(self.uploader.create_folder, service, raws_root_id)
+                service_name = get_service_name(url)
+                platform_id = await asyncio.to_thread(self.uploader.create_folder, service_name, raws_root_id)
                 
                 # 1c. Series Folder (Search by [ID] prefix)
                 prefix = f"[{series_id}]"
