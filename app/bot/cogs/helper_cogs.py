@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from discord import app_commands
 from discord.ext import commands
 from config.settings import Settings
-from app.services.group_manager import load_group, add_subscription, rename_group_profile, update_last_chapter, get_all_subscriptions
+from app.services.group_manager import load_group, add_subscription, rename_group_profile, update_last_chapter, get_all_subscriptions, set_drive_folder_cache
 from app.services.redis_manager import RedisManager
 from app.services.session_service import SessionService
 from app.core.events import EventBus
@@ -458,6 +458,80 @@ class HelperSlashCog(commands.Cog):
             color=0x2ecc71
         )
         await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="sync-drive-titles", description="[Admin] Sync all title overrides to Drive folder names")
+    @app_commands.describe(group_name="Group to sync, or leave blank for all groups")
+    @app_commands.autocomplete(group_name=group_name_autocomplete)
+    async def sync_drive_titles(self, interaction: discord.Interaction, group_name: str | None = None):
+        """Backfill command to sync existing title overrides to GDrive folder names."""
+        if not await self.interaction_check(interaction):
+            return
+
+        from app.services.group_manager import load_group
+        from app.services.gdrive.sync_service import sync_group_folder_name
+
+        targets = []
+        
+        if group_name:
+            if group_name not in self.bot.app_state.group_profiles:
+                return await interaction.followup.send(f"❌ **Unknown Group:** `{group_name}`", ephemeral=True)
+            
+            data = load_group(group_name)
+            for url, title in data.get("title_overrides", {}).items():
+                targets.append((group_name, url, title))
+        else:
+            # All groups
+            if not Settings.GROUPS_DIR.exists():
+                return await interaction.followup.send("❌ No groups directory found.", ephemeral=True)
+            
+            for path in Settings.GROUPS_DIR.glob("*.json"):
+                # Skip the registry file itself if it's there
+                if path.name == "registry.json": continue
+                
+                gname = path.stem.replace('_', ' ')
+                data = load_group(gname)
+                for url, title in data.get("title_overrides", {}).items():
+                    targets.append((gname, url, title))
+
+        if not targets:
+            return await interaction.followup.send("ℹ️ No title overrides found to sync.", ephemeral=True)
+
+        await interaction.followup.send(f"🔄 **Syncing {len(targets)} title override(s)** to Drive...", ephemeral=True)
+
+        success, failed = 0, 0
+        for gname, url, title in targets:
+            try:
+                # We reuse the fixed background sync logic
+                await sync_group_folder_name(self.bot, gname, url, title)
+                success += 1
+            except Exception as e:
+                logger.error(f"Sync failed for {gname} / {url}: {e}")
+                failed += 1
+
+        await interaction.followup.send(
+            f"✅ **Sync complete:** {success} renamed, {failed} failed.",
+            ephemeral=True
+        )
+        
+    @app_commands.command(name="reset-drive-cache", description="[Admin] Force fresh Drive folder resolution for a series")
+    @app_commands.describe(
+        group_name="The name of the group profile",
+        series_link="The series URL to reset cache for"
+    )
+    @app_commands.autocomplete(group_name=group_name_autocomplete)
+    async def reset_drive_cache(self, interaction: discord.Interaction, group_name: str, series_link: str):
+        if not await self.interaction_check(interaction):
+            return
+
+        if group_name not in self.bot.app_state.group_profiles:
+            return await interaction.followup.send(f"❌ **Unknown Group:** `{group_name}` is not a registered group profile.", ephemeral=True)
+
+        set_drive_folder_cache(group_name, series_link.strip(), {})
+        
+        await interaction.followup.send(
+            f"✅ **Drive cache cleared** for `{series_link}` in `{group_name}`.\nNext download will perform a fresh re-resolution from Google Drive.",
+            ephemeral=True
+        )
 
     @app_commands.command(name="remove-group", description="[Admin] Completely remove a group profile (Requires Owner Confirmation)")
     @app_commands.describe(group_name="Select the group profile to delete")

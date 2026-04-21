@@ -7,11 +7,14 @@ logger = logging.getLogger("DriveSyncService")
 
 async def sync_group_folder_name(bot, group_name: str, series_url: str, new_title: str):
     """
-    Finds the group's shortcut folder for a series on Drive and renames it.
+    Finds the series and group folders on Drive and renames them to match the new title.
     This runs in the background to avoid blocking the bot.
     """
     try:
-        uploader = bot.main_bot.task_queue.uploader
+        # 🟢 Handle both Main Bot and Helper Bot contexts
+        uploader = bot.task_queue.uploader if hasattr(bot, 'task_queue') and bot.task_queue.uploader \
+                   else getattr(getattr(bot, 'main_bot', None), 'task_queue', None) and bot.main_bot.task_queue.uploader
+
         if not uploader:
             logger.warning("Drive Sync skipped: Uploader not initialized.")
             return
@@ -25,7 +28,6 @@ async def sync_group_folder_name(bot, group_name: str, series_url: str, new_titl
 
         # 1. Ensure Raws Root
         try:
-            # Check if the root folder itself is named "Raws"
             root_info = await asyncio.to_thread(uploader.client.get_service().files().get(fileId=Settings.GDRIVE_ROOT_ID, fields='name', supportsAllDrives=True).execute)
             root_name = root_info.get('name', '').strip()
             
@@ -46,35 +48,35 @@ async def sync_group_folder_name(bot, group_name: str, series_url: str, new_titl
             logger.warning(f"Drive Sync skipped: Platform folder '{service_name}' not found.")
             return
 
-        # 2. Find Series Folder by [ID] prefix
+        # 2. Find and Rename Series Folder
         prefix = f"[{series_id}]"
         series_folder = await asyncio.to_thread(uploader.find_folder_by_prefix, prefix, platform_id)
         if not series_folder:
             logger.info(f"Drive Sync: No series folder found with prefix '{prefix}'")
             return
-            
-        series_folder_id = series_folder['id']
 
-        # 3. Find Group Folder inside Series Folder
-        # Convention: "[GroupName] Team - [AnyTitle]"
-        # We search by Group Name prefix
+        series_folder_id = series_folder['id']
+        new_series_name = f"{prefix} - {new_title}"
+        if series_folder['name'].strip() != new_series_name.strip():
+            logger.info(f"Drive Sync: Renaming series folder '{series_folder['name']}' -> '{new_series_name}'")
+            await asyncio.to_thread(uploader.rename_file, series_folder_id, new_series_name)
+        else:
+            logger.info(f"Drive Sync: Series folder '{new_series_name}' already correctly named.")
+
+        # 3. Find and Rename Group Folder inside Series Folder
         group_prefix = group_name if " team" in group_name.lower() else f"{group_name} Team"
-        
-        # We need a prefix search for the group folder too. 
-        # uploader has find_folder_by_prefix
         group_folder = await asyncio.to_thread(uploader.find_folder_by_prefix, group_prefix, series_folder_id)
         
         if not group_folder:
-            logger.info(f"Drive Sync: No folder found for group '{group_name}' in series '{series_id}'")
+            logger.info(f"Drive Sync: No group folder found for '{group_name}' in series '{series_id}'")
             return
 
-        # 4. Rename
-        new_folder_name = f"{group_prefix} - {new_title}"
-        if group_folder['name'] != new_folder_name:
-            logger.info(f"Drive Sync: Renaming '{group_folder['name']}' -> '{new_folder_name}'")
-            await asyncio.to_thread(uploader.rename_file, group_folder['id'], new_folder_name)
+        new_group_name = f"{group_prefix} - {new_title}"
+        if group_folder['name'].strip() != new_group_name.strip():
+            logger.info(f"Drive Sync: Renaming group folder '{group_folder['name']}' -> '{new_group_name}'")
+            await asyncio.to_thread(uploader.rename_file, group_folder['id'], new_group_name)
         else:
-            logger.info(f"Drive Sync: Folder '{new_folder_name}' already correctly named.")
+            logger.info(f"Drive Sync: Group folder '{new_group_name}' already correctly named.")
 
     except Exception as e:
         logger.error(f"Drive Sync failed for {group_name} @ {series_url}: {e}")

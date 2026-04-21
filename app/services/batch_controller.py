@@ -50,6 +50,32 @@ class BatchController:
             _cache_hit = all([platform_id, drive_series_id, main_id, requester_folder_id])
 
             if _cache_hit:
+                # 🟢 Verification Layer: Ensure cached folder is valid, not trashed, and named correctly
+                try:
+                    folder_meta = await asyncio.to_thread(
+                        self.uploader.client.get_service().files().get(
+                            fileId=drive_series_id,
+                            fields='name,trashed',
+                            supportsAllDrives=True
+                        ).execute
+                    )
+                    expected_name = f"[{series_id}] - {original_title or title}"
+                    is_trashed = folder_meta.get("trashed", False)
+                    name_ok = folder_meta.get("name", "").strip() == expected_name.strip()
+
+                    if is_trashed or not name_ok:
+                        logger.warning(f"⚠️ Drive cache stale (trashed={is_trashed}, name_ok={name_ok}) — re-resolving folders")
+                        _cache_hit = False
+                        set_drive_folder_cache(scan_group, url, {})
+                except Exception as e:
+                    if "404" in str(e) or "notFound" in str(e).lower():
+                        logger.warning(f"⚠️ Cached series folder no longer exists — invalidating cache")
+                        _cache_hit = False
+                        set_drive_folder_cache(scan_group, url, {})
+                    else:
+                        raise # Real API/Network error, don't silently swallow
+
+            if _cache_hit:
                 logger.info(f"⚡ Drive cache HIT for {series_id} — skipping GDrive folder resolution")
                 display_group = scan_group if " team" in scan_group.lower() else f"{scan_group} Team"
                 requester_folder = {"id": requester_folder_id, "name": f"{display_group} - {title}", "group": scan_group}
