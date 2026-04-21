@@ -62,7 +62,7 @@ class AdminCog(commands.Cog):
         pass
 
     @commands.command(name="sync")
-    @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
+    @commands.is_owner() # Restriction: Owner only. Admins in joined guilds cannot reboot production.
     async def sync_commands(self, ctx):
         """Forces a global sync of slash commands. [Owner/Admin Only]"""
         # 🟢 S-GRADE: Graceful Check
@@ -79,7 +79,7 @@ class AdminCog(commands.Cog):
                 self.bot.task_queue.is_draining = False
 
     @commands.command(name="restart", aliases=["reboot", "reset"])
-    @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
+    @commands.is_owner() # Restriction: Owner only. Admins in joined guilds cannot reboot production.
     async def restart_bot(self, ctx, target: str | None = None):
         """Usage: $restart [Main|Testing]. Reboots the bot instance. [Owner/Admin Only]"""
 

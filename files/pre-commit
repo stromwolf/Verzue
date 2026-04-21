@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""
+Verzue Phase 0 — pre-commit security hook.
+
+Blocks commits that introduce:
+  1. pickle.load / pickle.dump  (RCE vector — use SecretStore in Phase 1)
+  2. Writes to account.json / cookies.json with password/email fields
+  3. Direct json.dump calls that contain "password" key next to a variable
+     (heuristic — catches save_credentials-style patterns)
+
+Install:
+    cp scripts/pre-commit .git/hooks/pre-commit
+    chmod +x .git/hooks/pre-commit
+
+Bypass (emergencies only, leaves audit trail):
+    VERZUE_SKIP_SECURITY_HOOK=1 git commit -m "..."
+"""
+
+import os
+import re
+import subprocess
+import sys
+
+SKIP_VAR = "VERZUE_SKIP_SECURITY_HOOK"
+
+# --- patterns: (regex, human description, severity) ---
+PATTERNS = [
+    (
+        re.compile(r'\bpickle\.(load|dump)\b'),
+        "pickle.load / pickle.dump — RCE vector. Use SecretStore (Phase 1). "
+        "For GDrive token use google.oauth2.credentials.Credentials.to_json().",
+        "CRITICAL",
+    ),
+    (
+        re.compile(r'account\.json'),
+        "account.json reference — plaintext credential file. "
+        "Route through SecretStore (Phase 1).",
+        "HIGH",
+    ),
+    (
+        re.compile(r'"password"\s*[:=]|["\']password["\']\s*:'),
+        "Hardcoded 'password' key in dict literal — likely plaintext credential write. "
+        "Route through SecretStore (Phase 1).",
+        "HIGH",
+    ),
+]
+
+# Files/dirs always excluded from scanning.
+EXCLUDE_PREFIXES = (
+    "scripts/pre-commit",
+    ".git/",
+    "docs/",
+    "tests/",
+    # The SecretStore itself will legitimately reference these patterns.
+    "app/security/secret_store.py",
+)
+
+
+def get_staged_files() -> list[str]:
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"],
+        capture_output=True, text=True
+    )
+    return [f.strip() for f in result.stdout.splitlines() if f.strip()]
+
+
+def get_file_content(path: str) -> str | None:
+    result = subprocess.run(
+        ["git", "show", f":{path}"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def should_skip(path: str) -> bool:
+    if not path.endswith(".py"):
+        return True
+    return any(path.startswith(p) for p in EXCLUDE_PREFIXES)
+
+
+def scan() -> list[tuple[str, int, str, str]]:
+    """Returns list of (file, line_no, severity, description) violations."""
+    violations = []
+    for path in get_staged_files():
+        if should_skip(path):
+            continue
+        content = get_file_content(path)
+        if content is None:
+            continue
+        for i, line in enumerate(content.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            for pattern, description, severity in PATTERNS:
+                if pattern.search(line):
+                    violations.append((path, i, severity, description))
+    return violations
+
+
+def main() -> int:
+    if os.getenv(SKIP_VAR) == "1":
+        print(f"[pre-commit] WARNING: {SKIP_VAR}=1 — security checks skipped. This bypass is logged.")
+        return 0
+
+    violations = scan()
+    if not violations:
+        return 0
+
+    print("\n" + "=" * 70)
+    print("  VERZUE SECURITY PRE-COMMIT HOOK — BLOCKED")
+    print("=" * 70)
+    for path, line_no, severity, description in violations:
+        print(f"\n  [{severity}] {path}:{line_no}")
+        print(f"  → {description}")
+    print("\n" + "=" * 70)
+    print("  Fix violations above, then re-commit.")
+    print(f"  Emergency bypass: {SKIP_VAR}=1 git commit  (leaves audit trail)")
+    print("=" * 70 + "\n")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

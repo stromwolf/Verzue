@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import stat
 from pathlib import Path
 
 from .secrets import Secrets
@@ -51,7 +53,14 @@ class Settings:
 
     @classmethod
     def ensure_dirs(cls) -> None:
-        """Creates required directories and applies safety checks."""
+        """Creates required directories. Safe to call multiple times.
+
+        PHASE 0 HARDENING:
+        - SECRETS_DIR is created with mode 0700 (owner-only rwx).
+        - Any pre-existing secret files (*.json, *.pickle) are tightened
+          to 0600 (owner-only rw) on every startup so a chmod-missing
+          first install is self-healing on the next boot.
+        """
         Secrets.load()
         cls.DISCORD_TOKEN = Secrets.DISCORD_TOKEN
         cls.TESTING_BOT_TOKEN = Secrets.TESTING_BOT_TOKEN
@@ -60,9 +69,9 @@ class Settings:
         cls.SCRAPING_PROXY = Secrets.SCRAPING_PROXY
         cls.DEVELOPER_MODE = Secrets.DEVELOPER_MODE
 
+        # Normal dirs — world-readable is fine for logs/downloads.
         for directory in (
             cls.DATA_DIR,
-            cls.SECRETS_DIR,
             cls.DOWNLOAD_DIR,
             cls.LOG_DIR,
             cls.REQUEST_LOG_DIR,
@@ -70,44 +79,87 @@ class Settings:
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
+        # Secrets dir — owner-only.
+        cls.SECRETS_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(cls.SECRETS_DIR, stat.S_IRWXU)  # 0700
+        except OSError as e:
+            logging.warning(f"[Phase0] Could not chmod SECRETS_DIR: {e}")
+
+        # Tighten any secret files that already exist.
         cls._tighten_secret_files()
+
+        # --- Phase 0: Redis insecurity guard ---
         cls._assert_redis_safety()
 
     @classmethod
     def _tighten_secret_files(cls) -> None:
-        """Walks SECRETS_DIR and chmod 0600s .json/.pickle files."""
+        """
+        Walk SECRETS_DIR and set mode 0600 on every *.json / *.pickle file.
+        Called on every startup — idempotent.
+        """
         if not cls.SECRETS_DIR.exists():
             return
-
-        import os
-        for root, _, files in os.walk(cls.SECRETS_DIR):
-            for file in files:
-                if file.endswith((".json", ".pickle")):
-                    path = Path(root) / file
-                    try:
-                        os.chmod(path, 0o600)
-                    except Exception as e:
-                        logging.warning(f"Failed to tighten permissions for {path}: {e}")
+        for path in cls.SECRETS_DIR.rglob("*"):
+            if path.is_file() and path.suffix in {".json", ".pickle", ".pkl"}:
+                try:
+                    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+                except OSError as e:
+                    logging.warning(f"[Phase0] Could not chmod {path}: {e}")
 
     @classmethod
     def _assert_redis_safety(cls) -> None:
-        """Blocks remote plain redis://, allows loopback + rediss://."""
-        import os
-        if os.getenv("VERZUE_ALLOW_INSECURE_REDIS") == "1":
-            return
+        """
+        Phase 0 Redis insecurity guard.
 
-        url = cls.REDIS_URL.lower()
-        if url.startswith("rediss://"):
-            return
+        Allows:
+          - redis://... on loopback (127.0.0.1 / ::1 / localhost) — single-VPS,
+            which is the current production setup.
+          - rediss://... anywhere — TLS is always safe.
 
-        # Check for loopback
-        is_loopback = any(x in url for x in ("localhost", "127.0.0.1", "::1"))
-        if not is_loopback:
-            raise RuntimeError(
-                f"Insecure remote Redis detected: {cls.REDIS_URL}. "
-                "Only rediss:// or loopback are allowed in production. "
-                "Set VERZUE_ALLOW_INSECURE_REDIS=1 to bypass."
+        Blocks:
+          - redis:// connecting to a remote host without auth/TLS.
+          - Bypassed by env var VERZUE_ALLOW_INSECURE_REDIS=1 for local dev.
+        """
+        if os.getenv("VERZUE_ALLOW_INSECURE_REDIS", "0") == "1":
+            logging.warning(
+                "[Phase0] VERZUE_ALLOW_INSECURE_REDIS=1 — Redis safety check bypassed. "
+                "Never set this in production."
             )
+            return
+
+        url: str = getattr(cls, "REDIS_URL", "") or ""
+
+        if url.startswith("rediss://"):
+            # TLS — always fine.
+            return
+
+        if url.startswith("redis://"):
+            # Extract host portion.
+            # Formats: redis://host:port/db  or  redis://:password@host:port/db
+            try:
+                # Strip scheme, strip optional auth block, take host.
+                no_scheme = url[len("redis://"):]
+                if "@" in no_scheme:
+                    no_scheme = no_scheme.split("@", 1)[1]
+                host = no_scheme.split(":")[0].split("/")[0].lower()
+            except Exception:
+                host = ""
+
+            loopback_hosts = {"localhost", "127.0.0.1", "::1", ""}
+            if host in loopback_hosts:
+                # Loopback — single-VPS deployment is fine.
+                return
+
+            # Remote host without TLS — hard stop.
+            raise EnvironmentError(
+                f"[Phase0] SECURITY: REDIS_URL points to a remote host "
+                f"({host!r}) over plain redis:// (no TLS, no auth enforced). "
+                f"Switch to rediss:// or set VERZUE_ALLOW_INSECURE_REDIS=1 "
+                f"only for local development."
+            )
+
+        # Unknown scheme — let redis-py error naturally; don't block.
 
     @classmethod
     def get_proxy(cls) -> str | None:
