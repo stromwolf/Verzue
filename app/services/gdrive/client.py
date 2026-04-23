@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 import threading
 import httplib2
@@ -51,7 +52,7 @@ class GDriveClient:
             if not self.creds:
                 token_json = self.secret_store.get("gdrive_token")
                 if token_json:
-                    self.creds = Credentials.from_json(token_json)
+                    self.creds = Credentials.from_authorized_user_info(json.loads(token_json), self.SCOPES)
 
             # 2. Check and Refresh if needed
             if not self.creds or not self.creds.valid:
