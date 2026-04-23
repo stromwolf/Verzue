@@ -1,7 +1,8 @@
 import os
-import pickle
 from pathlib import Path
 from google_auth_oauthlib.flow import InstalledAppFlow
+from app.core.secret_store import SecretStore
+from config.settings import Settings
 
 # --- CONFIGURATION ---
 # Based on your previous setup
@@ -27,9 +28,9 @@ def main():
         return
 
     # 2. Check if old token exists and delete it (Start Fresh)
-    if TOKEN_FILE.exists():
-        print(f"🗑️  Deleting old token: {TOKEN_FILE}")
-        os.remove(TOKEN_FILE)
+    if Settings.TOKEN_PICKLE.exists():
+        print(f"🗑️  Deleting legacy token file: {Settings.TOKEN_PICKLE}")
+        os.remove(Settings.TOKEN_PICKLE)
 
     print("🚀 Initiating OAuth 2.0 Flow...")
     
@@ -43,9 +44,9 @@ def main():
         creds = flow.run_local_server(port=0)
 
         # 3. Save the new token
-        print(f"💾 Saving new token to: {TOKEN_FILE}")
-        with open(TOKEN_FILE, 'wb') as token:
-            pickle.dump(creds, token)
+        print(f"💾 Saving new token to SecretStore...")
+        store = SecretStore()
+        store.set("gdrive_token", creds.to_json())
 
         print("\n✅ SUCCESS! Token generated.")
         print("You can now restart 'main.py'.")

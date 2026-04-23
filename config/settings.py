@@ -22,6 +22,8 @@ class Settings:
     TOKEN_PICKLE = SECRETS_DIR / "token.pickle"
     GROUPS_REGISTRY_FILE = DATA_DIR / "groups_registry.json"
     CDN_USERS_FILE = DATA_DIR / "cdn_users.json"
+    VAULT_FILE = SECRETS_DIR / ".vault.json"
+    VAULT_KEY_FILE = SECRETS_DIR / ".vault_key"
 
     # --- Discord ---
     ADMIN_LOG_CHANNEL_ID = 1488184233229811724
@@ -82,7 +84,7 @@ class Settings:
         import os
         for root, _, files in os.walk(cls.SECRETS_DIR):
             for file in files:
-                if file.endswith((".json", ".pickle")):
+                if file.endswith((".json", ".pickle", ".vault_key")):
                     path = Path(root) / file
                     try:
                         os.chmod(path, 0o600)

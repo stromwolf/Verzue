@@ -16,6 +16,10 @@ ENV/
 # Secrets
 .env
 config/secrets.py
+.vault.json
+.vault_key
+*.pickle
+account.json
 
 # VS Code
 .vscode/
