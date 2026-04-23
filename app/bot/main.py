@@ -39,7 +39,7 @@ class MechaBot(commands.Bot):
         all_extensions = [
             ("app.bot.cogs.dashboard", ["Main", "Testing"]),
             ("app.bot.cogs.subscriptions", ["Main", "Admin", "Testing"]),
-            ("app.bot.cogs.status", ["Main", "Admin", "Testing"]),
+            ("app.bot.cogs.status", ["Main"]),
             ("app.bot.cogs.admin", ["Admin"]),
             ("app.bot.cogs.discovery", ["Admin"]),
             ("app.bot.cogs.discovery_commands", ["Admin"]),
