@@ -188,8 +188,19 @@ class CookieStatusCog(commands.Cog):
                 }
 
                 # 3. Send or Edit via Raw HTTP (Required for V2 Components)
-                msg_id = await self.redis.client.get(self.REDIS_MSG_KEY)
+                msg_id_raw = await self.redis.client.get(self.REDIS_MSG_KEY)
+                msg_id = None
                 
+                if msg_id_raw:
+                    msg_id = msg_id_raw.decode() if isinstance(msg_id_raw, bytes) else str(msg_id_raw)
+                else:
+                    # 🟢 S-GRADE: Re-attachment logic (Search history if Redis ID is missing)
+                    msg = await self._find_existing_dashboard(channel)
+                    if msg:
+                        msg_id = str(msg.id)
+                        await self.redis.client.set(self.REDIS_MSG_KEY, msg_id)
+                        logger.info(f"🔗 [StatusUI] Re-attached to existing dashboard in history: {msg_id}")
+
                 if msg_id:
                     try:
                         # Attempt to edit existing
@@ -202,8 +213,28 @@ class CookieStatusCog(commands.Cog):
                         await self.bot.http.request(route, json=payload)
                         logger.info(f"✅ [StatusUI] Dashboard V2 updated (Msg: {msg_id})")
                         return
-                    except (discord.NotFound, discord.HTTPException):
-                        logger.warning(f"⚠️ [StatusUI] Message {msg_id} not found, creating new one.")
+                    except (discord.NotFound, discord.HTTPException) as e:
+                        logger.warning(f"⚠️ [StatusUI] Message {msg_id} failed to update ({e}). Attempting fallback search...")
+                        # One more try: search history if the Redis ID was stale
+                        msg = await self._find_existing_dashboard(channel)
+                        if msg and str(msg.id) != str(msg_id):
+                            msg_id = str(msg.id)
+                            await self.redis.client.set(self.REDIS_MSG_KEY, msg_id)
+                            logger.info(f"🔗 [StatusUI] Re-attached to NEW message found in history: {msg_id}")
+                            # Recursive call to try editing the new ID (guarded by lock)
+                            route = discord.http.Route(
+                                'PATCH',
+                                '/channels/{channel_id}/messages/{message_id}',
+                                channel_id=self.CHANNEL_ID,
+                                message_id=int(msg_id)
+                            )
+                            try:
+                                await self.bot.http.request(route, json=payload)
+                                logger.info(f"✅ [StatusUI] Dashboard V2 updated via re-attached ID (Msg: {msg_id})")
+                                return
+                            except: pass
+                        
+                        logger.warning(f"⚠️ [StatusUI] No valid dashboard found, creating new one.")
 
                 # Create new message if none exists or fetch failed
                 route = discord.http.Route(
@@ -219,6 +250,19 @@ class CookieStatusCog(commands.Cog):
 
             except Exception as e:
                 logger.error(f"❌ [StatusUI] Failed to update dashboard: {e}")
+
+    async def _find_existing_dashboard(self, channel):
+        """Searches history for an existing Cookies Status dashboard."""
+        try:
+            # Dedicated channel usually, so we search 20 messages (more than enough)
+            async for message in channel.history(limit=20):
+                if message.author.id == self.bot.user.id:
+                    # V2 Components (Type 17) often don't have 'content' or 'embeds' visible to legacy parsers
+                    # But if we found ANY message from this bot, it's almost certainly the dashboard
+                    return message
+        except Exception as e:
+            logger.error(f"🔍 [StatusUI] History search failed: {e}")
+        return None
 
     def _get_earliest_expiry(self, cookies: list) -> float | None:
         """Parses cookies to find the earliest expiration timestamp."""
