@@ -33,7 +33,13 @@ class RedisConnection:
                 max_connections=50,
                 retry=retry_strategy,
                 retry_on_timeout=True,
-                retry_on_error=[ConnectionError, TimeoutError]
+                retry_on_error=[ConnectionError, TimeoutError],
+                socket_keepalive=True,
+                socket_keepalive_options={
+                    "TCP_KEEPIDLE": 60,
+                    "TCP_KEEPINTVL": 10,
+                    "TCP_KEEPCNT": 3,
+                }
             )
             self.client = redis.Redis(connection_pool=self.pool)
         except Exception as e:
