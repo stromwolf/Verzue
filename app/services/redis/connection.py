@@ -1,4 +1,5 @@
 import redis.asyncio as redis
+import asyncio
 from redis.asyncio.retry import Retry
 from redis.backoff import ExponentialBackoff
 from redis.exceptions import ConnectionError, TimeoutError
@@ -21,6 +22,9 @@ class RedisConnection:
         self.pool = None
         self._lua_limiter = None
         self._is_connected = True
+        self._first_failure_at: float | None = None
+        self._status_lock = asyncio.Lock()
+        self.DISCONNECT_GRACE = 3.0  # seconds
         self._setup()
 
     def _setup(self):
@@ -48,16 +52,24 @@ class RedisConnection:
             self.client = None
 
     async def _handle_connection_status(self, is_success: bool):
-        if is_success:
-            if not self._is_connected:
-                logger.info("📡 [Redis] RECONNECTED: Connection restored.")
-                self._is_connected = True
-                await EventBus.emit("redis_connected", {})
-        else:
-            if self._is_connected:
-                logger.error("🚨 [Redis] DISCONNECTED: Connection lost. Hibernating services...")
-                self._is_connected = False
-                await EventBus.emit("redis_lost", {})
+        async with self._status_lock:
+            if is_success:
+                self._first_failure_at = None
+                if not self._is_connected:
+                    logger.info("📡 [Redis] RECONNECTED: Connection restored.")
+                    self._is_connected = True
+                    await EventBus.emit("redis_connected", {})
+            else:
+                now = time.time()
+                if self._first_failure_at is None:
+                    self._first_failure_at = now
+                    return  # grace period — don't flip yet
+                
+                if (now - self._first_failure_at) >= self.DISCONNECT_GRACE:
+                    if self._is_connected:
+                        logger.error("🚨 [Redis] DISCONNECTED: Connection lost (Grace period exceeded). Hibernating services...")
+                        self._is_connected = False
+                        await EventBus.emit("redis_lost", {})
 
     async def check_connection(self):
         if not self.client: return False
