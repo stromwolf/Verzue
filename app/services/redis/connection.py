@@ -4,6 +4,7 @@ from redis.backoff import ExponentialBackoff
 from redis.exceptions import ConnectionError, TimeoutError
 import logging
 import time
+import socket
 from config.settings import Settings
 from app.core.events import EventBus
 from app.core.lua_scripts import TOKEN_BUCKET_SCRIPT
@@ -36,9 +37,9 @@ class RedisConnection:
                 retry_on_error=[ConnectionError, TimeoutError],
                 socket_keepalive=True,
                 socket_keepalive_options={
-                    "TCP_KEEPIDLE": 60,
-                    "TCP_KEEPINTVL": 10,
-                    "TCP_KEEPCNT": 3,
+                    socket.TCP_KEEPIDLE: 60,
+                    socket.TCP_KEEPINTVL: 10,
+                    socket.TCP_KEEPCNT: 3,
                 }
             )
             self.client = redis.Redis(connection_pool=self.pool)
