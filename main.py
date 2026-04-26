@@ -16,6 +16,7 @@ from app.services.health_monitor import HealthMonitor
 from app.services.redis_manager import RedisManager
 from app.services.session_healer import SessionHealer
 from app.services.session_service import SessionService
+from app.services.settings_service import SettingsService
 from app.services.task_listener import TaskListener
 from app.tasks.manager import TaskQueue
 from app.bot.main import MechaBot
@@ -82,6 +83,7 @@ async def main() -> None:
     queue.app_state = state
 
     session_service = SessionService()
+    settings_service = SettingsService(redis_client=brain.client)
     bots = []
 
     # 1. Main Bot (Always)

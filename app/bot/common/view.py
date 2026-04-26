@@ -802,8 +802,13 @@ class UniversalDashboard:
                             channel = self.interaction.user
 
                         if channel:
-                            # 🟢 SIMPLE PING: Only the user mention (deletes in 15s)
-                            ping_msg = await channel.send(content=f"<@{self.interaction.user.id}>")
+                            # 🟢 ROBUST PING: Use SettingsService for mentions
+                            from app.services.settings_service import SettingsService
+                            settings = SettingsService()
+                            targets = await settings.get_notify_targets(int(self.user))
+                            mentions = SettingsService.format_mentions(targets) or f"<@{self.user}>"
+                            
+                            ping_msg = await channel.send(content=mentions)
                             
                             async def delete_ping(msg):
                                 await asyncio.sleep(15)

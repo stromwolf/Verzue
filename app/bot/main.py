@@ -5,6 +5,7 @@ from discord.ext import commands
 import logging
 from app.core.events import EventBus
 from config.settings import Settings
+from app.services.settings_service import SettingsService
 
 class MechaBot(commands.Bot):
     def __init__(self, token: str, task_queue, redis_brain=None):
@@ -62,6 +63,7 @@ class MechaBot(commands.Bot):
             EventBus.subscribe("task_failed", self.handle_task_failure)
             EventBus.subscribe("subscription_added", self.handle_subscription_added)
             EventBus.subscribe("notify_waiter", self.handle_waiter_notification)
+            EventBus.subscribe("task_completed", self.handle_task_completed)
             # Redis connectivity alerts
             EventBus.subscribe("redis_lost", self.handle_redis_lost)
             EventBus.subscribe("redis_connected", self.handle_redis_connected)
@@ -203,6 +205,42 @@ class MechaBot(commands.Bot):
         except Exception as e:
             self.logger.error(f"Failed to send extraction error alert: {e}")
 
+    async def handle_task_completed(self, task_data):
+        """Notifies the original requester when a chapter is ready."""
+        try:
+            # Handle both object and dict
+            if hasattr(task_data, "to_dict"):
+                task_dict = task_data.to_dict()
+            else:
+                task_dict = task_data
+
+            requester_id = task_dict.get("requester_id")
+            channel_id = task_dict.get("channel_id")
+            if not requester_id or not channel_id: return
+
+            channel = self.get_channel(channel_id)
+            if not channel:
+                try: channel = await self.fetch_channel(channel_id)
+                except: return
+
+            series_title = task_dict.get("series_title", "Unknown Series")
+            title = task_dict.get("title", "Chapter")
+            link = task_dict.get("share_link")
+
+            # 🟢 S-GRADE: Use SettingsService for mentions
+            settings = SettingsService()
+            targets = await settings.get_notify_targets(requester_id)
+            mentions = SettingsService.format_mentions(targets) or f"<@{requester_id}>"
+
+            msg = (
+                f"{mentions} ✅ **{series_title} — {title}** is ready!\n"
+                f"🔗 {link}"
+            )
+            await channel.send(msg)
+            self.logger.info(f"🔔 Notified requester {requester_id} in {channel_id} for {title}")
+        except Exception as e:
+            self.logger.error(f"Failed to notify requester: {e}")
+
     async def handle_waiter_notification(self, waiter: dict, task_dict: dict):
         """Notifies a secondary requester that their in-flight task is finished."""
         try:
@@ -219,8 +257,13 @@ class MechaBot(commands.Bot):
             title = task_dict.get("title", "Chapter")
             link = task_dict.get("share_link")
 
+            # 🟢 S-GRADE: Use SettingsService for mentions
+            settings = SettingsService()
+            targets = await settings.get_notify_targets(user_id)
+            mentions = SettingsService.format_mentions(targets) or f"<@{user_id}>"
+
             msg = (
-                f"<@{user_id}> ✅ **{series_title} — {title}** is ready!\n"
+                f"{mentions} ✅ **{series_title} — {title}** is ready!\n"
                 f"🔗 {link}"
             )
             await channel.send(msg)

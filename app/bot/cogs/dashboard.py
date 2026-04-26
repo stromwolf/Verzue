@@ -738,7 +738,15 @@ class DashboardCog(commands.Cog):
 
             # --- Settings Button ---
             elif custom_id == "v2_btn_settings":
-                await interaction.response.send_message("⚙️ **Settings Menu** coming soon!", ephemeral=True)
+                from app.bot.common.notifications_view import NotificationsView
+                view = NotificationsView(user_id=interaction.user.id, guild=interaction.guild)
+                await interaction.response.send_message(
+                    embed=await view._build_embed(),
+                    view=view,
+                    ephemeral=True,
+                )
+                # Now populate children w/ current state
+                await view.refresh(interaction)
 
             # --- Channel Selection for Subscription ---
             elif custom_id.startswith("v2_select_sub_channel_"):
