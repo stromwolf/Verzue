@@ -1151,15 +1151,20 @@ class HelperSlashCog(commands.Cog):
 
     @app_commands.command(
         name="toggle",
-        description="[Owner] Enable or disable a bot feature. Downloads, notifications, per-platform."
+        description="[Owner] Enable or disable a bot feature globally or per group."
     )
     @app_commands.describe(
-        feature="Feature to toggle (or 'status' to view all)",
-        value="Force ON or OFF (leave blank to flip current state)"
+        feature="Feature flag to toggle (or 'status' to view all)",
+        value="Force ON or OFF — leave blank to flip current state",
+        group="Limit to a specific group only — leave blank to apply globally",
+        clear_override="Remove group-specific override and revert to global setting"
     )
-    @app_commands.autocomplete(feature=flag_autocomplete)
+    @app_commands.autocomplete(
+        feature=flag_autocomplete,
+        group=group_name_autocomplete
+    )
     @app_commands.choices(value=[
-        app_commands.Choice(name="ON", value="on"),
+        app_commands.Choice(name="ON",  value="on"),
         app_commands.Choice(name="OFF", value="off"),
     ])
     @app_commands.default_permissions(administrator=True)
@@ -1168,45 +1173,52 @@ class HelperSlashCog(commands.Cog):
         interaction: discord.Interaction,
         feature: str = "status",
         value: app_commands.Choice[str] | None = None,
+        group: str | None = None,
+        clear_override: bool = False,
     ):
-        # Owner-only hard gate
         if interaction.user.id != 1216284053049704600:
-            return await interaction.response.send_message(
-                "❌ Owner only.", ephemeral=True
-            )
+            return await interaction.response.send_message("❌ Owner only.", ephemeral=True)
 
-        # Defer ephemeral handled by interaction_check if not already done.
-        # But we want to be sure it's ephemeral if we call it here.
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True)
-
+        await interaction.response.defer(ephemeral=True)
         state = self.bot.app_state
+
+        # ── Validate group if provided ─────────────────────────────────
+        if group and group not in state.group_profiles:
+            return await interaction.followup.send(
+                f"❌ Unknown group `{group}`.", ephemeral=True
+            )
 
         # ── Status view ────────────────────────────────────────────────
         if feature == "status":
-            lines = []
-            parents = {}
+            lines = ["## 🌐 Global Flags"]
+            parent_states = {}
             for k, v in sorted(state.feature_flags.items()):
                 if "." not in k:
-                    parents[k] = v
+                    parent_states[k] = v
 
             for k, v in sorted(state.feature_flags.items()):
                 is_child = "." in k
                 indent = "  └─ " if is_child else ""
                 icon = "🟢" if v else "🔴"
-
-                # Warn: child ON but parent OFF → effectively dead
                 warn = ""
                 if is_child and v:
-                    parent_key = k.split(".")[0]
-                    if not parents.get(parent_key, True):
+                    p = k.split(".")[0]
+                    if not parent_states.get(p, True):
                         warn = " ⚠️"
-
                 lines.append(f"{indent}{icon} `{k}`{warn}")
 
-            # Legend
+            # Per-group overrides
+            if state.group_flags:
+                lines.append("")
+                lines.append("## 👥 Group Overrides")
+                for gname, gflags in sorted(state.group_flags.items()):
+                    lines.append(f"**{gname}**")
+                    for fk, fv in sorted(gflags.items()):
+                        icon = "🟢" if fv else "🔴"
+                        lines.append(f"  └─ {icon} `{fk}`")
+
             lines.append("")
-            lines.append("-# ⚠️ = parent is OFF, flag has no effect")
+            lines.append("-# ⚠️ = parent OFF, child has no effect  |  Group overrides win over global")
 
             embed = discord.Embed(
                 title="⚙️ Feature Flags",
@@ -1215,22 +1227,50 @@ class HelperSlashCog(commands.Cog):
             )
             return await interaction.followup.send(embed=embed, ephemeral=True)
 
-        # ── Validate ───────────────────────────────────────────────────
+        # ── Validate feature ───────────────────────────────────────────
         if feature not in state.feature_flags:
-            known_str = "\n".join(f"`{k}`" for k in self.KNOWN_FLAGS)
+            known_str = "  ".join(f"`{k}`" for k in self.KNOWN_FLAGS)
             return await interaction.followup.send(
-                f"❌ Unknown feature `{feature}`.\n\nKnown flags:\n{known_str}",
-                ephemeral=True
+                f"❌ Unknown feature `{feature}`.\nKnown: {known_str}", ephemeral=True
             )
+
+        # ── Clear group override ───────────────────────────────────────
+        if clear_override:
+            if not group:
+                return await interaction.followup.send(
+                    "❌ `clear_override` requires a `group` to be specified.", ephemeral=True
+                )
+            removed = state.clear_group_flag(feature, group)
+            if removed:
+                global_val = state.feature_flags[feature]
+                icon = "🟢 **ON**" if global_val else "🔴 **OFF**"
+                embed = discord.Embed(
+                    title="⚙️ Group Override Cleared",
+                    description=(
+                        f"Removed `{feature}` override for **{group}**.\n"
+                        f"Now inherits global → {icon}"
+                    ),
+                    color=0x95a5a6
+                )
+            else:
+                embed = discord.Embed(
+                    title="⚠️ Nothing to Clear",
+                    description=f"No group-specific override for `{feature}` in **{group}**.",
+                    color=0xf39c12
+                )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
 
         # ── Resolve new value ──────────────────────────────────────────
         if value is None:
-            new_val = not state.feature_flags[feature]  # flip
+            # Flip current effective value for this scope
+            current = state.is_enabled(feature, group)
+            new_val = not current
         else:
             new_val = value.value == "on"
 
-        state.set_flag(feature, new_val)
+        state.set_flag(feature, new_val, group=group)
         icon = "🟢 **ON**" if new_val else "🔴 **OFF**"
+        scope = f"**{group}**" if group else "**all groups** (global)"
 
         # ── Parent conflict warning ────────────────────────────────────
         parent_warn = ""
@@ -1238,17 +1278,20 @@ class HelperSlashCog(commands.Cog):
             parent_key = feature.split(".")[0]
             if not state.feature_flags.get(parent_key, True):
                 parent_warn = (
-                    f"\n\n⚠️ Parent `{parent_key}` is **OFF** — "
-                    f"`{feature}` has no effect until parent is enabled."
+                    f"\n\n⚠️ Parent `{parent_key}` is globally **OFF** — "
+                    f"this flag has no effect until parent is enabled."
                 )
 
         embed = discord.Embed(
             title="⚙️ Feature Flag Updated",
-            description=f"`{feature}` → {icon}{parent_warn}",
+            description=f"`{feature}` → {icon}\n📍 Scope: {scope}{parent_warn}",
             color=0x2ecc71 if new_val else 0xe74c3c
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
-        logger.info(f"[Toggle] {feature} → {'ON' if new_val else 'OFF'} by {interaction.user}")
+        logger.info(
+            f"[Toggle] {feature} → {'ON' if new_val else 'OFF'} "
+            f"scope={'group:' + group if group else 'global'} by {interaction.user}"
+        )
 
 class GroupRemovalConfirmationView(discord.ui.View):
     def __init__(self, group_name, requester):

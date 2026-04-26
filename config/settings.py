@@ -147,6 +147,7 @@ class AppState:
             "notifications.kuaikan": True,
             "notifications.acqq": True,
         }
+        self.group_flags: dict[str, dict[str, bool]] = {}
 
     # --- CDN users ---
 
@@ -168,23 +169,50 @@ class AppState:
 
     # --- Feature Flags ---
 
-    def is_enabled(self, feature: str) -> bool:
-        """Check flag. Respects parent. downloads.piccoma=True but downloads=False → False."""
+    def is_enabled(self, feature: str, group: str | None = None) -> bool:
+        """
+        Check if feature is enabled.
+        Group-specific override wins over global.
+        Parent flag still overrides child regardless of scope.
+        """
+        # Parent check (global only — parent is never group-scoped)
         parts = feature.split(".")
-        # Check parent first
         if len(parts) > 1:
             parent = parts[0]
             if not self.feature_flags.get(parent, True):
                 return False
+
+        # Group-specific override
+        if group and group in self.group_flags:
+            g_flags = self.group_flags[group]
+            if feature in g_flags:
+                return g_flags[feature]
+
+        # Global fallback
         return self.feature_flags.get(feature, True)
 
-    def set_flag(self, feature: str, value: bool) -> bool:
+    def set_flag(self, feature: str, value: bool, group: str | None = None) -> bool:
         """Set flag. Returns False if unknown feature."""
         if feature not in self.feature_flags:
             return False
-        self.feature_flags[feature] = value
+        if group:
+            if group not in self.group_flags:
+                self.group_flags[group] = {}
+            self.group_flags[group][feature] = value
+        else:
+            self.feature_flags[feature] = value
         self.save_feature_flags()
         return True
+
+    def clear_group_flag(self, feature: str, group: str) -> bool:
+        """Remove group-specific override, revert to global."""
+        if group in self.group_flags and feature in self.group_flags[group]:
+            del self.group_flags[group][feature]
+            if not self.group_flags[group]:
+                del self.group_flags[group]
+            self.save_feature_flags()
+            return True
+        return False
 
     def load_feature_flags(self) -> None:
         if not Settings.FLAGS_FILE.exists():
@@ -196,14 +224,21 @@ class AppState:
             for k in self.feature_flags:
                 if k in saved:
                     self.feature_flags[k] = bool(saved[k])
+            
+            overrides = saved.get("_group_overrides", {})
+            for g, flags in overrides.items():
+                self.group_flags[g] = {k: bool(v) for k, v in flags.items()}
         except Exception as e:
             logging.error(f"Failed to load feature flags: {e}")
 
     def save_feature_flags(self) -> None:
         try:
             Settings.FLAGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            data = dict(self.feature_flags)
+            if self.group_flags:
+                data["_group_overrides"] = self.group_flags
             with open(Settings.FLAGS_FILE, "w") as f:
-                json.dump(self.feature_flags, f, indent=2)
+                json.dump(data, f, indent=2)
         except Exception as e:
             logging.error(f"Failed to save feature flags: {e}")
 

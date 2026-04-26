@@ -45,6 +45,24 @@ class TaskWorker:
         
         try:
             start_time = time.time()
+            
+            # --- Feature Flag Guard ---
+            group = task.scan_group
+            platform = (task.service or "").lower()
+            if not self.bot.app_state.is_enabled("downloads", group):
+                logger.warning(f"🚫 [Worker] Downloads are globally disabled for scope: {group or 'Global'}")
+                task.status = TaskStatus.FAILED
+                task.error_message = "Downloads are disabled globally."
+                self._sync_view_status(task)
+                return
+                
+            if not self.bot.app_state.is_enabled(f"downloads.{platform}", group):
+                logger.warning(f"🚫 [Worker] Downloads for {platform} are disabled for scope: {group or 'Global'}")
+                task.status = TaskStatus.FAILED
+                task.error_message = f"Downloads for {platform} are disabled."
+                self._sync_view_status(task)
+                return
+
             logger.info(f"🚀 STARTING TASK: [{task.series_title}] - {task.title}")
             self._sync_view_status(task)
         
