@@ -21,6 +21,10 @@ class MechaBot(commands.Bot):
         
         self.token_str = token
         self.task_queue = task_queue
+        # 🟢 S-GRADE: Bind bot to worker for app_state/notification access
+        if self.task_queue and hasattr(self.task_queue, "worker"):
+            self.task_queue.worker.bot = self
+        
         self.redis_brain = redis_brain
         self.logger = logging.getLogger("Bot")
 

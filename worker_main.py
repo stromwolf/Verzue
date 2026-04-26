@@ -29,6 +29,7 @@ async def main():
 
     queue = TaskQueue(gdrive_client=gdrive_client)
     queue.app_state = state
+    queue.worker.app_state = state
 
     logger.info("🎧 Worker is now listening to Redis for tasks...")
     # This will block forever, processing jobs as they arrive

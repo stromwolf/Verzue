@@ -81,6 +81,7 @@ async def main() -> None:
     state.load_state()
     state.migrate_legacy_data()
     queue.app_state = state
+    queue.worker.app_state = state
 
     session_service = SessionService()
     settings_service = SettingsService(redis_client=brain.client)

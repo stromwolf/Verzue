@@ -26,14 +26,17 @@ class AutoDownloadPoller:
         self.bot = bot
         self.is_checking = False  
         
-        # 🟢 Initialize Specialized Sub-Pollers
+        # 🟢 Specialized Sub-Pollers
         self.notifier = PollerNotifier(bot)
         self.discovery = DiscoveryPoller(bot, self.notifier)
         
-        # 🟢 Main Daily Polling Loop (15:05 UTC)
-        self.poll_loop.start()
-        # 🟢 High-frequency window (15:00 - 15:05 UTC)
-        self.high_freq_poll_loop.start()
+        # 🟢 S-GRADE: Identity-Gated Loop Start
+        # Only start loops on the Main bot to avoid duplicate logs and double-polling.
+        if getattr(bot, "identity", "Main") == "Main":
+            self.poll_loop.start()
+            self.high_freq_poll_loop.start()
+        else:
+            logger.debug(f"[AutoPoller] Identity is {getattr(bot, 'identity', 'Unknown')}. Skipping loop start.")
 
 
     @tasks.loop(time=datetime.time(hour=15, minute=5, tzinfo=datetime.timezone.utc))
@@ -54,6 +57,14 @@ class AutoDownloadPoller:
 
         logger.info(f"⚡ [AutoPoller] High-frequency window active ({now.strftime('%H:%M:%S')} UTC). Checking targets...")
         await self._check_high_freq_targets()
+
+    @poll_loop.error
+    @high_freq_poll_loop.error
+    async def on_poll_error(self, error):
+        """Catches and logs exceptions in the tasks.loop to prevent silent death."""
+        logger.error("🚨 [AutoPoller] Loop encountered a fatal exception!")
+        logger.error(f"Error: {error}")
+        logger.error(traceback.format_exc())
 
 
 
@@ -142,6 +153,9 @@ class AutoDownloadPoller:
                         todays_subs.append((group_name, sub))
                     else:
                         logger.debug(f"🔇 [AutoPoller] Notifications disabled for {p_name} in {group_name}, skipping {sub.get('series_title')}")
+
+            # 🟢 S-GRADE: Visibility into filtering
+            logger.info(f"🕒 [AutoPoller] Total subs in store: {len(all_subs)}, Filtered for today ({today_name}): {len(todays_subs)}")
 
             # ── Phase 1: Today's weeklies ──
             mecha_targets = [t for t in todays_subs if "mecha" in t[1].get("platform", "").lower()]

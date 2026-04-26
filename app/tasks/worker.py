@@ -31,9 +31,11 @@ class TaskWorker:
     # Platform A will never block Platform B.
     _SERVICE_LOCKS = {}
 
-    def __init__(self, provider_manager, uploader):
+    def __init__(self, provider_manager, uploader, app_state=None, bot=None):
         self.provider_manager = provider_manager
         self.uploader = uploader
+        self.app_state = app_state
+        self.bot = bot
 
     async def process_task(self, task: ChapterTask):
         
@@ -49,19 +51,24 @@ class TaskWorker:
             # --- Feature Flag Guard ---
             group = task.scan_group
             platform = (task.service or "").lower()
-            if not self.bot.app_state.is_enabled("downloads", group):
-                logger.warning(f"🚫 [Worker] Downloads are globally disabled for scope: {group or 'Global'}")
-                task.status = TaskStatus.FAILED
-                task.error_message = "Downloads are disabled globally."
-                self._sync_view_status(task)
-                return
-                
-            if not self.bot.app_state.is_enabled(f"downloads.{platform}", group):
-                logger.warning(f"🚫 [Worker] Downloads for {platform} are disabled for scope: {group or 'Global'}")
-                task.status = TaskStatus.FAILED
-                task.error_message = f"Downloads for {platform} are disabled."
-                self._sync_view_status(task)
-                return
+            
+            # 🟢 S-GRADE: Use internal app_state or fall back to bot
+            app_state = self.app_state or (self.bot.app_state if self.bot else None)
+            
+            if app_state:
+                if not app_state.is_enabled("downloads", group):
+                    logger.warning(f"🚫 [Worker] Downloads are globally disabled for scope: {group or 'Global'}")
+                    task.status = TaskStatus.FAILED
+                    task.error_message = "Downloads are disabled globally."
+                    self._sync_view_status(task)
+                    return
+                    
+                if not app_state.is_enabled(f"downloads.{platform}", group):
+                    logger.warning(f"🚫 [Worker] Downloads for {platform} are disabled for scope: {group or 'Global'}")
+                    task.status = TaskStatus.FAILED
+                    task.error_message = f"Downloads for {platform} are disabled."
+                    self._sync_view_status(task)
+                    return
 
             logger.info(f"🚀 STARTING TASK: [{task.series_title}] - {task.title}")
             self._sync_view_status(task)

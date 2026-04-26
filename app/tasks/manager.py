@@ -35,7 +35,7 @@ class TaskQueue:
         self.browser_service = None
         self.provider_manager = ProviderManager()
         self.uploader = GDriveUploader(gdrive_client) if gdrive_client else None
-        self.worker = TaskWorker(self.provider_manager, self.uploader)
+        self.worker = TaskWorker(self.provider_manager, self.uploader, app_state=getattr(self, "app_state", None))
         
         # 🟢 S-GRADE: Initialize the BatchUnlocker (Now API-Driven Only)
         from app.services.browser.unlocker import BatchUnlocker
