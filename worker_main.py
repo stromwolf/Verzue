@@ -23,7 +23,12 @@ async def main():
         gdrive_client = None
 
     # The TaskQueue, when run here, acts as the consumer
+    from config.settings import AppState
+    state = AppState()
+    state.load_state()
+
     queue = TaskQueue(gdrive_client=gdrive_client)
+    queue.app_state = state
 
     logger.info("🎧 Worker is now listening to Redis for tasks...")
     # This will block forever, processing jobs as they arrive

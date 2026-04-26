@@ -1,5 +1,6 @@
 import json
 import logging
+from redis.exceptions import ConnectionError, TimeoutError
 
 logger = logging.getLogger("RedisManager.PubSub")
 
@@ -12,7 +13,11 @@ class RedisPubSub:
         """Workers use this to tell the Bot that a task updated."""
         if not self.client: return
         message = json.dumps({"event": event_type, "data": payload})
-        await self.client.publish(channel, message)
+        try:
+            await self.client.publish(channel, message)
+            await self.manager.connection._handle_connection_status(True)
+        except (ConnectionError, TimeoutError):
+            await self.manager.connection._handle_connection_status(False)
 
     def get_subscriber(self):
         """Returns a PubSub object for the Bot to listen for worker events."""

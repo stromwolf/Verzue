@@ -489,7 +489,6 @@ class AdminCog(commands.Cog):
         embed.add_field(name="⚠️ No Day Found", value=str(no_day), inline=True)
         embed.add_field(name="❌ Errors",   value=str(failed),   inline=True)
 
-        # ── Detailed log (only changed/failed rows, max 15 to stay under embed limit) ──
         if results_log:
             log_lines = []
             for (t, old, new, emoji) in results_log[:15]:
@@ -498,11 +497,7 @@ class AdminCog(commands.Cog):
                 log_lines.append(f"{emoji} **{t}**\n`{old_str}` → `{new_str}`")
             if len(results_log) > 15:
                 log_lines.append(f"*...and {len(results_log) - 15} more (check logs)*")
-            embed.add_field(
-                name="Details",
-                value="\n".join(log_lines),
-                inline=False
-            )
+            embed.add_field(name="Details", value="\n".join(log_lines), inline=False)
 
         await status_msg.edit(content=None, embed=embed)
 

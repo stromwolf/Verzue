@@ -79,6 +79,7 @@ async def main() -> None:
     state = AppState()
     state.load_state()
     state.migrate_legacy_data()
+    queue.app_state = state
 
     session_service = SessionService()
     bots = []

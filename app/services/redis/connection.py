@@ -67,7 +67,7 @@ class RedisConnection:
                 
                 if (now - self._first_failure_at) >= self.DISCONNECT_GRACE:
                     if self._is_connected:
-                        logger.error("🚨 [Redis] DISCONNECTED: Connection lost (Grace period exceeded). Hibernating services...")
+                        logger.error(f"🚨 [Redis] DISCONNECTED: Connection lost (Grace period {self.DISCONNECT_GRACE}s exceeded). Hibernating services...")
                         self._is_connected = False
                         await EventBus.emit("redis_lost", {})
 

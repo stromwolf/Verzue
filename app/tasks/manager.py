@@ -74,6 +74,14 @@ class TaskQueue:
         if self.is_draining:
             raise RuntimeError("Bot is currently preparing for maintenance/restart. Please try again in 1-2 minutes.")
 
+        # --- Feature Flag Guard ---
+        platform = (task.service or "").lower()
+        if hasattr(self, "app_state"):
+            if not self.app_state.is_enabled("downloads"):
+                raise RuntimeError("Global downloads are currently disabled.")
+            if not self.app_state.is_enabled(f"downloads.{platform}"):
+                raise RuntimeError(f"Downloads for {platform} are currently disabled.")
+
         key = f"{task.series_id_key}:{task.episode_id}"
 
         # 🟢 S-GRADE: Cross-Process Deduplication via Redis
@@ -176,6 +184,20 @@ class TaskQueue:
                 # Reconstruct the ChapterTask from the dict payload
                 task = ChapterTask.from_dict(task_dict)
                 
+                # --- Feature Flag Guard ---
+                platform = (task.service or "").lower()
+                if hasattr(self, "app_state"):
+                    is_globally_enabled = self.app_state.is_enabled("downloads")
+                    is_platform_enabled = self.app_state.is_enabled(f"downloads.{platform}")
+                    
+                    if not is_globally_enabled or not is_platform_enabled:
+                        logger.warning(f"🔇 [Worker] Downloads disabled for {platform}. Re-queueing task {task.title}.")
+                        # Nack with requeue so it waits in Redis
+                        await self.redis.queue.nack_task(envelope, requeue=True, reason="Downloads disabled by feature flag")
+                        # Sleep briefly to avoid tight spin
+                        await asyncio.sleep(10)
+                        continue
+
                 token = req_id_context.set(task.req_id)
                 dedup_key = f"{task.series_id_key}:{task.episode_id}"
                 

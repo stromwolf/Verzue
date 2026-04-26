@@ -214,7 +214,9 @@ class RedisQueue:
                     f"ack_task: envelope not found in {self.processing_list} "
                     f"(possibly already swept by orphan recovery)"
                 )
+            await self.manager.connection._handle_connection_status(True)
         except (ConnectionError, TimeoutError) as e:
+            await self.manager.connection._handle_connection_status(False)
             logger.error(f"ack_task failed (will be re-delivered): {e}")
 
     async def nack_task(self, envelope_json: str, requeue: bool = True, reason: str = ""):
@@ -244,7 +246,9 @@ class RedisQueue:
                 logger.error(
                     f"💀 nack: sent to dead-letter after {envelope['attempts']} attempts — {reason}"
                 )
+            await self.manager.connection._handle_connection_status(True)
         except (ConnectionError, TimeoutError) as e:
+            await self.manager.connection._handle_connection_status(False)
             logger.error(f"nack_task failed: {e}")
         except (json.JSONDecodeError, KeyError) as e:
             logger.error(f"nack_task: malformed envelope, discarding: {e}")
@@ -337,45 +341,66 @@ class RedisQueue:
         guard so a crash can't permanently orphan the dedup key."""
         if not self.client:
             return
-        await self.client.hset(ACTIVE_TASKS_HASH, key, task_id)
-        # Track expiry separately because HSET doesn't support per-field TTL
-        # in standard Redis (Redis 7.4+ has HEXPIRE; we don't assume it).
-        expires_at = int(time.time()) + ttl
-        await self.client.hset(ACTIVE_TASK_TTL_HASH, key, expires_at)
+        try:
+            await self.client.hset(ACTIVE_TASKS_HASH, key, task_id)
+            # Track expiry separately because HSET doesn't support per-field TTL
+            # in standard Redis (Redis 7.4+ has HEXPIRE; we don't assume it).
+            expires_at = int(time.time()) + ttl
+            await self.client.hset(ACTIVE_TASK_TTL_HASH, key, expires_at)
+            await self.manager.connection._handle_connection_status(True)
+        except (ConnectionError, TimeoutError):
+            await self.manager.connection._handle_connection_status(False)
 
     async def get_active_task(self, key: str):
         """Returns the task_id if active and not expired, else None.
         Cleans up the entry lazily if expired."""
         if not self.client:
             return None
-        task_id = await self.client.hget(ACTIVE_TASKS_HASH, key)
-        if not task_id:
-            return None
+        try:
+            task_id = await self.client.hget(ACTIVE_TASKS_HASH, key)
+            if not task_id:
+                await self.manager.connection._handle_connection_status(True)
+                return None
 
-        expires_at = await self.client.hget(ACTIVE_TASK_TTL_HASH, key)
-        if expires_at and int(expires_at) < int(time.time()):
-            # Stale; clean it up so the caller can re-claim.
-            await self.client.hdel(ACTIVE_TASKS_HASH, key)
-            await self.client.hdel(ACTIVE_TASK_TTL_HASH, key)
-            logger.info(f"🧹 Cleared stale active_task: {key}")
+            expires_at = await self.client.hget(ACTIVE_TASK_TTL_HASH, key)
+            if expires_at and int(expires_at) < int(time.time()):
+                # Stale; clean it up so the caller can re-claim.
+                await self.client.hdel(ACTIVE_TASKS_HASH, key)
+                await self.client.hdel(ACTIVE_TASK_TTL_HASH, key)
+                logger.info(f"🧹 Cleared stale active_task: {key}")
+                await self.manager.connection._handle_connection_status(True)
+                return None
+            
+            await self.manager.connection._handle_connection_status(True)
+            return task_id
+        except (ConnectionError, TimeoutError):
+            await self.manager.connection._handle_connection_status(False)
             return None
-        return task_id
 
     async def remove_active_task(self, key: str):
         if not self.client:
             return
-        await self.client.hdel(ACTIVE_TASKS_HASH, key)
-        await self.client.hdel(ACTIVE_TASK_TTL_HASH, key)
+        try:
+            await self.client.hdel(ACTIVE_TASKS_HASH, key)
+            await self.client.hdel(ACTIVE_TASK_TTL_HASH, key)
+            await self.manager.connection._handle_connection_status(True)
+        except (ConnectionError, TimeoutError):
+            await self.manager.connection._handle_connection_status(False)
 
     async def refresh_active_task(self, key: str, ttl: int = ACTIVE_TASK_DEFAULT_TTL):
         """Heartbeat for long-running tasks. Call periodically from the worker
         to extend the dedup key TTL while the work is still progressing."""
         if not self.client:
             return
-        if not await self.client.hexists(ACTIVE_TASKS_HASH, key):
-            return
-        expires_at = int(time.time()) + ttl
-        await self.client.hset(ACTIVE_TASK_TTL_HASH, key, expires_at)
+        try:
+            if not await self.client.hexists(ACTIVE_TASKS_HASH, key):
+                await self.manager.connection._handle_connection_status(True)
+                return
+            expires_at = int(time.time()) + ttl
+            await self.client.hset(ACTIVE_TASK_TTL_HASH, key, expires_at)
+            await self.manager.connection._handle_connection_status(True)
+        except (ConnectionError, TimeoutError):
+            await self.manager.connection._handle_connection_status(False)
 
     # =========================================================================
     # WAITERS — unchanged; included for completeness
@@ -385,20 +410,29 @@ class RedisQueue:
         if not self.client:
             return
         waiter_key = f"verzue:waiters:{key}"
-        await self.client.rpush(waiter_key, json.dumps(waiter_data))
-        await self.client.expire(waiter_key, 3600)
+        try:
+            await self.client.rpush(waiter_key, json.dumps(waiter_data))
+            await self.client.expire(waiter_key, 3600)
+            await self.manager.connection._handle_connection_status(True)
+        except (ConnectionError, TimeoutError):
+            await self.manager.connection._handle_connection_status(False)
 
     async def pop_all_waiters(self, key: str):
         if not self.client:
             return []
         waiter_key = f"verzue:waiters:{key}"
         waiters = []
-        while True:
-            raw = await self.client.lpop(waiter_key)
-            if not raw:
-                break
-            waiters.append(json.loads(raw))
-        return waiters
+        try:
+            while True:
+                raw = await self.client.lpop(waiter_key)
+                if not raw:
+                    break
+                waiters.append(json.loads(raw))
+            await self.manager.connection._handle_connection_status(True)
+            return waiters
+        except (ConnectionError, TimeoutError):
+            await self.manager.connection._handle_connection_status(False)
+            return waiters
 
     # =========================================================================
     # OPS / DEBUGGING
@@ -415,12 +449,14 @@ class RedisQueue:
             processing = {}
             for w in workers:
                 processing[w] = await self.client.llen(f"{PROCESSING_PREFIX}{w}")
+            await self.manager.connection._handle_connection_status(True)
             return {
                 "global": global_depth,
                 "dead_letter": dead_depth,
                 "processing_by_worker": processing,
             }
         except (ConnectionError, TimeoutError):
+            await self.manager.connection._handle_connection_status(False)
             return {}
 
     async def replay_dead_letter(self, max_count: int = 100) -> int:
@@ -430,18 +466,23 @@ class RedisQueue:
         if not self.client:
             return 0
         replayed = 0
-        for _ in range(max_count):
-            raw = await self.client.lpop(DEAD_LETTER_QUEUE)
-            if not raw:
-                break
-            try:
-                envelope = json.loads(raw)
-                envelope["attempts"] = 0
-                envelope["replayed_at"] = int(time.time())
-                await self.client.rpush(GLOBAL_QUEUE, json.dumps(envelope))
-                replayed += 1
-            except (json.JSONDecodeError, KeyError):
-                logger.warning("replay_dead_letter: discarding malformed envelope")
-        if replayed:
-            logger.warning(f"♻️  Replayed {replayed} tasks from dead-letter")
-        return replayed
+        try:
+            for _ in range(max_count):
+                raw = await self.client.lpop(DEAD_LETTER_QUEUE)
+                if not raw:
+                    break
+                try:
+                    envelope = json.loads(raw)
+                    envelope["attempts"] = 0
+                    envelope["replayed_at"] = int(time.time())
+                    await self.client.rpush(GLOBAL_QUEUE, json.dumps(envelope))
+                    replayed += 1
+                except (json.JSONDecodeError, KeyError):
+                    logger.warning("replay_dead_letter: discarding malformed envelope")
+            await self.manager.connection._handle_connection_status(True)
+            if replayed:
+                logger.warning(f"♻️  Replayed {replayed} tasks from dead-letter")
+            return replayed
+        except (ConnectionError, TimeoutError):
+            await self.manager.connection._handle_connection_status(False)
+            return 0

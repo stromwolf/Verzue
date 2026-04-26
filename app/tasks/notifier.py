@@ -42,6 +42,11 @@ class PollerNotifier:
         t2 = group_name_context.set(group_name)
         t3 = log_category_context.set("Notification")
         
+        # --- Feature Flag Guard ---
+        platform = (sub.get("platform") or "").lower()
+        if not self.bot.app_state.is_enabled(f"notifications.{platform}"):
+            return
+        
         try:
             channel = self.bot.get_channel(sub["channel_id"])
             if not channel:
@@ -126,6 +131,10 @@ class PollerNotifier:
         t2 = group_name_context.set("Global") # Discovery is bot-wide
         t3 = log_category_context.set("Notification")
 
+        # --- Feature Flag Guard ---
+        if not self.bot.app_state.is_enabled(f"notifications.{platform.lower()}"):
+            return
+
         try:
             channel = self.bot.get_channel(channel_id)
             if not channel:
@@ -164,6 +173,11 @@ class PollerNotifier:
         image_url: str | None = None,
     ):
         """Notifies subscription channel that a series has gone on hiatus."""
+        # --- Feature Flag Guard ---
+        platform = (sub.get("platform") or "").lower()
+        if not self.bot.app_state.is_enabled(f"notifications.{platform}"):
+            return
+
         try:
             channel = self.bot.get_channel(sub["channel_id"])
             if not channel:

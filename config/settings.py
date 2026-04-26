@@ -24,6 +24,7 @@ class Settings:
     CDN_USERS_FILE = DATA_DIR / "cdn_users.json"
     VAULT_FILE = SECRETS_DIR / ".vault.json"
     VAULT_KEY_FILE = SECRETS_DIR / ".vault_key"
+    FLAGS_FILE = DATA_DIR / "feature_flags.json"
 
     # --- Discord ---
     ADMIN_LOG_CHANNEL_ID = 1488184233229811724
@@ -130,6 +131,22 @@ class AppState:
         self.group_profiles: set[str] = set()
         self.server_map: dict[int, str] = {}
         self.cdn_allowed_users: set[int] = set()
+        self.feature_flags: dict[str, bool] = {
+            "notifications": True,
+            "downloads": True,
+            "downloads.piccoma": True,
+            "downloads.jumptoon": True,
+            "downloads.mecha": True,
+            "downloads.kakao": True,
+            "downloads.kuaikan": True,
+            "downloads.acqq": True,
+            "notifications.piccoma": True,
+            "notifications.jumptoon": True,
+            "notifications.mecha": True,
+            "notifications.kakao": True,
+            "notifications.kuaikan": True,
+            "notifications.acqq": True,
+        }
 
     # --- CDN users ---
 
@@ -148,6 +165,47 @@ class AppState:
                 json.dump(list(self.cdn_allowed_users), f)
         except Exception as e:
             logging.error(f"Failed to save CDN users: {e}")
+
+    # --- Feature Flags ---
+
+    def is_enabled(self, feature: str) -> bool:
+        """Check flag. Respects parent. downloads.piccoma=True but downloads=False → False."""
+        parts = feature.split(".")
+        # Check parent first
+        if len(parts) > 1:
+            parent = parts[0]
+            if not self.feature_flags.get(parent, True):
+                return False
+        return self.feature_flags.get(feature, True)
+
+    def set_flag(self, feature: str, value: bool) -> bool:
+        """Set flag. Returns False if unknown feature."""
+        if feature not in self.feature_flags:
+            return False
+        self.feature_flags[feature] = value
+        self.save_feature_flags()
+        return True
+
+    def load_feature_flags(self) -> None:
+        if not Settings.FLAGS_FILE.exists():
+            return
+        try:
+            with open(Settings.FLAGS_FILE) as f:
+                saved = json.load(f)
+            # Only load known keys, ignore stale ones
+            for k in self.feature_flags:
+                if k in saved:
+                    self.feature_flags[k] = bool(saved[k])
+        except Exception as e:
+            logging.error(f"Failed to load feature flags: {e}")
+
+    def save_feature_flags(self) -> None:
+        try:
+            Settings.FLAGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(Settings.FLAGS_FILE, "w") as f:
+                json.dump(self.feature_flags, f, indent=2)
+        except Exception as e:
+            logging.error(f"Failed to save feature flags: {e}")
 
     # --- Group registry ---
 
@@ -193,6 +251,7 @@ class AppState:
         """Load all runtime state from disk."""
         self.load_group_registry()
         self.load_cdn_users()
+        self.load_feature_flags()
         if not self.group_profiles and self.server_map:
             self.group_profiles = set(self.server_map.values())
             self.save_group_registry()

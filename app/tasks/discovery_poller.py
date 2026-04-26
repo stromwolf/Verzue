@@ -42,6 +42,10 @@ class DiscoveryPoller:
 
     async def _run_discovery_for_platform(self, platform_name: str, channel_id: int):
         """Generic discovery engine for any supported platform (Jumptoon, Piccoma, Mecha)."""
+        # --- Feature Flag Guard ---
+        if not self.bot.app_state.is_enabled(f"notifications.{platform_name}"):
+            return
+
         try:
             # Map platform name to a representative URL to get the provider
             base_urls = {
