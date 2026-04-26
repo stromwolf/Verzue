@@ -665,9 +665,7 @@ class HelperSlashCog(commands.Cog):
         timezone: str, 
         time: str = "00:00"
     ):
-        await interaction.response.defer()
-        if not await self.interaction_check(interaction):
-            return
+        # Security check and deferral handled automatically by Cog-level interaction_check.
         
         try:
             # 1. Extract Metadata (via main bot)
@@ -734,9 +732,7 @@ class HelperSlashCog(commands.Cog):
         app_commands.Choice(name="ACQQ", value="acqq"),
     ])
     async def reset_sessions(self, interaction: discord.Interaction, platform: str):
-        await interaction.response.defer(ephemeral=True)
-        if not await self.interaction_check(interaction):
-            return
+        # Security check and deferral handled automatically by Cog-level interaction_check.
         
         try:
             aids = await RedisManager().list_sessions(platform)
@@ -771,8 +767,7 @@ class HelperSlashCog(commands.Cog):
         app_commands.Choice(name="ACQQ", value="acqq"),
     ])
     async def list_sessions(self, interaction: discord.Interaction, platform: str):
-        await interaction.response.defer(ephemeral=True)
-        if not await self.interaction_check(interaction): return
+        # Security check and deferral handled automatically by Cog-level interaction_check.
         
         try:
             aids = await RedisManager().list_sessions(platform)
@@ -1176,10 +1171,13 @@ class HelperSlashCog(commands.Cog):
         group: str | None = None,
         clear_override: bool = False,
     ):
-        if interaction.user.id != 1216284053049704600:
-            return await interaction.response.send_message("❌ Owner only.", ephemeral=True)
+        # interaction already deferred by cog-level interaction_check
+        # DO NOT defer again here
 
-        await interaction.response.defer(ephemeral=True)
+        # Owner check — use followup since already deferred
+        if interaction.user.id != 1216284053049704600:
+            return await interaction.followup.send("❌ Owner only.", ephemeral=True)
+
         state = self.bot.app_state
 
         # ── Validate group if provided ─────────────────────────────────
