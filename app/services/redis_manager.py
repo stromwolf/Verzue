@@ -107,11 +107,11 @@ class RedisManager:
     async def get_schedule_for_group(self, *args, **kwargs):
         return await self.subscriptions.get_schedule_for_group(*args, **kwargs)
 
-    async def get_indexed_sub(self, *args, **kwargs):
-        return await self.subscriptions.get_indexed_sub(*args, **kwargs)
+    async def get_indexed_sub(self, group_name: str, series_id: str):
+        return await self.subscriptions.get_indexed_sub(group_name, series_id)
 
-    async def remove_indexed_sub(self, *args, **kwargs):
-        return await self.subscriptions.remove_indexed_sub(*args, **kwargs)
+    async def remove_indexed_sub(self, group_name: str, series_id: str):
+        return await self.subscriptions.remove_indexed_sub(group_name, series_id)
 
     # --- Pub/Sub Delegation ---
 

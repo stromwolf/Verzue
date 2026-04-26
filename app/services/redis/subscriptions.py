@@ -10,14 +10,15 @@ class RedisSubscriptions:
         self.client = manager.connection.client
 
     async def update_subs_index(self, series_id: str, group_name: str, title: str = None, channel_id: int = None, url: str = None):
-        """Caches a subscription mapping for fast global lookups."""
+        """Caches a subscription mapping for fast group-scoped lookups."""
         if not self.client: return
         payload = {"group": group_name}
         if title: payload["title"] = title
         if channel_id: payload["channel_id"] = channel_id
         if url: payload["url"] = url
         try:
-            await self.client.hset("verzue:index:subs", series_id, json.dumps(payload))
+            key = f"verzue:index:subs:{group_name}"
+            await self.client.hset(key, series_id, json.dumps(payload))
             await self.manager.connection._handle_connection_status(True)
         except (ConnectionError, TimeoutError):
             await self.manager.connection._handle_connection_status(False)
@@ -76,6 +77,7 @@ class RedisSubscriptions:
         """Returns all hydrated subscriptions for a group, optionally filtered by platform."""
         if not self.client: return []
         key = f"verzue:group:{group_name}:platform:{platform.lower()}" if platform else f"verzue:group:{group_name}:all"
+        index_key = f"verzue:index:subs:{group_name}"
         try:
             series_ids = await self.client.smembers(key)
             
@@ -83,7 +85,7 @@ class RedisSubscriptions:
             if series_ids:
                 pipe = self.client.pipeline()
                 for s_id in series_ids:
-                    pipe.hget("verzue:index:subs", s_id)
+                    pipe.hget(index_key, s_id)
                 raw_data = await pipe.execute()
                 for r in raw_data:
                     if r:
@@ -99,6 +101,7 @@ class RedisSubscriptions:
         """Returns hydrated subscription data for a specific day."""
         if not self.client: return []
         key = f"verzue:schedule:{group_name}:{day.capitalize()}"
+        index_key = f"verzue:index:subs:{group_name}"
         try:
             series_ids = await self.client.smembers(key)
             
@@ -107,7 +110,7 @@ class RedisSubscriptions:
                 # Fetch metadata from index hash
                 pipe = self.client.pipeline()
                 for s_id in series_ids:
-                    pipe.hget("verzue:index:subs", s_id)
+                    pipe.hget(index_key, s_id)
                 
                 raw_data = await pipe.execute()
                 for r in raw_data:
@@ -120,22 +123,24 @@ class RedisSubscriptions:
             await self.manager.connection._handle_connection_status(False)
             return []
 
-    async def get_indexed_sub(self, series_id: str):
-        """O(1) lookup for series subscriptions."""
+    async def get_indexed_sub(self, group_name: str, series_id: str):
+        """O(1) lookup for series subscriptions within a group."""
         if not self.client: return None
         try:
-            data = await self.client.hget("verzue:index:subs", series_id)
+            key = f"verzue:index:subs:{group_name}"
+            data = await self.client.hget(key, series_id)
             await self.manager.connection._handle_connection_status(True)
             return json.loads(data) if data else None
         except (ConnectionError, TimeoutError):
             await self.manager.connection._handle_connection_status(False)
             return None
 
-    async def remove_indexed_sub(self, series_id: str):
-        """Removes a sub from the fast index."""
+    async def remove_indexed_sub(self, group_name: str, series_id: str):
+        """Removes a sub from the group-scoped fast index."""
         if not self.client: return
         try:
-            await self.client.hdel("verzue:index:subs", series_id)
+            key = f"verzue:index:subs:{group_name}"
+            await self.client.hdel(key, series_id)
             await self.manager.connection._handle_connection_status(True)
         except (ConnectionError, TimeoutError):
             await self.manager.connection._handle_connection_status(False)

@@ -1997,7 +1997,7 @@ class DashboardCog(commands.Cog):
             except: pass
 
         try:
-            from app.services.group_manager import add_subscription, is_series_subscribed_globally, get_title_override, get_series_by_channel
+            from app.services.group_manager import add_subscription, is_series_subscribed_for_group, get_title_override, get_series_by_channel
             
             # 1. Fetch Metadata (Fast Mode)
             scraper = self.bot.task_queue.provider_manager.get_provider_for_url(url)
@@ -2007,18 +2007,40 @@ class DashboardCog(commands.Cog):
             data = await scraper.get_series_info(url, fast=True)
             title, total_chapters, chapter_list, image_url, series_id, release_day, release_time, status_label, genre_label = data
 
-            # 2. Check Global Singularity rule
-            is_subbed, existing_group = await is_series_subscribed_globally(series_id)
-            is_universal_server = (interaction.guild_id == 1419393318147719170)
+            # 2. Determine Group
+            guild_id = interaction.guild.id if interaction.guild else 0
+            origin_channel_id = interaction.channel.id if interaction.channel else 0
+            state = self.bot.app_state
+            group_name = state.server_map.get(origin_channel_id) or state.server_map.get(guild_id)
 
-            if is_subbed and not is_universal_server:
+            if not group_name:
+                error_payload = {
+                    "flags": 32832,
+                    "components": [
+                        {
+                            "type": 17,
+                            "components": [{"type": 10, "content": "❌ **No Group Profile Linked**\nPlease link this server to a group via `/register-server` first."}]
+                        },
+                        {
+                            "type": 1,
+                            "components": [{"type": 2, "style": 2, "label": "Back to Dashboard", "custom_id": "v2Dash_Home"}]
+                        }
+                    ]
+                }
+                await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_payload)
+                return self._queue_auto_delete(interaction, 1800)
+
+            # 3. Check Per-Group Singularity rule
+            is_subbed = await is_series_subscribed_for_group(series_id, group_name)
+
+            if is_subbed:
                 error_payload = {
                     "flags": 32832,
                     "components": [{
                         "type": 17,
                         "components": [{
                             "type": 10,
-                            "content": f"⚠️ **Subscription Rejected**\n**{title}** is already being tracked by **{existing_group}**."
+                            "content": f"⚠️ **Subscription Rejected**\n**{title}** is already being tracked in **{group_name}**."
                         }]
                     }]
                 }
@@ -2030,7 +2052,7 @@ class DashboardCog(commands.Cog):
                 await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_payload)
                 return self._queue_auto_delete(interaction, 1800)
 
-            # 3. Check Channel Occupancy (Exclusive: One Series Per Channel)
+            # 4. Check Channel Occupancy (Exclusive: One Series Per Channel)
             # 🟢 EXCEPTION: Server 1419393318147719170 allows unlimited series per channel
             occupied_by = get_series_by_channel(target_channel_id)
             is_universal_server = (interaction.guild_id == 1419393318147719170)
@@ -2066,29 +2088,6 @@ class DashboardCog(commands.Cog):
                     }
                     await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_payload)
                     return self._queue_auto_delete(interaction, 1800)
-
-            # 3. Determine Group
-            guild_id = interaction.guild.id if interaction.guild else 0
-            origin_channel_id = interaction.channel.id if interaction.channel else 0
-            state = self.bot.app_state
-            group_name = state.server_map.get(origin_channel_id) or state.server_map.get(guild_id)
-
-            if not group_name:
-                error_payload = {
-                    "flags": 32832,
-                    "components": [
-                        {
-                            "type": 17,
-                            "components": [{"type": 10, "content": "❌ **No Group Profile Linked**\nPlease link this server to a group via `/register-server` first."}]
-                        },
-                        {
-                            "type": 1,
-                            "components": [{"type": 2, "style": 2, "label": "Back to Dashboard", "custom_id": "v2Dash_Home"}]
-                        }
-                    ]
-                }
-                await self.bot.http.request(discord.http.Route('PATCH', f'/webhooks/{self.bot.user.id}/{interaction.token}/messages/@original'), json=error_payload)
-                return self._queue_auto_delete(interaction, 1800)
 
             # Check for Title Override
             display_title = get_title_override(group_name, url) or title

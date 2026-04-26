@@ -171,7 +171,7 @@ def remove_subscription(group_name: str, target_url: str) -> bool:
             import asyncio
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                loop.create_task(redis_brain.remove_indexed_sub(series_id_to_remove))
+                loop.create_task(redis_brain.remove_indexed_sub(group_name, series_id_to_remove))
         except Exception:
             pass
 
@@ -221,31 +221,33 @@ def update_last_up_chapter(group_name: str, series_id: str, chapter_id: str):
         logger.info(f"[GroupManager] Updated UP-notification tracker for {series_id} in {group_name} to chapter {chapter_id}")
 
 
-async def is_series_subscribed_globally(series_id: str) -> tuple[bool, str]:
+async def is_series_subscribed_for_group(series_id: str, group_name: str) -> bool:
     """
-    Checks across Redis Index first, then falls back to disk.
+    Checks if a series is already tracked within a specific group.
+    Returns True if subscribed in this group.
     """
-    # 1. Check Redis Fast Index
-    indexed = await redis_brain.get_indexed_sub(series_id)
+    # 1. Check Redis Fast Index (Group-Scoped)
+    indexed = await redis_brain.get_indexed_sub(group_name, series_id)
     if indexed:
-        return True, indexed["group"]
+        return True
 
     # 2. Fallback to Disk & Update Index
-    if not Settings.GROUPS_DIR.exists():
-        return False, ''
-    for path in Settings.GROUPS_DIR.glob("*.json"):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            for sub in data.get("subscriptions", []):
-                if sub.get("series_id") == series_id:
-                    name = path.stem.replace('_', ' ')
-                    # Repopulate index
-                    await redis_brain.update_subs_index(series_id, name, sub.get("series_title"))
-                    return True, name
-        except Exception:
-            continue
-    return False, ''
+    path = _group_filename(group_name)
+    if not path.exists():
+        return False
+        
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        for sub in data.get("subscriptions", []):
+            if sub.get("series_id") == series_id:
+                # Repopulate index
+                await redis_brain.update_subs_index(series_id, group_name, sub.get("series_title"))
+                return True
+    except Exception:
+        pass
+        
+    return False
 
 
 def get_all_subscriptions() -> list[tuple[str, dict]]:
@@ -394,8 +396,8 @@ def set_drive_folder_cache(group_name: str, series_url: str, ids: dict):
 
 
 async def sync_index_to_redis():
-    """One-time startup sync to populate Redis from JSON files."""
-    logger.info("🔄 [GroupManager] Syncing local group data to Redis Index...")
+    """One-time startup sync to populate Redis from JSON files (Per-Group Indexing)."""
+    logger.info("🔄 [GroupManager] Syncing local group data to Redis Index (Per-Group)...")
     if not Settings.GROUPS_DIR.exists(): return
     
     count = 0
@@ -423,4 +425,13 @@ async def sync_index_to_redis():
                 count += 1
         except Exception as e:
             logger.error(f"Failed to sync {path.name}: {e}")
+            
+    # --- MIGRATION: Cleanup Legacy Global Index ---
+    try:
+        # If the old global key exists, delete it after we've re-indexed everything into per-group hashes
+        await redis_brain.client.delete("verzue:index:subs")
+        logger.info("🧹 [GroupManager] Legacy global index 'verzue:index:subs' removed.")
+    except Exception as e:
+        logger.debug(f"Legacy index cleanup skipped: {e}")
+
     logger.info(f"✅ [GroupManager] Synced {count} subscriptions to Redis.")
