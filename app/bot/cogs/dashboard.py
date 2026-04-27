@@ -2166,6 +2166,11 @@ class DashboardCog(commands.Cog):
             add_subscription(group_name, sub)
             await EventBus.emit("subscription_added", group_name, sub)
 
+            # 🟢 S-GRADE: Auto-register alert on Mecha side
+            if platform == "mecha":
+                # scraper._last_soup was stored during get_series_info earlier in this method
+                asyncio.create_task(scraper.toggle_alert(series_id, enable=True, soup=getattr(scraper, "_last_soup", None)))
+
             # 5. Success UI
             success_payload = {
                 "flags": 32832,

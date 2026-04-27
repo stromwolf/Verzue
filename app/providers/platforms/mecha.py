@@ -251,6 +251,7 @@ class MechaProvider(BaseProvider):
         except Exception as e:
             logger.debug(f"[Mecha] Failed to auto-favorite {title}: {e}")
 
+        self._last_soup = soup
         return title, total_reported, all_chapters, image_url, str(series_id), release_day, release_time, status_label, genre_label
 
     async def fetch_more_chapters(self, url: str, total_pages: int, seen_ids: set, skip_pages: list = None):
@@ -595,49 +596,47 @@ class MechaProvider(BaseProvider):
 
     async def toggle_alert(self, series_id: str, enable: bool = True, soup: BeautifulSoup = None):
         """
-        Registers or unregisters a series for alerts (Favorites).
+        Toggle Mecha series alert subscription via Rails UJS endpoint.
+        ON:  POST /alerts/switch_on_book?book_id={id}
+        OFF: POST /alerts/switch_off_book?book_id={id}
         """
         try:
             auth_session = await self._get_authenticated_session()
+
+            # Grab CSRF token from series page (needed for Rails POST)
             if not soup:
-                res = await auth_session.get(f"{self.BASE_URL}/books/{series_id}")
+                res = await auth_session.get(
+                    f"{self.BASE_URL}/books/{series_id}", timeout=15
+                )
                 soup = BeautifulSoup(res.text, 'html.parser')
-            
-            # Find the favorite form
-            # Mecha usually has a form with action="/favorites" or similar
-            # Check for authenticity_token
-            token_elem = soup.find("input", {"name": "authenticity_token"})
-            token = token_elem.get("value") if token_elem else None
-            
+
+            token_elem = soup.find("meta", {"name": "csrf-token"})
+            token = token_elem.get("content") if token_elem else None
+
             if not token:
-                logger.debug(f"[Mecha] Could not find CSRF token for favoriting {series_id}")
-                return False
+                # fallback: hidden input
+                token_elem = soup.find("input", {"name": "authenticity_token"})
+                token = token_elem.get("value") if token_elem else None
 
-            # Selector for favorite toggle
-            # Note: This might vary, but /favorites is the standard RoR endpoint for Mecha
-            payload = {
-                "authenticity_token": token,
-                "book_id": series_id
+            endpoint = "switch_on_book" if enable else "switch_off_book"
+            url = f"{self.BASE_URL}/alerts/{endpoint}?book_id={series_id}"
+
+            headers = {
+                "Referer": f"{self.BASE_URL}/books/{series_id}",
+                "Origin": self.BASE_URL,
+                "X-Requested-With": "XMLHttpRequest",   # Rails UJS requirement
+                "X-CSRF-Token": token or "",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
             }
-            
-            if enable:
-                action_url = f"{self.BASE_URL}/favorites"
-                method = "POST"
-            else:
-                action_url = f"{self.BASE_URL}/favorites/{series_id}"
-                method = "DELETE"
-                payload["_method"] = "delete"
 
-            headers = {"Referer": f"{self.BASE_URL}/books/{series_id}"}
-            
-            if method == "POST":
-                res = await auth_session.post(action_url, data=payload, headers=headers)
-            else:
-                res = await auth_session.post(action_url, data=payload, headers=headers) # RoR often uses POST with _method=delete
-                
+            res = await auth_session.post(url, headers=headers, timeout=15)
             success = res.status_code in [200, 302]
-            logger.debug(f"[Mecha] Toggle Favorite for {series_id} (enable={enable}): {res.status_code}")
+            logger.info(
+                f"[Mecha] Alert toggle (enable={enable}) for {series_id}: "
+                f"HTTP {res.status_code} → {'✅' if success else '❌'}"
+            )
             return success
+
         except Exception as e:
-            logger.error(f"[Mecha] Toggle alert error: {e}")
+            logger.error(f"[Mecha] toggle_alert error: {e}")
             return False
