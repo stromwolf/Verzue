@@ -96,6 +96,7 @@ class SubscriptionsCog(commands.Cog):
                     if not tasks: return
 
                     for t in tasks:
+                         t.source = "subscription"
                          await self.bot.task_queue.add_task(t)
                     
                     asyncio.create_task(view.monitor_tasks())

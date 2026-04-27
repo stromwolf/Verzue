@@ -218,6 +218,11 @@ class MechaBot(commands.Bot):
             else:
                 task_dict = task_data
 
+            # 🟢 Dashboard/subscription handle their own UI — no plain msg needed
+            source = task_dict.get("source", "standalone")
+            if source in ("dashboard", "subscription"):
+                return
+
             requester_id = task_dict.get("requester_id")
             channel_id = task_dict.get("channel_id")
             if not requester_id or not channel_id: return

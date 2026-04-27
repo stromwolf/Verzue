@@ -29,6 +29,7 @@ class ChapterTask:
     guild_id: int
     guild_name: str
     scan_group: str
+    source: str = "standalone"   # "dashboard" | "subscription" | "standalone"
     episode_number: Optional[str] = None
     service: str = "Unknown"
     

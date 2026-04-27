@@ -658,6 +658,7 @@ class DashboardCog(commands.Cog):
                 t.pre_created_folder_id = None
                 t.share_link = None
                 t.error_message = None
+                t.source = "dashboard"
                 
                 # 🟢 S-GRADE: Prune existing_links from view to ensure fresh UI
                 if hasattr(view, 'existing_links') and t.chapter_str in view.existing_links:
@@ -1258,7 +1259,10 @@ class DashboardCog(commands.Cog):
                         tasks = await BatchController(self.bot).prepare_batch(interaction, sorted(list(view.selected_indices)), view.all_chapters, view.title, view.url, view_ref=view, series_id=view.series_id, original_title=view.original_title)
                         if tasks:
                             view.phases.update({"analyze":"done","purchase":"done","download":"loading"})
-                            view.active_tasks = [await self.bot.task_queue.add_task(t) for t in tasks]
+                            for t in tasks:
+                                t.source = "dashboard"
+                                view.active_tasks.append(t)
+                                await self.bot.task_queue.add_task(t)
                             view.trigger_refresh()
                             
                             if getattr(view, "any_waiters", False):

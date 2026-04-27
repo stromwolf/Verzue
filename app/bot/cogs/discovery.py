@@ -453,6 +453,7 @@ class Discovery(commands.Cog):
 
             # Start the background tasks
             for t in tasks:
+                 t.source = "dashboard"
                  view.active_tasks.append(t) # 🟢 Fix: Link task to view for UI tracking
                  await self.bot.task_queue.add_task(t)
             
@@ -544,6 +545,7 @@ class Discovery(commands.Cog):
             await interaction.followup.send("⏳ Downloading Ch.1 for preview...", ephemeral=True)
             
             task = tasks[0]
+            task.source = "dashboard"
             await self.bot.task_queue.add_task(task)
             
             # Background: wait for done → patch original message
@@ -679,6 +681,7 @@ class Discovery(commands.Cog):
             if not tasks: return
 
             for t in tasks:
+                 t.source = "dashboard"
                  view.active_tasks.append(t)
                  await self.bot.task_queue.add_task(t)
 
