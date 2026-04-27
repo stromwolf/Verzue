@@ -434,7 +434,9 @@ class UniversalDashboard:
                     link = None
                     if item["type"] == "active":
                         task: ChapterTask = item["task"] # type: ignore
-                        if task.status == TaskStatus.FAILED: continue
+                        if task.status == TaskStatus.FAILED:
+                            consolidated_lines.append(f"> ~~{task.chapter_str}~~: Failed ❌ — tap **Retry** to try again")
+                            continue
                         
                         if task.status == TaskStatus.COMPLETED:
                             link = task.share_link
@@ -445,9 +447,11 @@ class UniversalDashboard:
                             if global_phase and task.status == TaskStatus.QUEUED:
                                 status_text = f"{global_phase}..."
                             else:
-                                # Show the specific task status (Downloading, Uploading, etc.)
-                                status_text = f"{task.status.value}"
-                                if task.status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+                                # 🔵 Fix 1 — Collapse Queued + Unscrambling → Downloading display
+                                _DISPLAY_AS_DOWNLOADING = {TaskStatus.QUEUED, TaskStatus.UNSCRAMBLING}
+                                display_status = TaskStatus.DOWNLOADING if task.status in _DISPLAY_AS_DOWNLOADING else task.status
+                                status_text = f"{display_status.value}"
+                                if display_status not in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
                                     status_text += "..."
                             
                             status_line = f"> {task.chapter_str}: {status_text}"
