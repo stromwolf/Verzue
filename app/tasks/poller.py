@@ -15,6 +15,7 @@ from app.services.group_manager import (
 )
 from .notifier import PollerNotifier
 from .discovery_poller import DiscoveryPoller
+from app.services.settings_service import SettingsService
 
 logger = logging.getLogger("AutoPoller")
 
@@ -29,6 +30,7 @@ class AutoDownloadPoller:
         # 🟢 Specialized Sub-Pollers
         self.notifier = PollerNotifier(bot)
         self.discovery = DiscoveryPoller(bot, self.notifier)
+        self.settings = SettingsService(bot.redis_brain.client)
         
         # 🟢 S-GRADE: Identity-Gated Loop Start
         # Only start loops on the Main bot to avoid duplicate logs and double-polling.
@@ -98,6 +100,13 @@ class AutoDownloadPoller:
                 # --- Feature Flag Guard ---
                 if not self.bot.app_state.is_enabled(f"notifications.{p_name}", group=group_name):
                     continue
+                
+                # --- Per-User Toggle Guard ---
+                if sub.get("added_by"):
+                    s_settings = await self.settings.get_subscription_settings(int(sub["added_by"]), sub["series_id"])
+                    if not s_settings.get("enabled", True):
+                        continue
+
                 todays_targets.append((group_name, sub))
 
         if not todays_targets: return
@@ -150,7 +159,16 @@ class AutoDownloadPoller:
                     # --- Feature Flag Guard ---
                     p_name = (sub.get("platform") or "").lower()
                     if self.bot.app_state.is_enabled(f"notifications.{p_name}", group=group_name):
-                        todays_subs.append((group_name, sub))
+                        # --- Per-User Toggle Guard ---
+                        is_enabled = True
+                        if sub.get("added_by"):
+                            s_settings = await self.settings.get_subscription_settings(int(sub["added_by"]), sub["series_id"])
+                            is_enabled = s_settings.get("enabled", True)
+                        
+                        if is_enabled:
+                            todays_subs.append((group_name, sub))
+                        else:
+                            logger.debug(f"🔴 [AutoPoller] Subscription DISABLED via toggle for {sub.get('series_title')}")
                     else:
                         logger.debug(f"🔇 [AutoPoller] Notifications disabled for {p_name} in {group_name}, skipping {sub.get('series_title')}")
 

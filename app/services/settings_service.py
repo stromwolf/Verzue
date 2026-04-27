@@ -4,6 +4,7 @@ from typing import Literal, TypedDict
 
 NOTIFY_LIMIT = 5
 SETTINGS_KEY = "verzue:settings:{user_id}"
+SUB_SETTINGS_KEY = "verzue:subscription:{user_id}:{series_id}"
 
 
 class NotifyTarget(TypedDict):
@@ -33,12 +34,13 @@ class SettingsService:
         settings = await self.get(user_id)
         targets: list[NotifyTarget] = settings.get("notify_targets", [])
 
-        if any(t["id"] == str(target_id) and t["type"] == target_type for t in targets):
+        target_id_str = str(getattr(target_id, "id", target_id))
+        if any(t["id"] == target_id_str and t["type"] == target_type for t in targets):
             return False, "Already in list."
         if len(targets) >= NOTIFY_LIMIT:
             return False, f"Limit reached ({NOTIFY_LIMIT}). Remove one first."
 
-        targets.append({"type": target_type, "id": str(target_id)})
+        targets.append({"type": target_type, "id": target_id_str})
         settings["notify_targets"] = targets
         await self._redis.set(SETTINGS_KEY.format(user_id=user_id), json.dumps(settings))
         return True, "Added."
@@ -61,6 +63,20 @@ class SettingsService:
     def format_mentions(targets: list[NotifyTarget]) -> str:
         """Build mention string for chapter completion pings."""
         return " ".join(
-            f"<@{t['id']}>" if t["type"] == "user" else f"<@&{t['id']}>"
+            f"<@{getattr(t['id'], 'id', t['id'])}>" 
+            if t["type"] == "user" else 
+            f"<@&{getattr(t['id'], 'id', t['id'])}>"
             for t in targets
+        )
+
+    async def get_subscription_settings(self, user_id: int, series_id: str) -> dict:
+        raw = await self._redis.get(SUB_SETTINGS_KEY.format(user_id=user_id, series_id=series_id))
+        return json.loads(raw) if raw else {"enabled": True, "custom_title": None}
+
+    async def update_subscription_settings(self, user_id: int, series_id: str, updates: dict):
+        settings = await self.get_subscription_settings(user_id, series_id)
+        settings.update(updates)
+        await self._redis.set(
+            SUB_SETTINGS_KEY.format(user_id=user_id, series_id=series_id), 
+            json.dumps(settings)
         )

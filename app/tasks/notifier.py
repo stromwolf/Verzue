@@ -9,6 +9,7 @@ from app.services.group_manager import (
     get_title_override,
     get_next_notification_id,
 )
+from app.services.settings_service import SettingsService
 from app.bot.common.notification_builder import (
     build_notification_payload,
     build_new_series_notification_payload,
@@ -21,6 +22,7 @@ logger = logging.getLogger("AutoPoller.Notifier")
 class PollerNotifier:
     def __init__(self, bot):
         self.bot = bot
+        self.settings = SettingsService(bot.redis_brain.client)
 
     async def _notify_channel(
         self,
@@ -59,6 +61,12 @@ class PollerNotifier:
 
             # Get custom title override (Vault)
             custom_title = get_title_override(group_name, sub["series_url"])
+
+            # 🟢 S-GRADE: User-specific title override (Redis)
+            if sub.get("added_by"):
+                s_settings = await self.settings.get_subscription_settings(int(sub["added_by"]), sub["series_id"])
+                if s_settings.get("custom_title"):
+                    custom_title = s_settings["custom_title"]
 
             # Get next N-ID
             notification_id = get_next_notification_id(group_name)
@@ -187,6 +195,13 @@ class PollerNotifier:
             admin = get_admin_settings(group_name)
             role_id = admin.get("role_id")
             custom_title = get_title_override(group_name, sub["series_url"])
+
+            # 🟢 S-GRADE: User-specific title override (Redis)
+            if sub.get("added_by"):
+                s_settings = await self.settings.get_subscription_settings(int(sub["added_by"]), sub["series_id"])
+                if s_settings.get("custom_title"):
+                    custom_title = s_settings["custom_title"]
+
             notification_id = get_next_notification_id(group_name)
 
             # Attach poster if available

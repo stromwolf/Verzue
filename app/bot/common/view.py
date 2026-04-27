@@ -805,8 +805,9 @@ class UniversalDashboard:
                             # 🟢 ROBUST PING: Use SettingsService for mentions
                             from app.services.settings_service import SettingsService
                             settings = SettingsService()
-                            targets = await settings.get_notify_targets(int(self.user))
-                            mentions = SettingsService.format_mentions(targets) or f"<@{self.user}>"
+                            user_id = int(getattr(self.user, "id", self.user))
+                            targets = await settings.get_notify_targets(user_id)
+                            mentions = SettingsService.format_mentions(targets) or f"<@{user_id}>"
                             
                             ping_msg = await channel.send(content=mentions)
                             

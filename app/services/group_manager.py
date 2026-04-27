@@ -270,6 +270,12 @@ def get_all_subscriptions() -> list[tuple[str, dict]]:
     return results
 
 
+def get_user_subscriptions(user_id: int) -> list[tuple[str, dict]]:
+    """Returns all subscriptions added by a specific user ID."""
+    all_subs = get_all_subscriptions()
+    return [(gn, s) for gn, s in all_subs if str(s.get("added_by")) == str(user_id)]
+
+
 def get_series_by_channel(channel_id: int) -> tuple[str, dict] | None:
     """Finds which series is subscribed to the given channel ID."""
     all_subs = get_all_subscriptions()

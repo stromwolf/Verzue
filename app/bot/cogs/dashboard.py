@@ -428,14 +428,15 @@ class DashboardCog(commands.Cog):
         channel_id = sub.get('channel_id')
         channel_name = f"#{channel_id}"
         if channel_id:
-            ch = self.bot.get_channel(int(channel_id))
+            ch = self.bot.get_channel(int(getattr(channel_id, "id", channel_id)))
             if ch: channel_name = f"#{ch.name}"
             
         user_name = "Not Found"
         if sub.get("added_by"):
             try:
                 # 🟢 S-GRADE: Use fetch_user (API) instead of get_user (Cache)
-                u = await self.bot.fetch_user(int(sub["added_by"]))
+                user_id = int(getattr(sub["added_by"], "id", sub["added_by"]))
+                u = await self.bot.fetch_user(user_id)
                 user_name = f"@{u.display_name}" if u else f"ID: {sub['added_by']}"
             except:
                 user_name = f"ID: {sub['added_by']}"
@@ -738,15 +739,57 @@ class DashboardCog(commands.Cog):
 
             # --- Settings Button ---
             elif custom_id == "v2_btn_settings":
+                # Initial Settings Menu (3 Buttons)
+                payload = {
+                    "type": 4, # CHANNEL_MESSAGE_WITH_SOURCE
+                    "data": {
+                        "flags": 64, # EPHEMERAL
+                        "content": "### ⚙️ Verzue Settings\nSelect a category to manage your preferences:",
+                        "components": [
+                            {
+                                "type": 1,
+                                "components": [
+                                    {"type": 2, "style": 2, "label": "Notifications", "emoji": {"name": "🔔"}, "custom_id": "v2_settings_nav_notify"},
+                                    {"type": 2, "style": 2, "label": "Subscriptions", "emoji": {"name": "📋"}, "custom_id": "v2_settings_nav_subs"},
+                                    {"type": 2, "style": 2, "label": "Series Titles", "emoji": {"name": "✏️"}, "custom_id": "v2_settings_nav_titles"}
+                                ]
+                            }
+                        ]
+                    }
+                }
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=payload
+                )
+
+            # --- Settings Navigation ---
+            elif custom_id == "v2_settings_nav_notify":
                 from app.bot.common.notifications_view import NotificationsView
                 view = NotificationsView(user_id=interaction.user.id, guild=interaction.guild)
-                await interaction.response.send_message(
+                await interaction.response.edit_message(
+                    content=None,
                     embed=await view._build_embed(),
-                    view=view,
-                    ephemeral=True,
+                    view=view
                 )
-                # Now populate children w/ current state
                 await view.refresh(interaction)
+
+            elif custom_id == "v2_settings_nav_subs":
+                from app.bot.common.notifications_view import SubscriptionToggleView
+                view = SubscriptionToggleView(user_id=interaction.user.id, guild=interaction.guild)
+                await interaction.response.edit_message(
+                    content=None,
+                    embed=await view._build_embed(),
+                    view=view
+                )
+
+            elif custom_id == "v2_settings_nav_titles":
+                from app.bot.common.notifications_view import SeriesTitleRenameView
+                view = SeriesTitleRenameView(user_id=interaction.user.id, guild=interaction.guild)
+                await interaction.response.edit_message(
+                    content=None,
+                    embed=await view._build_embed(),
+                    view=view
+                )
 
             # --- Channel Selection for Subscription ---
             elif custom_id.startswith("v2_select_sub_channel_"):
