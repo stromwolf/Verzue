@@ -174,13 +174,21 @@ class AppState:
         Check if feature is enabled.
         Group-specific override wins over global.
         """
-        # 1. Group override FIRST — explicit group flag wins over everything
+        # 1. Group override wins — check both exact feature AND its parent
         if group and group in self.group_flags:
             g_flags = self.group_flags[group]
             if feature in g_flags:
                 return g_flags[feature]
 
-        # 2. Parent flag (global scope only — no group context)
+            # 🟢 FIX: If checking a child (e.g. downloads.jumptoon),
+            # also check group override for parent (downloads)
+            parts = feature.split(".")
+            if len(parts) > 1:
+                parent = parts[0]
+                if parent in g_flags:
+                    return g_flags[parent]
+
+        # 2. Parent flag (global scope only)
         parts = feature.split(".")
         if len(parts) > 1:
             parent = parts[0]
