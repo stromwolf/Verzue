@@ -173,22 +173,21 @@ class AppState:
         """
         Check if feature is enabled.
         Group-specific override wins over global.
-        Parent flag still overrides child regardless of scope.
         """
-        # Parent check (global only — parent is never group-scoped)
+        # 1. Group override FIRST — explicit group flag wins over everything
+        if group and group in self.group_flags:
+            g_flags = self.group_flags[group]
+            if feature in g_flags:
+                return g_flags[feature]
+
+        # 2. Parent flag (global scope only — no group context)
         parts = feature.split(".")
         if len(parts) > 1:
             parent = parts[0]
             if not self.feature_flags.get(parent, True):
                 return False
 
-        # Group-specific override
-        if group and group in self.group_flags:
-            g_flags = self.group_flags[group]
-            if feature in g_flags:
-                return g_flags[feature]
-
-        # Global fallback
+        # 3. Global fallback
         return self.feature_flags.get(feature, True)
 
     def set_flag(self, feature: str, value: bool, group: str | None = None) -> bool:

@@ -77,9 +77,9 @@ class TaskQueue:
         # --- Feature Flag Guard ---
         platform = (task.service or "").lower()
         if hasattr(self, "app_state"):
-            if not self.app_state.is_enabled("downloads"):
+            if not self.app_state.is_enabled("downloads", task.scan_group):
                 raise RuntimeError("Global downloads are currently disabled.")
-            if not self.app_state.is_enabled(f"downloads.{platform}"):
+            if not self.app_state.is_enabled(f"downloads.{platform}", task.scan_group):
                 raise RuntimeError(f"Downloads for {platform} are currently disabled.")
 
         key = f"{task.series_id_key}:{task.episode_id}"
@@ -187,8 +187,8 @@ class TaskQueue:
                 # --- Feature Flag Guard ---
                 platform = (task.service or "").lower()
                 if hasattr(self, "app_state"):
-                    is_globally_enabled = self.app_state.is_enabled("downloads")
-                    is_platform_enabled = self.app_state.is_enabled(f"downloads.{platform}")
+                    is_globally_enabled = self.app_state.is_enabled("downloads", task.scan_group)
+                    is_platform_enabled = self.app_state.is_enabled(f"downloads.{platform}", task.scan_group)
                     
                     if not is_globally_enabled or not is_platform_enabled:
                         logger.warning(f"🔇 [Worker] Downloads disabled for {platform}. Re-queueing task {task.title}.")
