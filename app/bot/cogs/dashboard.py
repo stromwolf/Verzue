@@ -2170,6 +2170,20 @@ class DashboardCog(commands.Cog):
             if platform == "mecha":
                 # scraper._last_soup was stored during get_series_info earlier in this method
                 asyncio.create_task(scraper.toggle_alert(series_id, enable=True, soup=getattr(scraper, "_last_soup", None)))
+                
+                # 🟢 S-GRADE: Backfill release_day from alerts if not found in metadata
+                if not release_day:
+                    async def _backfill_release_day():
+                        try:
+                            alerts = await scraper.get_alerts_list()
+                            match = next((a for a in alerts if a["series_id"] == series_id), None)
+                            if match and match.get("release_day"):
+                                from app.services.group_manager import update_release_day_by_id
+                                update_release_day_by_id(group_name, series_id, match["release_day"])
+                                logger.info(f"[Sub] Backfilled release_day={match['release_day']} for {title}")
+                        except Exception as e:
+                            logger.warning(f"[Sub] release_day backfill failed: {e}")
+                    asyncio.create_task(_backfill_release_day())
 
             # 5. Success UI
             success_payload = {

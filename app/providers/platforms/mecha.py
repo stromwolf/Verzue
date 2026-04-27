@@ -7,6 +7,8 @@ import binascii
 import logging
 import random
 import time
+import datetime
+from zoneinfo import ZoneInfo
 from urllib.parse import urljoin, urlparse, parse_qs
 from bs4 import BeautifulSoup
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -566,6 +568,10 @@ class MechaProvider(BaseProvider):
             soup = BeautifulSoup(res.text, 'html.parser')
             updated_series = []
             
+            # Use JST for date parsing (Mecha updates at 00:00 JST)
+            JST = ZoneInfo("Asia/Tokyo")
+            now_jst = datetime.datetime.now(JST)
+
             items = soup.select('.p-bookList_item')
             for item in items:
                 title_elem = item.select_one('.p-book_title a')
@@ -574,19 +580,36 @@ class MechaProvider(BaseProvider):
                 title = title_elem.get_text(strip=True)
                 href = title_elem.get('href', '')
                 sid = href.split('/')[-1]
+                # S-GRADE: Use data-id (book_id) which is the canonical numeric ID
+                book_id = title_elem.get('data-id') or sid
                 
-                arrival_day = item.select_one('.p-book_arrivalDay')
-                day_text = arrival_day.get_text(strip=True) if arrival_day else None
+                arrival_day_elem = item.select_one('.p-book_arrivalDay')
+                day_text = arrival_day_elem.get_text(strip=True) if arrival_day_elem else None  # e.g., "4/24"
                 
+                # ── Derive release_day from arrival_day date string ──
+                release_day = None
+                if day_text:
+                    try:
+                        month, day = map(int, day_text.split('/'))
+                        year = now_jst.year
+                        candidate = datetime.date(year, month, day)
+                        # If date is in future (e.g., Dec 31 vs Jan 1), it belongs to previous year
+                        if candidate > now_jst.date():
+                            candidate = datetime.date(year - 1, month, day)
+                        release_day = candidate.strftime("%A")  # e.g., "Friday"
+                    except Exception:
+                        pass
+
                 update_info = item.select_one('.p-book_update')
                 notation = update_info.get_text(strip=True).replace("続話：", "") if update_info else None
                 
                 updated_series.append({
-                    "series_id": sid,
+                    "series_id": book_id,
                     "title": title,
                     "url": urljoin(self.BASE_URL, href),
                     "notation": notation,
-                    "arrival_day": day_text
+                    "arrival_day": day_text,
+                    "release_day": release_day
                 })
                 
             return updated_series

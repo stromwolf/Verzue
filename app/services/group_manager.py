@@ -194,6 +194,17 @@ def set_release_day(group_name: str, target_url: str, day: str) -> bool:
     return False
 
 
+def update_release_day_by_id(group_name: str, series_id: str, day: str) -> bool:
+    """Sets the weekly release day for a subscription via series_id."""
+    data = load_group(group_name)
+    for sub in data["subscriptions"]:
+        if sub.get("series_id") == series_id:
+            sub["release_day"] = day.capitalize()
+            save_group(group_name, data)
+            return True
+    return False
+
+
 def update_last_chapter(group_name: str, series_id: str, chapter_id: str):
     data = load_group(group_name)
     changed = False
