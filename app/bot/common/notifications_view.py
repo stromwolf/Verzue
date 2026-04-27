@@ -64,7 +64,7 @@ class NotificationsView(ui.View):
 
 
 class AddUserSelect(ui.UserSelect):
-    def __init__(self, parent: NotificationsView, *, disabled: bool):
+    def __init__(self, view_ref: NotificationsView, *, disabled: bool):
         super().__init__(
             placeholder="➕ Add a user…",
             min_values=1,
@@ -72,21 +72,21 @@ class AddUserSelect(ui.UserSelect):
             disabled=disabled,
             row=0,
         )
-        self.parent = parent
+        self.view_ref = view_ref
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         target = self.values[0]
-        ok, msg = await self.parent.settings.add_notify_target(
-            self.parent.user_id, "user", target.id
+        ok, msg = await self.view_ref.settings.add_notify_target(
+            self.view_ref.user_id, "user", target.id
         )
         if not ok:
             await interaction.followup.send(msg, ephemeral=True)
-        await self.parent.refresh(interaction)
+        await self.view_ref.refresh(interaction)
 
 
 class AddRoleSelect(ui.RoleSelect):
-    def __init__(self, parent: NotificationsView, *, disabled: bool):
+    def __init__(self, view_ref: NotificationsView, *, disabled: bool):
         super().__init__(
             placeholder="➕ Add a role…",
             min_values=1,
@@ -94,31 +94,31 @@ class AddRoleSelect(ui.RoleSelect):
             disabled=disabled,
             row=1,
         )
-        self.parent = parent
+        self.view_ref = view_ref
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         target = self.values[0]
-        ok, msg = await self.parent.settings.add_notify_target(
-            self.parent.user_id, "role", target.id
+        ok, msg = await self.view_ref.settings.add_notify_target(
+            self.view_ref.user_id, "role", target.id
         )
         if not ok:
             await interaction.followup.send(msg, ephemeral=True)
-        await self.parent.refresh(interaction)
+        await self.view_ref.refresh(interaction)
 
 
 class RemoveSelect(ui.Select):
-    def __init__(self, parent: NotificationsView, targets: list):
+    def __init__(self, view_ref: NotificationsView, targets: list):
         options = []
         for t in targets:
             label = ""
-            if parent.guild:
+            if view_ref.guild:
                 if t["type"] == "user":
-                    member = parent.guild.get_member(int(getattr(t["id"], "id", t["id"])))
+                    member = view_ref.guild.get_member(int(getattr(t["id"], "id", t["id"])))
                     label = f"@{member.display_name}" if member else f"User: {t['id']}"
                     emoji = "👤"
                 else:
-                    role = parent.guild.get_role(int(getattr(t["id"], "id", t["id"])))
+                    role = view_ref.guild.get_role(int(getattr(t["id"], "id", t["id"])))
                     label = f"Role: {role.name}" if role else f"Role: {t['id']}"
                     emoji = "🎭"
             else:
@@ -139,13 +139,13 @@ class RemoveSelect(ui.Select):
             options=options,
             row=2,
         )
-        self.parent = parent
+        self.view_ref = view_ref
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         ttype, tid = self.values[0].split(":", 1)
-        await self.parent.settings.remove_notify_target(self.parent.user_id, ttype, tid)
-        await self.parent.refresh(interaction)
+        await self.view_ref.settings.remove_notify_target(self.view_ref.user_id, ttype, tid)
+        await self.view_ref.refresh(interaction)
 
 
 class SubscriptionToggleView(ui.View):
@@ -193,7 +193,7 @@ class SubscriptionToggleView(ui.View):
 
 
 class SubscriptionSelect(ui.Select):
-    def __init__(self, parent: SubscriptionToggleView, subs: list):
+    def __init__(self, view_ref: SubscriptionToggleView, subs: list):
         options = []
         for gn, sub in subs:
             options.append(
@@ -205,15 +205,15 @@ class SubscriptionSelect(ui.Select):
                 )
             )
         super().__init__(placeholder="Select a series to toggle...", options=options)
-        self.parent = parent
+        self.view_ref = view_ref
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         s_id = self.values[0]
-        settings = await self.parent.settings.get_subscription_settings(self.parent.user_id, s_id)
+        settings = await self.view_ref.settings.get_subscription_settings(self.view_ref.user_id, s_id)
         new_state = not settings.get("enabled", True)
-        await self.parent.settings.update_subscription_settings(self.parent.user_id, s_id, {"enabled": new_state})
-        await self.parent.refresh(interaction)
+        await self.view_ref.settings.update_subscription_settings(self.view_ref.user_id, s_id, {"enabled": new_state})
+        await self.view_ref.refresh(interaction)
 
 
 class SeriesTitleRenameView(ui.View):
@@ -261,7 +261,7 @@ class SeriesTitleRenameView(ui.View):
 
 
 class SeriesTitleSelect(ui.Select):
-    def __init__(self, parent: SeriesTitleRenameView, subs: list):
+    def __init__(self, view_ref: SeriesTitleRenameView, subs: list):
         options = []
         for gn, sub in subs:
             options.append(
@@ -273,13 +273,13 @@ class SeriesTitleSelect(ui.Select):
                 )
             )
         super().__init__(placeholder="Select a series to rename...", options=options)
-        self.parent = parent
+        self.view_ref = view_ref
 
     async def callback(self, interaction: discord.Interaction):
         s_id = self.values[0]
         # Find the sub to get the current title
         from app.services.group_manager import get_user_subscriptions
-        subs = get_user_subscriptions(self.parent.user_id)
+        subs = get_user_subscriptions(self.view_ref.user_id)
         # Fix: correctly unpack the tuple
         match = next(((gn, s) for gn, s in subs if s["series_id"] == s_id), None)
         
@@ -287,7 +287,7 @@ class SeriesTitleSelect(ui.Select):
             return await interaction.response.send_message("Series not found.", ephemeral=True)
 
         gn, sub = match
-        modal = SeriesRenameModal(self.parent, s_id, sub["series_title"])
+        modal = SeriesRenameModal(self.view_ref, s_id, sub["series_title"])
         await interaction.response.send_modal(modal)
 
 
@@ -300,17 +300,17 @@ class SeriesRenameModal(ui.Modal, title="Rename Series"):
         required=True
     )
 
-    def __init__(self, parent: SeriesTitleRenameView, series_id: str, current_title: str):
+    def __init__(self, view_ref: SeriesTitleRenameView, series_id: str, current_title: str):
         super().__init__()
-        self.parent = parent
+        self.view_ref = view_ref
         self.series_id = series_id
         self.new_title.default = current_title
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        await self.parent.settings.update_subscription_settings(
-            self.parent.user_id, 
+        await self.view_ref.settings.update_subscription_settings(
+            self.view_ref.user_id, 
             self.series_id, 
             {"custom_title": self.new_title.value}
         )
-        await self.parent.refresh(interaction)
+        await self.view_ref.refresh(interaction)
