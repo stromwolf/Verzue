@@ -419,10 +419,237 @@ class DashboardCog(commands.Cog):
         components.extend(detail_rows)
         components.append(pagination_row)
 
+    async def get_settings_subs_payload(self, user_id: int):
+        """V2 payload for Subscriptions settings — edits dashboard inline."""
+        from app.services.group_manager import get_user_subscriptions
+        from app.services.settings_service import SettingsService
+        settings = SettingsService()
+        subs = get_user_subscriptions(user_id)
+
+        inner = [
+            {"type": 10, "content": "# 📋 Subscription Management"},
+            {"type": 14, "divider": True, "spacing": 1},
+            {"type": 10, "content": "Toggle your subscriptions ON/OFF. Disabled subscriptions won't be polled for updates."},
+        ]
+
+        if not subs:
+            inner.append({"type": 10, "content": "*You haven't added any subscriptions yet.*"})
+        else:
+            lines = []
+            options = []
+            for gn, sub in subs:
+                s_id = sub.get("series_id")
+                if not s_id: continue
+                s_settings = await settings.get_subscription_settings(user_id, s_id)
+                status = "🟢 ON" if s_settings.get("enabled", True) else "🔴 OFF"
+                title = s_settings.get("custom_title") or sub.get("series_title") or "Unknown"
+                lines.append(f"**{title}** — {status}\n-# Group: {gn} | S-ID: {s_id}")
+                options.append({
+                    "label": title[:100],
+                    "value": s_id,
+                    "description": f"Group: {gn}"[:100],
+                    "emoji": {"name": "📖"}
+                })
+
+            if lines:
+                inner.append({"type": 10, "content": "\n".join(lines)[:3900]})
+
+            if options:
+                inner.append({
+                    "type": 1,
+                    "components": [{
+                        "type": 3,
+                        "custom_id": f"v2_settings_subs_toggle_{user_id}",
+                        "placeholder": "Select a series to toggle...",
+                        "options": options[:25]
+                    }]
+                })
+
+        inner.append({"type": 14, "divider": True, "spacing": 1})
+        inner.append({
+            "type": 1,
+            "components": [
+                {"type": 2, "style": 2, "label": "Back", "custom_id": "v2_btn_settings"},
+                {"type": 2, "style": 2, "label": "Dashboard", "custom_id": "v2Dash_Home"}
+            ]
+        })
+
         return {
-            "type": 7, # UPDATE_MESSAGE
+            "type": 7,
             "data": {
-                "components": components
+                "flags": 32768,
+                "components": [{"type": 17, "components": inner}]
+            }
+        }
+
+
+    async def get_settings_titles_payload(self, user_id: int):
+        """V2 payload for Series Titles settings."""
+        from app.services.group_manager import get_user_subscriptions
+        from app.services.settings_service import SettingsService
+        settings = SettingsService()
+        subs = get_user_subscriptions(user_id)
+
+        inner = [
+            {"type": 10, "content": "# ✏️ Series Title Management"},
+            {"type": 14, "divider": True, "spacing": 1},
+            {"type": 10, "content": "Rename your series for better display in the dashboard and pings."},
+        ]
+
+        if not subs:
+            inner.append({"type": 10, "content": "*You haven't added any subscriptions yet.*"})
+        else:
+            lines = []
+            options = []
+            for gn, sub in subs:
+                s_id = sub.get("series_id")
+                if not s_id: continue
+                s_settings = await settings.get_subscription_settings(user_id, s_id)
+                custom = s_settings.get("custom_title")
+                original = sub.get("series_title") or "Unknown"
+                label = custom or original
+                display = f"**{custom}** (was: {original})" if custom else f"**{original}**"
+                lines.append(f"{display}\n-# Group: {gn} | S-ID: {s_id}")
+                options.append({
+                    "label": label[:100],
+                    "value": s_id,
+                    "description": f"Group: {gn}"[:100],
+                    "emoji": {"name": "✏️"}
+                })
+
+            if lines:
+                inner.append({"type": 10, "content": "\n".join(lines)[:3900]})
+
+            if options:
+                inner.append({
+                    "type": 1,
+                    "components": [{
+                        "type": 3,
+                        "custom_id": f"v2_settings_titles_rename_{user_id}",
+                        "placeholder": "Select a series to rename...",
+                        "options": options[:25]
+                    }]
+                })
+
+        inner.append({"type": 14, "divider": True, "spacing": 1})
+        inner.append({
+            "type": 1,
+            "components": [
+                {"type": 2, "style": 2, "label": "Back", "custom_id": "v2_btn_settings"},
+                {"type": 2, "style": 2, "label": "Dashboard", "custom_id": "v2Dash_Home"}
+            ]
+        })
+
+        return {
+            "type": 7,
+            "data": {
+                "flags": 32768,
+                "components": [{"type": 17, "components": inner}]
+            }
+        }
+
+
+    async def get_settings_notify_payload(self, user_id: int, guild):
+        """V2 payload for Notification Recipients settings."""
+        from app.services.settings_service import SettingsService, NOTIFY_LIMIT
+        settings = SettingsService()
+        targets = await settings.get_notify_targets(user_id)
+
+        inner = [
+            {"type": 10, "content": "# 🔔 Notification Recipients"},
+            {"type": 14, "divider": True, "spacing": 1},
+            {"type": 10, "content": "Who gets pinged when your chapters finish."},
+        ]
+
+        if not targets:
+            inner.append({"type": 10, "content": "*No targets set — only you will be pinged.*"})
+        else:
+            lines = []
+            for t in targets:
+                mention = f"<@{t['id']}>" if t["type"] == "user" else f"<@&{t['id']}>"
+                name = ""
+                if guild:
+                    if t["type"] == "user":
+                        member = guild.get_member(int(getattr(t["id"], "id", t["id"])))
+                        if member: name = f" (`@{member.display_name}`)"
+                    else:
+                        role = guild.get_role(int(getattr(t["id"], "id", t["id"])))
+                        if role: name = f" (`{role.name}`)"
+                lines.append(f"• {mention}{name}")
+            inner.append({"type": 10, "content": f"**Targets ({len(targets)}/{NOTIFY_LIMIT})**\n" + "\n".join(lines)})
+
+        at_limit = len(targets) >= NOTIFY_LIMIT
+
+        # Add User Select (V2 supports type 5 = User Select)
+        if not at_limit:
+            inner.append({
+                "type": 1,
+                "components": [{
+                    "type": 5,  # USER_SELECT
+                    "custom_id": f"v2_settings_notify_add_user_{user_id}",
+                    "placeholder": "➕ Add a user…",
+                    "min_values": 1,
+                    "max_values": 1
+                }]
+            })
+            inner.append({
+                "type": 1,
+                "components": [{
+                    "type": 6,  # ROLE_SELECT
+                    "custom_id": f"v2_settings_notify_add_role_{user_id}",
+                    "placeholder": "➕ Add a role…",
+                    "min_values": 1,
+                    "max_values": 1
+                }]
+            })
+
+        if targets:
+            remove_options = []
+            for t in targets:
+                if guild:
+                    if t["type"] == "user":
+                        member = guild.get_member(int(getattr(t["id"], "id", t["id"])))
+                        label = f"@{member.display_name}" if member else f"User: {t['id']}"
+                        emoji = {"name": "👤"}
+                    else:
+                        role = guild.get_role(int(getattr(t["id"], "id", t["id"])))
+                        label = f"Role: {role.name}" if role else f"Role: {t['id']}"
+                        emoji = {"name": "🎭"}
+                else:
+                    label = f"{t['type'].capitalize()}: {t['id']}"
+                    emoji = {"name": "👤" if t["type"] == "user" else "🎭"}
+
+                remove_options.append({
+                    "label": label[:100],
+                    "value": f"{t['type']}:{t['id']}",
+                    "emoji": emoji
+                })
+
+            if remove_options:
+                inner.append({
+                    "type": 1,
+                    "components": [{
+                        "type": 3,
+                        "custom_id": f"v2_settings_notify_remove_{user_id}",
+                        "placeholder": "➖ Remove a target…",
+                        "options": remove_options[:25]
+                    }]
+                })
+
+        inner.append({"type": 14, "divider": True, "spacing": 1})
+        inner.append({
+            "type": 1,
+            "components": [
+                {"type": 2, "style": 2, "label": "Back", "custom_id": "v2_btn_settings"},
+                {"type": 2, "style": 2, "label": "Dashboard", "custom_id": "v2Dash_Home"}
+            ]
+        })
+
+        return {
+            "type": 7,
+            "data": {
+                "flags": 32768,
+                "components": [{"type": 17, "components": inner}]
             }
         }
 
@@ -771,22 +998,34 @@ class DashboardCog(commands.Cog):
 
             # --- Settings Button ---
             elif custom_id == "v2_btn_settings":
-                # Initial Settings Menu (3 Buttons)
+                # Edit dashboard inline with V2 settings menu
                 payload = {
-                    "type": 4, # CHANNEL_MESSAGE_WITH_SOURCE
+                    "type": 7,  # UPDATE_MESSAGE
                     "data": {
-                        "flags": 64, # EPHEMERAL
-                        "content": "### ⚙️ Verzue Settings\nSelect a category to manage your preferences:",
-                        "components": [
-                            {
-                                "type": 1,
-                                "components": [
-                                    {"type": 2, "style": 2, "label": "Notifications", "emoji": {"name": "🔔"}, "custom_id": "v2_settings_nav_notify"},
-                                    {"type": 2, "style": 2, "label": "Subscriptions", "emoji": {"name": "📋"}, "custom_id": "v2_settings_nav_subs"},
-                                    {"type": 2, "style": 2, "label": "Series Titles", "emoji": {"name": "✏️"}, "custom_id": "v2_settings_nav_titles"}
-                                ]
-                            }
-                        ]
+                        "flags": 32768,  # V2
+                        "components": [{
+                            "type": 17,
+                            "components": [
+                                {"type": 10, "content": "# ⚙️ Verzue Settings"},
+                                {"type": 14, "divider": True, "spacing": 1},
+                                {"type": 10, "content": "Select a category to manage your preferences:"},
+                                {
+                                    "type": 1,
+                                    "components": [
+                                        {"type": 2, "style": 2, "label": "Notifications", "emoji": {"name": "🔔"}, "custom_id": "v2_settings_nav_notify"},
+                                        {"type": 2, "style": 2, "label": "Subscriptions", "emoji": {"name": "📋"}, "custom_id": "v2_settings_nav_subs"},
+                                        {"type": 2, "style": 2, "label": "Series Titles", "emoji": {"name": "✏️"}, "custom_id": "v2_settings_nav_titles"},
+                                    ]
+                                },
+                                {"type": 14, "divider": True, "spacing": 1},
+                                {
+                                    "type": 1,
+                                    "components": [
+                                        {"type": 2, "style": 2, "label": "Back to Dashboard", "custom_id": "v2Dash_Home"}
+                                    ]
+                                }
+                            ]
+                        }]
                     }
                 }
                 await self.bot.http.request(
@@ -795,32 +1034,25 @@ class DashboardCog(commands.Cog):
                 )
 
             # --- Settings Navigation ---
-            elif custom_id == "v2_settings_nav_notify":
-                from app.bot.common.notifications_view import NotificationsView
-                view = NotificationsView(user_id=interaction.user.id, guild=interaction.guild)
-                await interaction.response.edit_message(
-                    content=None,
-                    embed=await view._build_embed(),
-                    view=view
-                )
-                await view.refresh(interaction)
-
             elif custom_id == "v2_settings_nav_subs":
-                from app.bot.common.notifications_view import SubscriptionToggleView
-                view = SubscriptionToggleView(user_id=interaction.user.id, guild=interaction.guild)
-                await interaction.response.edit_message(
-                    content=None,
-                    embed=await view._build_embed(),
-                    view=view
+                payload = await self.get_settings_subs_payload(interaction.user.id)
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=payload
                 )
 
             elif custom_id == "v2_settings_nav_titles":
-                from app.bot.common.notifications_view import SeriesTitleRenameView
-                view = SeriesTitleRenameView(user_id=interaction.user.id, guild=interaction.guild)
-                await interaction.response.edit_message(
-                    content=None,
-                    embed=await view._build_embed(),
-                    view=view
+                payload = await self.get_settings_titles_payload(interaction.user.id)
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=payload
+                )
+
+            elif custom_id == "v2_settings_nav_notify":
+                payload = await self.get_settings_notify_payload(interaction.user.id, interaction.guild)
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=payload
                 )
 
             # --- Channel Selection for Subscription ---
@@ -899,6 +1131,102 @@ class DashboardCog(commands.Cog):
             elif custom_id == "v2Dash_Home":
                 payload = await self.get_dashboard_payload(interaction, is_update=True)
                 await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=payload)
+
+            # --- Settings: Toggle Subscription ---
+            elif custom_id.startswith("v2_settings_subs_toggle_"):
+                from app.services.settings_service import SettingsService
+                settings = SettingsService()
+                s_id = interaction.data.get("values", [None])[0]
+                if not s_id or s_id == "__none__": return
+                s_settings = await settings.get_subscription_settings(interaction.user.id, s_id)
+                new_state = not s_settings.get("enabled", True)
+                await settings.update_subscription_settings(interaction.user.id, s_id, {"enabled": new_state})
+                payload = await self.get_settings_subs_payload(interaction.user.id)
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=payload
+                )
+
+            # --- Settings: Rename Series Title (open modal) ---
+            elif custom_id.startswith("v2_settings_titles_rename_"):
+                from app.services.group_manager import get_user_subscriptions
+                s_id = interaction.data.get("values", [None])[0]
+                if not s_id or s_id == "__none__": return
+                subs = get_user_subscriptions(interaction.user.id)
+                match = next(((gn, s) for gn, s in subs if s.get("series_id") == s_id), None)
+                if not match: return
+                _, sub = match
+                current = sub.get("series_title") or ""
+                modal_payload = {
+                    "type": 9,
+                    "data": {
+                        "custom_id": f"v2_settings_titles_modal_{s_id}",
+                        "title": "Rename Series",
+                        "components": [{
+                            "type": 1,
+                            "components": [{
+                                "type": 4,
+                                "custom_id": "new_title",
+                                "label": "New Display Title",
+                                "style": 1,
+                                "value": current[:100],
+                                "min_length": 1,
+                                "max_length": 100,
+                                "required": True
+                            }]
+                        }]
+                    }
+                }
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=modal_payload
+                )
+
+            # --- Settings: Modal submit for rename ---
+            elif custom_id.startswith("v2_settings_titles_modal_"):
+                from app.services.settings_service import SettingsService
+                settings = SettingsService()
+                s_id = custom_id.replace("v2_settings_titles_modal_", "")
+                new_title = ""
+                for row in interaction.data.get("components", []):
+                    for comp in row.get("components", []):
+                        if comp.get("custom_id") == "new_title":
+                            new_title = comp.get("value", "").strip()
+                if new_title:
+                    await settings.update_subscription_settings(interaction.user.id, s_id, {"custom_title": new_title})
+                payload = await self.get_settings_titles_payload(interaction.user.id)
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=payload
+                )
+
+            # --- Settings: Add notify user/role ---
+            elif custom_id.startswith("v2_settings_notify_add_user_") or custom_id.startswith("v2_settings_notify_add_role_"):
+                from app.services.settings_service import SettingsService
+                settings = SettingsService()
+                ttype = "user" if "_add_user_" in custom_id else "role"
+                target_id = interaction.data.get("values", [None])[0]
+                if not target_id: return
+                ok, _ = await settings.add_notify_target(interaction.user.id, ttype, int(target_id))
+                payload = await self.get_settings_notify_payload(interaction.user.id, interaction.guild)
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=payload
+                )
+
+            # --- Settings: Remove notify target ---
+            elif custom_id.startswith("v2_settings_notify_remove_"):
+                from app.services.settings_service import SettingsService
+                settings = SettingsService()
+                val = interaction.data.get("values", [None])[0]
+                if not val: return
+                ttype, tid = val.split(":", 1)
+                await settings.remove_notify_target(interaction.user.id, ttype, tid)
+                payload = await self.get_settings_notify_payload(interaction.user.id, interaction.guild)
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=payload
+                )
 
             # --- Interaction Redirection (Original Logic) ---
                 # --- Delete Subscription Workflow ---
