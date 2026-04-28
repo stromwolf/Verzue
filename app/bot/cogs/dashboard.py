@@ -427,75 +427,6 @@ class DashboardCog(commands.Cog):
             }
         }
 
-    async def get_settings_titles_payload(self, group_name: str):
-        """V2 payload for Series Titles — scoped to the current group's subscriptions only."""
-        from app.services.group_manager import load_group, _clean_url
-        
-        group_data = load_group(group_name)
-        subs = group_data.get("subscriptions", [])
-        overrides = group_data.get("title_overrides", {})
-
-        inner = [
-            {"type": 10, "content": f"# ✏️ {group_name} — Series Titles"},
-            {"type": 14, "divider": True, "spacing": 1},
-            {"type": 10, "content": "Rename your group's series for better display in the dashboard and pings."},
-        ]
-
-        if not subs:
-            inner.append({"type": 10, "content": "*No subscriptions in this group yet.*"})
-        else:
-            seen_ids = set()
-            lines = []
-            options = []
-            for sub in subs:
-                s_id = sub.get("series_id")
-                if not s_id or s_id in seen_ids:
-                    continue
-                seen_ids.add(s_id)
-
-                url = _clean_url(sub.get("series_url") or "")
-                original = sub.get("series_title") or "Unknown"
-                custom = overrides.get(url)
-                label = custom or original
-                display = f"**{custom}** (was: {original})" if custom else f"**{original}**"
-                lines.append(f"{display}\n-# S-ID: {s_id}")
-
-                options.append({
-                    "label": label[:100],
-                    "value": s_id,
-                    "description": (sub.get("platform") or "Unknown").capitalize()[:100],
-                    "emoji": {"name": "✏️"}
-                })
-
-            if lines:
-                inner.append({"type": 10, "content": "\n".join(lines)[:3900]})
-            if options:
-                inner.append({
-                    "type": 1,
-                    "components": [{
-                        "type": 3,
-                        "custom_id": f"v2_settings_titles_rename|G:{group_name}",
-                        "placeholder": "Select a series to rename...",
-                        "options": options[:25]
-                    }]
-                })
-
-        inner.append({"type": 14, "divider": True, "spacing": 1})
-        inner.append({
-            "type": 1,
-            "components": [
-                {"type": 2, "style": 2, "label": "Back", "custom_id": "v2_btn_settings"},
-                {"type": 2, "style": 2, "label": "Dashboard", "custom_id": "v2Dash_Home"}
-            ]
-        })
-
-        return {
-            "type": 7,
-            "data": {
-                "flags": 32768,
-                "components": [{"type": 17, "components": inner}]
-            }
-        }
 
 
     async def get_settings_notify_payload(self, user_id: int, guild):
@@ -968,7 +899,7 @@ class DashboardCog(commands.Cog):
                                     "type": 1,
                                     "components": [
                                         {"type": 2, "style": 2, "label": "Notifications", "emoji": {"name": "🔔"}, "custom_id": "v2_settings_nav_notify"},
-                                        {"type": 2, "style": 2, "label": "Series Titles", "emoji": {"name": "✏️"}, "custom_id": "v2_settings_nav_titles"},
+                                        {"type": 2, "style": 2, "label": "Series Infos", "emoji": {"name": "📚"}, "custom_id": "v2_settings_nav_titles"},
                                     ]
                                 },
                                 {"type": 14, "divider": True, "spacing": 1},
@@ -1019,7 +950,7 @@ class DashboardCog(commands.Cog):
                     )
                     return
                 
-                payload = await self.get_settings_titles_payload(group_name)
+                payload = await self.get_group_subs_list_payload(group_name)
                 await self.bot.http.request(
                     discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
                     json=payload
@@ -1109,70 +1040,6 @@ class DashboardCog(commands.Cog):
                 payload = await self.get_dashboard_payload(interaction, is_update=True)
                 await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=payload)
 
-            # --- Settings: Rename Series Title (open modal) ---
-            elif custom_id.startswith("v2_settings_titles_rename|"):
-                from app.services.group_manager import load_group, _clean_url
-                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
-                group_name = parts.get("G")
-                s_id = interaction.data.get("values", [None])[0]
-                if not s_id or s_id == "__none__" or not group_name: return
-                
-                group_data = load_group(group_name)
-                subs = group_data.get("subscriptions", [])
-                sub = next((s for s in subs if str(s.get("series_id")) == str(s_id)), None)
-                if not sub: return
-                
-                url = _clean_url(sub.get("series_url") or "")
-                overrides = group_data.get("title_overrides", {})
-                current = overrides.get(url) or sub.get("series_title") or ""
-                
-                modal_payload = {
-                    "type": 9,
-                    "data": {
-                        "custom_id": f"v2_settings_titles_modal|G:{group_name}|U:{url}",
-                        "title": "Rename Series",
-                        "components": [{
-                            "type": 1,
-                            "components": [{
-                                "type": 4,
-                                "custom_id": "new_title",
-                                "label": "New Display Title",
-                                "style": 1,
-                                "value": current[:100],
-                                "min_length": 1,
-                                "max_length": 100,
-                                "required": True
-                            }]
-                        }]
-                    }
-                }
-                await self.bot.http.request(
-                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
-                    json=modal_payload
-                )
-
-            # --- Settings: Modal submit for rename ---
-            elif custom_id.startswith("v2_settings_titles_modal|"):
-                from app.services.group_manager import set_title_override
-                parts = dict(p.split(":", 1) for p in custom_id.split("|")[1:])
-                group_name = parts.get("G")
-                url = parts.get("U")
-                if not group_name or not url: return
-                
-                new_title = ""
-                for row in interaction.data.get("components", []):
-                    for comp in row.get("components", []):
-                        if comp.get("custom_id") == "new_title":
-                            new_title = comp.get("value", "").strip()
-                
-                if new_title:
-                    set_title_override(group_name, url, new_title)
-                
-                payload = await self.get_settings_titles_payload(group_name)
-                await self.bot.http.request(
-                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
-                    json=payload
-                )
 
             # --- Settings: Add notify user/role ---
             elif custom_id.startswith("v2_settings_notify_add_user_") or custom_id.startswith("v2_settings_notify_add_role_"):
