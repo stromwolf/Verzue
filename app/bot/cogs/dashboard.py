@@ -343,14 +343,17 @@ class DashboardCog(commands.Cog):
                 "value": sub['series_id']
             })
 
-        detail_select = {
-            "type": 3,
-            "custom_id": f"v2Dash_Detail_Select|G:{group_name}",
-            "placeholder": "View Details",
-            "options": options
-        }
-        
-        detail_rows: list = [{"type": 1, "components": [detail_select]}] if visible_subs else []
+        # 🟢 HARD GUARD — Discord rejects 0-option selects (400 Bad Request)
+        if not options:
+            detail_rows = []
+        else:
+            detail_select = {
+                "type": 3,
+                "custom_id": f"v2Dash_Detail_Select|G:{group_name}",
+                "placeholder": "View Details",
+                "options": options[:25] # Cap at 25 per Discord limits
+            }
+            detail_rows = [{"type": 1, "components": [detail_select]}]
 
         # 3. Navigation Buttons Row
         pagination_row: dict[str, Any] = {"type": 1, "components": []}
