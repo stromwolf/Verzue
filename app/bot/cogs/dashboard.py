@@ -435,11 +435,15 @@ class DashboardCog(commands.Cog):
         if not subs:
             inner.append({"type": 10, "content": "*You haven't added any subscriptions yet.*"})
         else:
+            seen_ids = set()  # 🟢 Dedupe key — Discord rejects duplicate option values
             lines = []
             options = []
             for gn, sub in subs:
                 s_id = sub.get("series_id")
-                if not s_id: continue
+                if not s_id or s_id in seen_ids:
+                    continue
+                seen_ids.add(s_id)
+                
                 s_settings = await settings.get_subscription_settings(user_id, s_id)
                 status = "🟢 ON" if s_settings.get("enabled", True) else "🔴 OFF"
                 title = s_settings.get("custom_title") or sub.get("series_title") or "Unknown"
@@ -499,11 +503,15 @@ class DashboardCog(commands.Cog):
         if not subs:
             inner.append({"type": 10, "content": "*You haven't added any subscriptions yet.*"})
         else:
+            seen_ids = set()  # 🟢 Dedupe key — Discord rejects duplicate option values
             lines = []
             options = []
             for gn, sub in subs:
                 s_id = sub.get("series_id")
-                if not s_id: continue
+                if not s_id or s_id in seen_ids:
+                    continue
+                seen_ids.add(s_id)
+                
                 s_settings = await settings.get_subscription_settings(user_id, s_id)
                 custom = s_settings.get("custom_title")
                 original = sub.get("series_title") or "Unknown"
