@@ -177,13 +177,14 @@ class SubscriptionToggleView(ui.View):
         else:
             lines = []
             for gn, sub in subs:
-                s_id = sub["series_id"]
+                s_id = sub.get("series_id")
+                if not s_id: continue
                 s_settings = await self.settings.get_subscription_settings(self.user_id, s_id)
                 status = "🟢 ON" if s_settings.get("enabled", True) else "🔴 OFF"
-                title = s_settings.get("custom_title") or sub["series_title"]
+                title = s_settings.get("custom_title") or sub.get("series_title") or "Unknown Series"
                 lines.append(f"**{title}** — {status}\n-# Group: {gn} | S-ID: {s_id}")
             
-            embed.add_field(name="Your Subscriptions", value="\n".join(lines)[:1024], inline=False)
+            embed.add_field(name="Your Subscriptions", value="\n".join(lines)[:1024] or "*No hydrated subscriptions found.*", inline=False)
             self.clear_items()
             self.add_item(SubscriptionSelect(self, subs))
 
@@ -255,13 +256,15 @@ class SeriesTitleRenameView(ui.View):
         else:
             lines = []
             for gn, sub in subs:
-                s_id = sub["series_id"]
+                s_id = sub.get("series_id")
+                if not s_id: continue
                 s_settings = await self.settings.get_subscription_settings(self.user_id, s_id)
                 custom = s_settings.get("custom_title")
-                title = f"**{custom}** (was: {sub['series_title']})" if custom else f"**{sub['series_title']}**"
+                original = sub.get("series_title") or "Unknown"
+                title = f"**{custom}** (was: {original})" if custom else f"**{original}**"
                 lines.append(f"{title}\n-# Group: {gn} | S-ID: {s_id}")
             
-            embed.add_field(name="Current Titles", value="\n".join(lines)[:1024], inline=False)
+            embed.add_field(name="Current Titles", value="\n".join(lines)[:1024] or "*No hydrated subscriptions found.*", inline=False)
             self.clear_items()
             self.add_item(SeriesTitleSelect(self, subs))
 
