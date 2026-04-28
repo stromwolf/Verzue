@@ -181,7 +181,7 @@ class DashboardCog(commands.Cog):
             "components": [
                 {
                     "type": 2, "style": 2, 
-                    "emoji": {"id": "1480959010722021567", "name": "setting"},
+                    "emoji": {"id": "1498694147639480411", "name": "Setting_2"},
                     "custom_id": "v2_btn_settings"
                 },
                 {
@@ -893,7 +893,7 @@ class DashboardCog(commands.Cog):
                         "components": [{
                             "type": 17,
                             "components": [
-                                {"type": 10, "content": "# ⚙️ Verzue Settings"},
+                                {"type": 10, "content": "# <:Setting_2:1498694147639480411> Verzue Settings"},
                                 {"type": 14, "divider": True, "spacing": 1},
                                 {"type": 10, "content": "Select a category to manage your preferences:"},
                                 {
