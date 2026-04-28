@@ -181,7 +181,7 @@ class DashboardCog(commands.Cog):
             "components": [
                 {
                     "type": 2, "style": 2, 
-                    "emoji": {"id": "1498694147639480411", "name": "Setting_2"},
+                    "emoji": {"id": "1480959010722021567", "name": "setting"},
                     "custom_id": "v2_btn_settings"
                 },
                 {
