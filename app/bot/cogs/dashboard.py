@@ -419,6 +419,14 @@ class DashboardCog(commands.Cog):
         components.extend(detail_rows)
         components.append(pagination_row)
 
+        return {
+            "type": 7, # UPDATE_MESSAGE
+            "data": {
+                "flags": 32768,
+                "components": components
+            }
+        }
+
     async def get_settings_titles_payload(self, group_name: str):
         """V2 payload for Series Titles — scoped to the current group's subscriptions only."""
         from app.services.group_manager import load_group, _clean_url
@@ -605,7 +613,13 @@ class DashboardCog(commands.Cog):
         
         if not sub:
             logger.error(f"Subscription Info Error: Series {series_id} not found in group {group_name}")
-            return {"flags": 32768, "components": [{"type": 17, "components": [{"type": 10, "content": f"❌ **Subscription not found.**\nSeries ID: `{series_id}`"}]}]}
+            return {
+                "type": 7,
+                "data": {
+                    "flags": 32768,
+                    "components": [{"type": 17, "components": [{"type": 10, "content": f"❌ **Subscription not found.**\nSeries ID: `{series_id}`"}]}]
+                }
+            }
 
         url = _clean_url(sub.get("series_url") or "")
         overrides = group_data.get("title_overrides", {})
