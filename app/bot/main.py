@@ -372,6 +372,35 @@ class MechaBot(commands.Bot):
 
     async def on_ready(self):
         self.logger.info(f"✅ Bot is ONLINE as {self.user} (ID: {self.user.id})")
+        
+        # 🟢 GDrive Health Check
+        if self.identity == "Main":
+            if hasattr(self.task_queue, "uploader") and self.task_queue.uploader.is_disabled:
+                self.logger.critical("🚨 GDrive is DISABLED (Auth Failed). Sending alert...")
+                await self.dispatch_gdrive_alert()
+
+    async def dispatch_gdrive_alert(self):
+        """Sends a critical alert to the admin channel about GDrive failure."""
+        try:
+            channel = self.get_channel(Settings.ADMIN_LOG_CHANNEL_ID)
+            if not channel:
+                try: channel = await self.fetch_channel(Settings.ADMIN_LOG_CHANNEL_ID)
+                except: return
+                
+            embed = discord.Embed(
+                title="🚨 GDrive Authentication Failed",
+                description=(
+                    "The bot is running in **Degraded Mode**.\n\n"
+                    "**Reason:** No valid GDrive token found and interactive login is disabled on VPS.\n"
+                    "**Action Required:** Run `generate_token.py` locally, update the vault, and restart."
+                ),
+                color=0xe74c3c,
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_footer(text="Iron Mask Security Sentinel")
+            await channel.send(content="<@1216284053049704600> 🚨 **Critical: GDrive Offline**", embed=embed)
+        except Exception as e:
+            self.logger.error(f"Failed to send GDrive alert: {e}")
 
     # --- S-GRADE: ADMIN CONNECTIVITY DISPATCHERS ---
 

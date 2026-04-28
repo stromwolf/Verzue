@@ -57,16 +57,28 @@ class GDriveClient:
             # 2. Check and Refresh if needed
             if not self.creds or not self.creds.valid:
                 if self.creds and self.creds.expired and self.creds.refresh_token:
-                    logger.info("Refreshing expired GDrive token...")
+                    import requests as req_lib
+                    import google.auth.transport.requests
+                    logger.info("Refreshing expired GDrive token (Proxy Bypass Active)...")
                     try:
-                        self.creds.refresh(Request())
+                        session = req_lib.Session()
+                        session.trust_env = False  # ignore HTTP_PROXY / HTTPS_PROXY env vars
+                        request = google.auth.transport.requests.Request(session=session)
+                        self.creds.refresh(request)
                     except Exception as e:
                         logger.error(f"Failed to refresh GDrive token: {e}")
                         self.creds = None # Force a new login if refresh fails
 
                 # 3. New Login if no valid creds (Manual step usually)
                 if not self.creds or not self.creds.valid:
-                    logger.info("Initiating new GDrive OAuth Login flow...")
+                    if not Settings.DEVELOPER_MODE:
+                        logger.critical(
+                            "[GDriveClient] No valid token found on VPS. Interactive OAuth is disabled. "
+                            "Run generate_token.py locally, copy vault to server, and restart service."
+                        )
+                        raise RuntimeError("GDrive token missing or expired — manual re-auth required.")
+
+                    logger.info("Initiating new GDrive OAuth Login flow (Developer Mode)...")
                     flow = InstalledAppFlow.from_client_secrets_file(str(Settings.CREDENTIALS_JSON), self.SCOPES)
                     self.creds = flow.run_local_server(port=0)
 
