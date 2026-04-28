@@ -92,7 +92,7 @@ class DashboardCog(commands.Cog):
                 title = overrides.get(clean_url) or original_title
                 
                 # Platform Emoji
-                emoji = "📖"
+                emoji = "<:Series_Subscription:1488496671091462215>"
                 if "piccoma" in url: emoji = "<:Piccoma:1478368704164134912>"
                 elif "mecha" in url: emoji = "<:Mechacomic:1478369141957333083>"
                 elif "jumptoon" in url: emoji = "<:Jumptoon:1478367963928068168>"
@@ -368,7 +368,8 @@ class DashboardCog(commands.Cog):
             label = f"{j + start}. {title}"
             options.append({
                 "label": label[:100],
-                "value": sub['series_id']
+                "value": sub['series_id'],
+                "emoji": {"id": "1488496671091462215", "name": "Series_Subscription"}
             })
 
         # 🟢 HARD GUARD — Discord rejects 0-option selects (400 Bad Request)
@@ -898,8 +899,8 @@ class DashboardCog(commands.Cog):
                                 {
                                     "type": 1,
                                     "components": [
-                                        {"type": 2, "style": 2, "label": "Notifications", "emoji": {"name": "🔔"}, "custom_id": "v2_settings_nav_notify"},
-                                        {"type": 2, "style": 2, "label": "Series Infos", "emoji": {"name": "📚"}, "custom_id": "v2_settings_nav_titles"},
+                                        {"type": 2, "style": 2, "label": "Notifications", "emoji": {"id": "1498686398293872801", "name": "notification"}, "custom_id": "v2_settings_nav_notify"},
+                                        {"type": 2, "style": 2, "label": "Series Infos", "emoji": {"id": "1488496671091462215", "name": "Series_Subscription"}, "custom_id": "v2_settings_nav_titles"},
                                     ]
                                 },
                                 {"type": 14, "divider": True, "spacing": 1},
