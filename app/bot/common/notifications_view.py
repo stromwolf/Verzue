@@ -132,12 +132,17 @@ class RemoveSelect(ui.Select):
                     emoji=emoji,
                 )
             )
+        if not options:
+            # 🟢 HARD GUARD: Discord rejects 0-option selects (400 Bad Request)
+            options = [discord.SelectOption(label="No targets to remove", value="__none__")]
+
         super().__init__(
             placeholder="➖ Remove a target…",
             min_values=1,
             max_values=1,
             options=options,
             row=2,
+            disabled=not targets
         )
         self.view_ref = view_ref
 
@@ -204,7 +209,15 @@ class SubscriptionSelect(ui.Select):
                     emoji="📖"
                 )
             )
-        super().__init__(placeholder="Select a series to toggle...", options=options)
+        if not options:
+            # 🟢 HARD GUARD: Discord rejects 0-option selects (400 Bad Request)
+            options = [discord.SelectOption(label="No series found", value="__none__")]
+
+        super().__init__(
+            placeholder="Select a series to toggle...", 
+            options=options,
+            disabled=not subs
+        )
         self.view_ref = view_ref
 
     async def callback(self, interaction: discord.Interaction):
@@ -272,7 +285,15 @@ class SeriesTitleSelect(ui.Select):
                     emoji="✏️"
                 )
             )
-        super().__init__(placeholder="Select a series to rename...", options=options)
+        if not options:
+            # 🟢 HARD GUARD: Discord rejects 0-option selects (400 Bad Request)
+            options = [discord.SelectOption(label="No series found", value="__none__")]
+
+        super().__init__(
+            placeholder="Select a series to rename...", 
+            options=options,
+            disabled=not subs
+        )
         self.view_ref = view_ref
 
     async def callback(self, interaction: discord.Interaction):
