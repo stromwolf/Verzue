@@ -201,9 +201,11 @@ class SubscriptionSelect(ui.Select):
     def __init__(self, view_ref: SubscriptionToggleView, subs: list):
         options = []
         for gn, sub in subs:
+            # 🟢 S-GRADE: Safe Labeling (Handle None/Missing Titles)
+            label = (sub.get("series_title") or sub.get("series_id") or "Unknown")[:100]
             options.append(
                 discord.SelectOption(
-                    label=sub["series_title"][:100],
+                    label=label,
                     value=sub["series_id"],
                     description=f"Group: {gn}",
                     emoji="📖"
@@ -277,9 +279,11 @@ class SeriesTitleSelect(ui.Select):
     def __init__(self, view_ref: SeriesTitleRenameView, subs: list):
         options = []
         for gn, sub in subs:
+            # 🟢 S-GRADE: Safe Labeling (Handle None/Missing Titles)
+            label = (sub.get("series_title") or sub.get("series_id") or "Unknown")[:100]
             options.append(
                 discord.SelectOption(
-                    label=sub["series_title"][:100],
+                    label=label,
                     value=sub["series_id"],
                     description=f"Group: {gn}",
                     emoji="✏️"
