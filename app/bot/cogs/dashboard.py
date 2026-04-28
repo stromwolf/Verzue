@@ -419,121 +419,54 @@ class DashboardCog(commands.Cog):
         components.extend(detail_rows)
         components.append(pagination_row)
 
-    async def get_settings_subs_payload(self, user_id: int):
-        """V2 payload for Subscriptions settings — edits dashboard inline."""
-        from app.services.group_manager import get_user_subscriptions
-        from app.services.settings_service import SettingsService
-        settings = SettingsService()
-        subs = get_user_subscriptions(user_id)
+    async def get_settings_titles_payload(self, group_name: str):
+        """V2 payload for Series Titles — scoped to the current group's subscriptions only."""
+        from app.services.group_manager import load_group, _clean_url
+        
+        group_data = load_group(group_name)
+        subs = group_data.get("subscriptions", [])
+        overrides = group_data.get("title_overrides", {})
 
         inner = [
-            {"type": 10, "content": "# 📋 Subscription Management"},
+            {"type": 10, "content": f"# ✏️ {group_name} — Series Titles"},
             {"type": 14, "divider": True, "spacing": 1},
-            {"type": 10, "content": "Toggle your subscriptions ON/OFF. Disabled subscriptions won't be polled for updates."},
+            {"type": 10, "content": "Rename your group's series for better display in the dashboard and pings."},
         ]
 
         if not subs:
-            inner.append({"type": 10, "content": "*You haven't added any subscriptions yet.*"})
+            inner.append({"type": 10, "content": "*No subscriptions in this group yet.*"})
         else:
-            seen_ids = set()  # 🟢 Dedupe key — Discord rejects duplicate option values
+            seen_ids = set()
             lines = []
             options = []
-            for gn, sub in subs:
+            for sub in subs:
                 s_id = sub.get("series_id")
                 if not s_id or s_id in seen_ids:
                     continue
                 seen_ids.add(s_id)
-                
-                s_settings = await settings.get_subscription_settings(user_id, s_id)
-                status = "🟢 ON" if s_settings.get("enabled", True) else "🔴 OFF"
-                title = s_settings.get("custom_title") or sub.get("series_title") or "Unknown"
-                lines.append(f"**{title}** — {status}\n-# Group: {gn} | S-ID: {s_id}")
-                options.append({
-                    "label": title[:100],
-                    "value": s_id,
-                    "description": f"Group: {gn}"[:100],
-                    "emoji": {"name": "📖"}
-                })
 
-            if lines:
-                inner.append({"type": 10, "content": "\n".join(lines)[:3900]})
-
-            if options:
-                inner.append({
-                    "type": 1,
-                    "components": [{
-                        "type": 3,
-                        "custom_id": f"v2_settings_subs_toggle_{user_id}",
-                        "placeholder": "Select a series to toggle...",
-                        "options": options[:25]
-                    }]
-                })
-
-        inner.append({"type": 14, "divider": True, "spacing": 1})
-        inner.append({
-            "type": 1,
-            "components": [
-                {"type": 2, "style": 2, "label": "Back", "custom_id": "v2_btn_settings"},
-                {"type": 2, "style": 2, "label": "Dashboard", "custom_id": "v2Dash_Home"}
-            ]
-        })
-
-        return {
-            "type": 7,
-            "data": {
-                "flags": 32768,
-                "components": [{"type": 17, "components": inner}]
-            }
-        }
-
-
-    async def get_settings_titles_payload(self, user_id: int):
-        """V2 payload for Series Titles settings."""
-        from app.services.group_manager import get_user_subscriptions
-        from app.services.settings_service import SettingsService
-        settings = SettingsService()
-        subs = get_user_subscriptions(user_id)
-
-        inner = [
-            {"type": 10, "content": "# ✏️ Series Title Management"},
-            {"type": 14, "divider": True, "spacing": 1},
-            {"type": 10, "content": "Rename your series for better display in the dashboard and pings."},
-        ]
-
-        if not subs:
-            inner.append({"type": 10, "content": "*You haven't added any subscriptions yet.*"})
-        else:
-            seen_ids = set()  # 🟢 Dedupe key — Discord rejects duplicate option values
-            lines = []
-            options = []
-            for gn, sub in subs:
-                s_id = sub.get("series_id")
-                if not s_id or s_id in seen_ids:
-                    continue
-                seen_ids.add(s_id)
-                
-                s_settings = await settings.get_subscription_settings(user_id, s_id)
-                custom = s_settings.get("custom_title")
+                url = _clean_url(sub.get("series_url") or "")
                 original = sub.get("series_title") or "Unknown"
+                custom = overrides.get(url)
                 label = custom or original
                 display = f"**{custom}** (was: {original})" if custom else f"**{original}**"
-                lines.append(f"{display}\n-# Group: {gn} | S-ID: {s_id}")
+                lines.append(f"{display}\n-# S-ID: {s_id}")
+
                 options.append({
                     "label": label[:100],
                     "value": s_id,
-                    "description": f"Group: {gn}"[:100],
+                    "description": (sub.get("platform") or "Unknown").capitalize()[:100],
                     "emoji": {"name": "✏️"}
                 })
 
             if lines:
                 inner.append({"type": 10, "content": "\n".join(lines)[:3900]})
-
             if options:
                 inner.append({
                     "type": 1,
                     "components": [{
                         "type": 3,
-                        "custom_id": f"v2_settings_titles_rename_{user_id}",
+                        "custom_id": f"v2_settings_titles_rename|G:{group_name}",
                         "placeholder": "Select a series to rename...",
                         "options": options[:25]
                     }]
@@ -1021,7 +954,6 @@ class DashboardCog(commands.Cog):
                                     "type": 1,
                                     "components": [
                                         {"type": 2, "style": 2, "label": "Notifications", "emoji": {"name": "🔔"}, "custom_id": "v2_settings_nav_notify"},
-                                        {"type": 2, "style": 2, "label": "Subscriptions", "emoji": {"name": "📋"}, "custom_id": "v2_settings_nav_subs"},
                                         {"type": 2, "style": 2, "label": "Series Titles", "emoji": {"name": "✏️"}, "custom_id": "v2_settings_nav_titles"},
                                     ]
                                 },
@@ -1042,15 +974,38 @@ class DashboardCog(commands.Cog):
                 )
 
             # --- Settings Navigation ---
-            elif custom_id == "v2_settings_nav_subs":
-                payload = await self.get_settings_subs_payload(interaction.user.id)
-                await self.bot.http.request(
-                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
-                    json=payload
-                )
-
             elif custom_id == "v2_settings_nav_titles":
-                payload = await self.get_settings_titles_payload(interaction.user.id)
+                # 🟢 Determine group from channel/guild context
+                state = self.bot.app_state
+                channel_id = interaction.channel.id if interaction.channel else 0
+                guild_id = interaction.guild.id if interaction.guild else 0
+                group_name = state.server_map.get(channel_id) or state.server_map.get(guild_id)
+                
+                if not group_name:
+                    payload = {
+                        "type": 7,
+                        "data": {
+                            "flags": 32768,
+                            "components": [{
+                                "type": 17,
+                                "components": [
+                                    {"type": 10, "content": "# ❌ No Group Linked"},
+                                    {"type": 14, "divider": True, "spacing": 1},
+                                    {"type": 10, "content": "This server is not linked to a group profile. Use `/register-server` first."},
+                                    {"type": 1, "components": [
+                                        {"type": 2, "style": 2, "label": "Back", "custom_id": "v2_btn_settings"}
+                                    ]}
+                                ]
+                            }]
+                        }
+                    }
+                    await self.bot.http.request(
+                        discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                        json=payload
+                    )
+                    return
+                
+                payload = await self.get_settings_titles_payload(group_name)
                 await self.bot.http.request(
                     discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
                     json=payload
@@ -1140,35 +1095,27 @@ class DashboardCog(commands.Cog):
                 payload = await self.get_dashboard_payload(interaction, is_update=True)
                 await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=payload)
 
-            # --- Settings: Toggle Subscription ---
-            elif custom_id.startswith("v2_settings_subs_toggle_"):
-                from app.services.settings_service import SettingsService
-                settings = SettingsService()
-                s_id = interaction.data.get("values", [None])[0]
-                if not s_id or s_id == "__none__": return
-                s_settings = await settings.get_subscription_settings(interaction.user.id, s_id)
-                new_state = not s_settings.get("enabled", True)
-                await settings.update_subscription_settings(interaction.user.id, s_id, {"enabled": new_state})
-                payload = await self.get_settings_subs_payload(interaction.user.id)
-                await self.bot.http.request(
-                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
-                    json=payload
-                )
-
             # --- Settings: Rename Series Title (open modal) ---
-            elif custom_id.startswith("v2_settings_titles_rename_"):
-                from app.services.group_manager import get_user_subscriptions
+            elif custom_id.startswith("v2_settings_titles_rename|"):
+                from app.services.group_manager import load_group, _clean_url
+                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
+                group_name = parts.get("G")
                 s_id = interaction.data.get("values", [None])[0]
-                if not s_id or s_id == "__none__": return
-                subs = get_user_subscriptions(interaction.user.id)
-                match = next(((gn, s) for gn, s in subs if s.get("series_id") == s_id), None)
-                if not match: return
-                _, sub = match
-                current = sub.get("series_title") or ""
+                if not s_id or s_id == "__none__" or not group_name: return
+                
+                group_data = load_group(group_name)
+                subs = group_data.get("subscriptions", [])
+                sub = next((s for s in subs if str(s.get("series_id")) == str(s_id)), None)
+                if not sub: return
+                
+                url = _clean_url(sub.get("series_url") or "")
+                overrides = group_data.get("title_overrides", {})
+                current = overrides.get(url) or sub.get("series_title") or ""
+                
                 modal_payload = {
                     "type": 9,
                     "data": {
-                        "custom_id": f"v2_settings_titles_modal_{s_id}",
+                        "custom_id": f"v2_settings_titles_modal|G:{group_name}|U:{url}",
                         "title": "Rename Series",
                         "components": [{
                             "type": 1,
@@ -1191,18 +1138,23 @@ class DashboardCog(commands.Cog):
                 )
 
             # --- Settings: Modal submit for rename ---
-            elif custom_id.startswith("v2_settings_titles_modal_"):
-                from app.services.settings_service import SettingsService
-                settings = SettingsService()
-                s_id = custom_id.replace("v2_settings_titles_modal_", "")
+            elif custom_id.startswith("v2_settings_titles_modal|"):
+                from app.services.group_manager import set_title_override
+                parts = dict(p.split(":", 1) for p in custom_id.split("|")[1:])
+                group_name = parts.get("G")
+                url = parts.get("U")
+                if not group_name or not url: return
+                
                 new_title = ""
                 for row in interaction.data.get("components", []):
                     for comp in row.get("components", []):
                         if comp.get("custom_id") == "new_title":
                             new_title = comp.get("value", "").strip()
+                
                 if new_title:
-                    await settings.update_subscription_settings(interaction.user.id, s_id, {"custom_title": new_title})
-                payload = await self.get_settings_titles_payload(interaction.user.id)
+                    set_title_override(group_name, url, new_title)
+                
+                payload = await self.get_settings_titles_payload(group_name)
                 await self.bot.http.request(
                     discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
                     json=payload
