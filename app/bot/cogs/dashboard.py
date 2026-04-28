@@ -258,6 +258,10 @@ class DashboardCog(commands.Cog):
         subs.sort(key=get_sort_key)
 
         total: int = len(subs)
+        # 🟢 S-GRADE: Clamp page to prevent stale P-IDs from crashing on empty slices
+        max_page = max(0, math.ceil(total / 10) - 1)
+        page = min(page, max_page)
+
         start: int = page * 10
         end: int = start + 10
         visible_subs: list = subs[start:end]
@@ -268,7 +272,31 @@ class DashboardCog(commands.Cog):
             # Map internal keys to display names
             mapping = {"piccoma": "Piccoma", "mecha": "Mechacomic", "jumptoon": "Jumptoon"}
             filter_label = mapping.get(platform_filter.lower(), platform_filter.capitalize())
-            
+
+        # 🟢 EMPTY STATE FALLBACK
+        if not visible_subs:
+            return {
+                "type": 7, # UPDATE_MESSAGE
+                "data": {
+                    "components": [
+                        {
+                            "type": 17, # Container
+                            "components": [
+                                {"type": 10, "content": f"# <:Subscriptions:1488498943271895161> {group_name} Subscriptions"},
+                                {"type": 14, "divider": True, "spacing": 1},
+                                {"type": 10, "content": f"### No Results Found\nThere are no scheduled series in **{group_name}** matching filter: **{filter_label}**."}
+                            ]
+                        },
+                        {
+                            "type": 1, # Action Row
+                            "components": [
+                                {"type": 2, "style": 2, "label": "Back to Dashboard", "custom_id": "v2Dash_Home"}
+                            ]
+                        }
+                    ]
+                }
+            }
+
         header_text = f"# <:Subscriptions:1488498943271895161> {group_name} Team Subscriptions ({filter_label})"
         
         content = ""
