@@ -458,7 +458,7 @@ class DashboardCog(commands.Cog):
                         resolved[tid] = guild_roles[tid]
 
         inner = [
-            {"type": 10, "content": "# 🔔 Notification Recipients"},
+            {"type": 10, "content": "# <:notification:1498686398293872801> Notification Menu"},
             {"type": 14, "divider": True, "spacing": 1},
             {"type": 10, "content": "Who gets pinged when your chapters finish."},
         ]
@@ -509,11 +509,11 @@ class DashboardCog(commands.Cog):
                 tid = str(getattr(t["id"], "id", t["id"]))  # same normalization
                 if t["type"] == "user":
                     dn = resolved.get(tid)
-                    label = f"@{dn}" if dn else f"@{tid}"
+                    label = dn if dn else tid
                     emoji = {"name": "👤"}
                 else:
                     rname = resolved.get(tid)
-                    label = rname if rname else f"@{tid}"
+                    label = rname if rname else tid
                     emoji = {"name": "🎭"}
 
                 remove_options.append({
