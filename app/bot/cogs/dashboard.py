@@ -436,6 +436,19 @@ class DashboardCog(commands.Cog):
         settings = SettingsService()
         targets = await settings.get_notify_targets(user_id)
 
+        # Pre-resolve all user members via fetch (bypasses cache miss)
+        resolved = {}  # id_str -> display_name
+        if guild:
+            for t in targets:
+                if t["type"] == "user":
+                    try:
+                        mid = int(getattr(t["id"], "id", t["id"]))
+                        member = guild.get_member(mid) or await guild.fetch_member(mid)
+                        if member:
+                            resolved[str(t["id"])] = member.display_name
+                    except Exception:
+                        pass
+
         inner = [
             {"type": 10, "content": "# 🔔 Notification Recipients"},
             {"type": 14, "divider": True, "spacing": 1},
@@ -451,8 +464,8 @@ class DashboardCog(commands.Cog):
                 name = ""
                 if guild:
                     if t["type"] == "user":
-                        member = guild.get_member(int(getattr(t["id"], "id", t["id"])))
-                        if member: name = f" (`@{member.display_name}`)"
+                        dn = resolved.get(str(t["id"]))
+                        if dn: name = f" (`@{dn}`)"
                     else:
                         role = guild.get_role(int(getattr(t["id"], "id", t["id"])))
                         if role: name = f" (`{role.name}`)"
@@ -487,18 +500,14 @@ class DashboardCog(commands.Cog):
         if targets:
             remove_options = []
             for t in targets:
-                if guild:
-                    if t["type"] == "user":
-                        member = guild.get_member(int(getattr(t["id"], "id", t["id"])))
-                        label = f"@{member.display_name}" if member else f"@{t['id']}"
-                        emoji = {"name": "👤"}
-                    else:
-                        role = guild.get_role(int(getattr(t["id"], "id", t["id"])))
-                        label = role.name if role else f"@{t['id']}"
-                        emoji = {"name": "🎭"}
+                if t["type"] == "user":
+                    dn = resolved.get(str(t["id"]))
+                    label = f"@{dn}" if dn else f"@{t['id']}"
+                    emoji = {"name": "👤"}
                 else:
-                    label = f"@{t['id']}"
-                    emoji = {"name": "👤" if t["type"] == "user" else "🎭"}
+                    role = guild.get_role(int(getattr(t["id"], "id", t["id"]))) if guild else None
+                    label = role.name if role else f"@{t['id']}"
+                    emoji = {"name": "🎭"}
 
                 remove_options.append({
                     "label": label[:100],
