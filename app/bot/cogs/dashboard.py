@@ -490,14 +490,14 @@ class DashboardCog(commands.Cog):
                 if guild:
                     if t["type"] == "user":
                         member = guild.get_member(int(getattr(t["id"], "id", t["id"])))
-                        label = f"@{member.display_name}" if member else f"User: {t['id']}"
+                        label = f"@{member.display_name}" if member else f"@{t['id']}"
                         emoji = {"name": "👤"}
                     else:
                         role = guild.get_role(int(getattr(t["id"], "id", t["id"])))
-                        label = f"Role: {role.name}" if role else f"Role: {t['id']}"
+                        label = role.name if role else f"@{t['id']}"
                         emoji = {"name": "🎭"}
                 else:
-                    label = f"{t['type'].capitalize()}: {t['id']}"
+                    label = f"@{t['id']}"
                     emoji = {"name": "👤" if t["type"] == "user" else "🎭"}
 
                 remove_options.append({
