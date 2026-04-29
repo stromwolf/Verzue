@@ -437,17 +437,25 @@ class DashboardCog(commands.Cog):
         targets = await settings.get_notify_targets(user_id)
 
         # Pre-resolve all user members via fetch (bypasses cache miss)
-        resolved = {}  # id_str -> display_name
+        resolved = {}  # str(id) -> display_name
         if guild:
+            # Fetch all roles once (no per-role API call needed)
+            guild_roles = {str(r.id): r.name for r in guild.roles}
+            
             for t in targets:
+                tid = str(getattr(t["id"], "id", t["id"]))  # normalize
                 if t["type"] == "user":
                     try:
-                        mid = int(getattr(t["id"], "id", t["id"]))
+                        mid = int(tid)
                         member = guild.get_member(mid) or await guild.fetch_member(mid)
                         if member:
-                            resolved[str(t["id"])] = member.display_name
+                            resolved[tid] = member.display_name
                     except Exception:
                         pass
+                else:
+                    # roles already in guild.roles — no fetch needed
+                    if tid in guild_roles:
+                        resolved[tid] = guild_roles[tid]
 
         inner = [
             {"type": 10, "content": "# 🔔 Notification Recipients"},
@@ -460,15 +468,13 @@ class DashboardCog(commands.Cog):
         else:
             lines = []
             for t in targets:
-                mention = f"<@{t['id']}>" if t["type"] == "user" else f"<@&{t['id']}>"
+                tid = str(getattr(t["id"], "id", t["id"]))  # normalize
+                mention = f"<@{tid}>" if t["type"] == "user" else f"<@&{tid}>"
                 name = ""
                 if guild:
-                    if t["type"] == "user":
-                        dn = resolved.get(str(t["id"]))
-                        if dn: name = f" (`@{dn}`)"
-                    else:
-                        role = guild.get_role(int(getattr(t["id"], "id", t["id"])))
-                        if role: name = f" (`{role.name}`)"
+                    dn = resolved.get(tid)
+                    if dn:
+                        name = f" (`@{dn}`)" if t["type"] == "user" else f" (`{dn}`)"
                 lines.append(f"• {mention}{name}")
             inner.append({"type": 10, "content": f"**Targets ({len(targets)}/{NOTIFY_LIMIT})**\n" + "\n".join(lines)})
 
@@ -500,18 +506,19 @@ class DashboardCog(commands.Cog):
         if targets:
             remove_options = []
             for t in targets:
+                tid = str(getattr(t["id"], "id", t["id"]))  # same normalization
                 if t["type"] == "user":
-                    dn = resolved.get(str(t["id"]))
-                    label = f"@{dn}" if dn else f"@{t['id']}"
+                    dn = resolved.get(tid)
+                    label = f"@{dn}" if dn else f"@{tid}"
                     emoji = {"name": "👤"}
                 else:
-                    role = guild.get_role(int(getattr(t["id"], "id", t["id"]))) if guild else None
-                    label = role.name if role else f"@{t['id']}"
+                    rname = resolved.get(tid)
+                    label = rname if rname else f"@{tid}"
                     emoji = {"name": "🎭"}
 
                 remove_options.append({
                     "label": label[:100],
-                    "value": f"{t['type']}:{t['id']}",
+                    "value": f"{t['type']}:{tid}",
                     "emoji": emoji
                 })
 
