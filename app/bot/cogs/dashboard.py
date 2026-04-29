@@ -471,12 +471,7 @@ class DashboardCog(commands.Cog):
             for t in targets:
                 tid = str(getattr(t["id"], "id", t["id"]))
                 mention = f"<@{tid}>" if t["type"] == "user" else f"<@&{tid}>"
-                name = ""
-                if guild:
-                    dn = resolved.get(tid)
-                    if dn:
-                        name = f" (`@{dn}`)" if t["type"] == "user" else f" (`{dn}`)"
-                line = f"> {mention}{name}"
+                line = f"> {mention}"
                 if t["type"] == "user":
                     user_lines.append(line)
                 else:
@@ -484,9 +479,9 @@ class DashboardCog(commands.Cog):
 
             content = f"### Targets ({len(targets)}/{NOTIFY_LIMIT})"
             if user_lines:
-                content += f"\n**Users ({len(user_lines)})**\n" + "\n".join(user_lines)
+                content += f"\n**Users** ({len(user_lines)})\n" + "\n".join(user_lines)
             if role_lines:
-                content += f"\n**Roles ({len(role_lines)})**\n" + "\n".join(role_lines)
+                content += f"\n**Roles** ({len(role_lines)})\n" + "\n".join(role_lines)
             inner.append({"type": 10, "content": content})
 
         at_limit = len(targets) >= NOTIFY_LIMIT
