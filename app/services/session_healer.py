@@ -109,7 +109,12 @@ class SessionHealer:
                         session_obj = await self.redis.get_session(platform, account_id)
                         if session_obj:
                             from curl_cffi.requests import AsyncSession
-                            async with AsyncSession(impersonate="chrome142") as test_session:
+                            from config.settings import Settings
+
+                            proxy_url = Settings.get_proxy()
+                            proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+
+                            async with AsyncSession(impersonate="chrome142", proxies=proxies) as test_session:
                                 for c in session_obj.get("cookies", []):
                                     test_session.cookies.set(
                                         c['name'], c['value'],
@@ -146,7 +151,12 @@ class SessionHealer:
 
         # Use an AsyncSession to run the ritual
         from curl_cffi.requests import AsyncSession
-        async with AsyncSession(impersonate="chrome142") as session:
+        from config.settings import Settings
+
+        proxy_url = Settings.get_proxy()
+        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+
+        async with AsyncSession(impersonate="chrome142", proxies=proxies) as session:
             # Inject cookies
             for c in session_obj.get("cookies", []):
                 session.cookies.set(c['name'], c['value'], domain=c.get('domain', ''))
@@ -156,11 +166,14 @@ class SessionHealer:
             })
             
             logger.info(f"🎭 Running S-Grade Ritual for {platform}:{account_id}...")
-            await provider.run_ritual(session)
-            
-            # Update 'last_ritual_at' in Redis
-            session_obj["last_ritual_at"] = time.time()
-            await self.redis.set_session(platform, account_id, session_obj)
+            try:
+                await provider.run_ritual(session)
+                
+                # Update 'last_ritual_at' in Redis only on success
+                session_obj["last_ritual_at"] = time.time()
+                await self.redis.set_session(platform, account_id, session_obj)
+            except Exception as e:
+                logger.warning(f"🎭 Ritual failed for {platform}:{account_id}: {e}")
 
     async def _refresh_via_token(self, platform: str, account_id: str):
         """
