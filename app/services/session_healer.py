@@ -112,9 +112,7 @@ class SessionHealer:
                             from config.settings import Settings
 
                             proxy_url = Settings.get_proxy()
-                            proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
-
-                            async with AsyncSession(impersonate="chrome142", proxies=proxies) as test_session:
+                            async with AsyncSession(impersonate="chrome142", proxy=proxy_url) as test_session:
                                 for c in session_obj.get("cookies", []):
                                     test_session.cookies.set(
                                         c['name'], c['value'],
@@ -154,9 +152,7 @@ class SessionHealer:
         from config.settings import Settings
 
         proxy_url = Settings.get_proxy()
-        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
-
-        async with AsyncSession(impersonate="chrome142", proxies=proxies) as session:
+        async with AsyncSession(impersonate="chrome142", proxy=proxy_url) as session:
             # Inject cookies
             for c in session_obj.get("cookies", []):
                 session.cookies.set(c['name'], c['value'], domain=c.get('domain', ''))
