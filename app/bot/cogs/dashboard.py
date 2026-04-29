@@ -466,17 +466,28 @@ class DashboardCog(commands.Cog):
         if not targets:
             inner.append({"type": 10, "content": "*No targets set — only you will be pinged.*"})
         else:
-            lines = []
+            user_lines = []
+            role_lines = []
             for t in targets:
-                tid = str(getattr(t["id"], "id", t["id"]))  # normalize
+                tid = str(getattr(t["id"], "id", t["id"]))
                 mention = f"<@{tid}>" if t["type"] == "user" else f"<@&{tid}>"
                 name = ""
                 if guild:
                     dn = resolved.get(tid)
                     if dn:
                         name = f" (`@{dn}`)" if t["type"] == "user" else f" (`{dn}`)"
-                lines.append(f"• {mention}{name}")
-            inner.append({"type": 10, "content": f"**Targets ({len(targets)}/{NOTIFY_LIMIT})**\n" + "\n".join(lines)})
+                line = f"> {mention}{name}"
+                if t["type"] == "user":
+                    user_lines.append(line)
+                else:
+                    role_lines.append(line)
+
+            content = f"### Targets ({len(targets)}/{NOTIFY_LIMIT})"
+            if user_lines:
+                content += f"\n**Users ({len(user_lines)})**\n" + "\n".join(user_lines)
+            if role_lines:
+                content += f"\n**Roles ({len(role_lines)})**\n" + "\n".join(role_lines)
+            inner.append({"type": 10, "content": content})
 
         at_limit = len(targets) >= NOTIFY_LIMIT
 
