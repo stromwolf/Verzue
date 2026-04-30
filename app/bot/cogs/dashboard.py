@@ -403,7 +403,7 @@ class DashboardCog(commands.Cog):
 
         # Back to Dashboard Home
         pagination_row["components"].append({
-            "type": 2, "style": 2, "label": "Back to Dashboard",
+            "type": 2, "style": 2, "label": "Back",
             "custom_id": f"v2Dash_Home"
         })
 
