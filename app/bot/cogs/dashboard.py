@@ -1142,7 +1142,7 @@ class DashboardCog(commands.Cog):
                 modal_payload = {
                     "type": 9,
                     "data": {
-                        "custom_id": f"v2_modal_edit_title|G:{group_name}|S:{series_id}",
+                        "custom_id": f"v2_edit_title_modal|G:{group_name}|S:{series_id}",
                         "title": "Edit Series Title",
                         "components": [
                             {
@@ -1646,43 +1646,7 @@ class DashboardCog(commands.Cog):
                 
                 return await self.finalize_sub_removal(interaction, group_name, series_id, final_reason)
 
-            elif custom_id.startswith("v2_modal_edit_title|"):
-                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
-                group_name = parts.get("G")
-                series_id = parts.get("S")
 
-                # Extract input value
-                new_title = ""
-                for row in interaction.data.get("components", []):
-                    # Modal components might be nested under 'component' in V2
-                    inner = row.get("component", {})
-                    if inner.get("custom_id") == "custom_title_input":
-                        new_title = inner.get("value", "").strip()
-                    else:
-                        # Fallback for standard structure
-                        for comp in row.get("components", []):
-                            if comp.get("custom_id") == "custom_title_input":
-                                new_title = comp.get("value", "").strip()
-
-                from app.services.group_manager import load_group, save_group, _clean_url
-                group_data = load_group(group_name)
-                subs = group_data.get("subscriptions", [])
-                sub = next((s for s in subs if str(s.get("series_id")) == str(series_id)), None)
-
-                if sub:
-                    url = _clean_url(sub.get("series_url") or "")
-                    overrides = group_data.setdefault("title_overrides", {})
-                    if new_title:
-                        overrides[url] = new_title
-                    else:
-                        overrides.pop(url, None)  # reset
-                    save_group(group_name, group_data)
-
-                payload = await self.get_sub_info_payload(group_name, series_id)
-                await self.bot.http.request(
-                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
-                    json=payload
-                )
 
             if custom_id.startswith("modal_select_"):
                 req_id = custom_id.split("_")[-1]
@@ -1774,6 +1738,42 @@ class DashboardCog(commands.Cog):
                         logger.error(f"Range parse failed: {e}")
                     
                 await view.update_view(interaction)
+
+            elif custom_id.startswith("v2_edit_title_modal|"):
+                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
+                group_name = parts.get("G")
+                series_id = parts.get("S")
+
+                # Extract input value
+                new_title = ""
+                for row in interaction.data.get("components", []):
+                    inner = row.get("component", {})
+                    if inner.get("custom_id") == "custom_title_input":
+                        new_title = inner.get("value", "").strip()
+                    else:
+                        for comp in row.get("components", []):
+                            if comp.get("custom_id") == "custom_title_input":
+                                new_title = comp.get("value", "").strip()
+
+                from app.services.group_manager import load_group, save_group, _clean_url
+                group_data = load_group(group_name)
+                subs = group_data.get("subscriptions", [])
+                sub = next((s for s in subs if str(s.get("series_id")) == str(series_id)), None)
+
+                if sub:
+                    url = _clean_url(sub.get("series_url") or "")
+                    overrides = group_data.setdefault("title_overrides", {})
+                    if new_title:
+                        overrides[url] = new_title
+                    else:
+                        overrides.pop(url, None)
+                    save_group(group_name, group_data)
+
+                payload = await self.get_sub_info_payload(group_name, series_id)
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=payload
+                )
 
             elif custom_id.startswith(("v2_modal_subscribe_", "v2_modal_sub_channel_select_")):
                 await self.handle_subscribe_modal(interaction, custom_id)
