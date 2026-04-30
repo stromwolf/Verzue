@@ -379,7 +379,7 @@ class DashboardCog(commands.Cog):
             detail_select = {
                 "type": 3,
                 "custom_id": f"v2Dash_Detail_Select|G:{group_name}",
-                "placeholder": "View Details",
+                "placeholder": "View/Edit Details",
                 "options": options[:25] # Cap at 25 per Discord limits
             }
             detail_rows = [{"type": 1, "components": [detail_select]}]
