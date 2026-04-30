@@ -651,6 +651,10 @@ class DashboardCog(commands.Cog):
                     "type": 2, "style": 2, "label": "Back", "custom_id": "v2Dash_Home"
                 },
                 {
+                    "type": 2, "style": 2, "label": "Edit Title",
+                    "custom_id": f"v2Dash_Sub_EditTitle|G:{group_name}|S:{series_id}"
+                },
+                {
                     "type": 2, "style": 2, "custom_id": f"v2Dash_Sub_Delete_Start|G:{group_name}|S:{series_id}",
                     "emoji": {"id": "1488511488842006750"}
                 }
@@ -1128,6 +1132,38 @@ class DashboardCog(commands.Cog):
                     }
                 }
                 await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=confirm_payload)
+
+            # --- Edit Series Title ---
+            elif custom_id.startswith("v2Dash_Sub_EditTitle|"):
+                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
+                group_name = parts.get("G")
+                series_id = parts.get("S")
+
+                modal_payload = {
+                    "type": 9,
+                    "data": {
+                        "custom_id": f"v2_modal_edit_title|G:{group_name}|S:{series_id}",
+                        "title": "Edit Series Title",
+                        "components": [
+                            {
+                                "type": 18,
+                                "label": "Custom Title",
+                                "component": {
+                                    "type": 4,
+                                    "custom_id": "custom_title_input",
+                                    "style": 1,
+                                    "placeholder": "Enter custom title (leave blank to reset)…",
+                                    "required": False,
+                                    "max_length": 200
+                                }
+                            }
+                        ]
+                    }
+                }
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=modal_payload
+                )
 
             elif custom_id.startswith("v2Dash_Sub_Delete_Confirm|"):
                 # Step 2 & 3: IMMEDIATELY SHOW POPUP (Like Select Chapters)
@@ -1609,6 +1645,44 @@ class DashboardCog(commands.Cog):
                     logger.error(f"Failed to parse Delete Modal data: {e}")
                 
                 return await self.finalize_sub_removal(interaction, group_name, series_id, final_reason)
+
+            elif custom_id.startswith("v2_modal_edit_title|"):
+                parts = dict(p.split(":") for p in custom_id.split("|")[1:])
+                group_name = parts.get("G")
+                series_id = parts.get("S")
+
+                # Extract input value
+                new_title = ""
+                for row in interaction.data.get("components", []):
+                    # Modal components might be nested under 'component' in V2
+                    inner = row.get("component", {})
+                    if inner.get("custom_id") == "custom_title_input":
+                        new_title = inner.get("value", "").strip()
+                    else:
+                        # Fallback for standard structure
+                        for comp in row.get("components", []):
+                            if comp.get("custom_id") == "custom_title_input":
+                                new_title = comp.get("value", "").strip()
+
+                from app.services.group_manager import load_group, save_group, _clean_url
+                group_data = load_group(group_name)
+                subs = group_data.get("subscriptions", [])
+                sub = next((s for s in subs if str(s.get("series_id")) == str(series_id)), None)
+
+                if sub:
+                    url = _clean_url(sub.get("series_url") or "")
+                    overrides = group_data.setdefault("title_overrides", {})
+                    if new_title:
+                        overrides[url] = new_title
+                    else:
+                        overrides.pop(url, None)  # reset
+                    save_group(group_name, group_data)
+
+                payload = await self.get_sub_info_payload(group_name, series_id)
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=payload
+                )
 
             if custom_id.startswith("modal_select_"):
                 req_id = custom_id.split("_")[-1]
