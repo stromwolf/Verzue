@@ -67,7 +67,7 @@ class MechaProvider(BaseProvider):
         
         # 🟢 S-GRADE: Prune tracking/bloat cookies to prevent 400 errors
         # Only load essential auth cookies, skip tracking/analytics/per-book bloat
-        ESSENTIAL_COOKIE_PREFIXES = ('_session', '_mechacomic', 'remember', '_csrf', '__Host', '__Secure')
+        ESSENTIAL_COOKIE_PREFIXES = ('_session', 'mechacomic', 'remember', '_csrf', '__Host', '__Secure')
         
         pruned_count = 0
         for c in session_obj["cookies"]:
@@ -632,28 +632,28 @@ class MechaProvider(BaseProvider):
             return []
 
     async def toggle_alert(self, series_id: str, enable: bool = True, soup: BeautifulSoup = None):
-        """
-        Toggle Mecha series alert subscription via Rails UJS endpoint.
-        ON:  POST /alerts/switch_on_book?book_id={id}
-        OFF: POST /alerts/switch_off_book?book_id={id}
-        """
         try:
             auth_session = await self._get_authenticated_session()
 
-            # Grab CSRF token from series page (needed for Rails POST)
-            if not soup:
-                res = await auth_session.get(
-                    f"{self.BASE_URL}/books/{series_id}", timeout=15
-                )
-                soup = BeautifulSoup(res.text, 'html.parser')
+            # ALWAYS re-fetch fresh — stale soup = stale CSRF = 403
+            res = await auth_session.get(
+                f"{self.BASE_URL}/books/{series_id}", timeout=15
+            )
+            soup = BeautifulSoup(res.text, 'html.parser')
 
+            # CSRF from meta tag
+            token = None
             token_elem = soup.find("meta", {"name": "csrf-token"})
-            token = token_elem.get("content") if token_elem else None
+            if token_elem:
+                token = token_elem.get("content")
+            if not token:
+                token_elem = soup.find("input", {"name": "authenticity_token"})
+                if token_elem:
+                    token = token_elem.get("value")
 
             if not token:
-                # fallback: hidden input
-                token_elem = soup.find("input", {"name": "authenticity_token"})
-                token = token_elem.get("value") if token_elem else None
+                logger.error(f"[Mecha] toggle_alert: No CSRF token found for {series_id}")
+                return False
 
             endpoint = "switch_on_book" if enable else "switch_off_book"
             url = f"{self.BASE_URL}/alerts/{endpoint}?book_id={series_id}"
@@ -661,9 +661,11 @@ class MechaProvider(BaseProvider):
             headers = {
                 "Referer": f"{self.BASE_URL}/books/{series_id}",
                 "Origin": self.BASE_URL,
-                "X-Requested-With": "XMLHttpRequest",   # Rails UJS requirement
-                "X-CSRF-Token": token or "",
-                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "X-Requested-With": "XMLHttpRequest",
+                "X-CSRF-Token": token,
+                # Rails UJS exact Accept header
+                "Accept": "text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             }
 
             res = await auth_session.post(url, headers=headers, timeout=15)
@@ -672,6 +674,8 @@ class MechaProvider(BaseProvider):
                 f"[Mecha] Alert toggle (enable={enable}) for {series_id}: "
                 f"HTTP {res.status_code} → {'✅' if success else '❌'}"
             )
+            if not success:
+                logger.debug(f"[Mecha] toggle_alert 403 body: {res.text[:300]}")
             return success
 
         except Exception as e:
