@@ -46,7 +46,8 @@ class PollerNotifier:
         
         # --- Feature Flag Guard ---
         platform = (sub.get("platform") or "").lower()
-        if not self.bot.app_state.is_enabled(f"notifications.{platform}"):
+        if not self.bot.app_state.is_enabled(f"notifications.{platform}", group=group_name):
+            logger.debug(f"[Notifier] notifications.{platform} disabled for {group_name}, skipping.")
             return
         
         try:
@@ -140,7 +141,7 @@ class PollerNotifier:
         t3 = log_category_context.set("Notification")
 
         # --- Feature Flag Guard ---
-        if not self.bot.app_state.is_enabled(f"notifications.{platform.lower()}"):
+        if not self.bot.app_state.is_enabled(f"notifications.{platform.lower()}", group="Global"):
             return
 
         try:
@@ -183,7 +184,7 @@ class PollerNotifier:
         """Notifies subscription channel that a series has gone on hiatus."""
         # --- Feature Flag Guard ---
         platform = (sub.get("platform") or "").lower()
-        if not self.bot.app_state.is_enabled(f"notifications.{platform}"):
+        if not self.bot.app_state.is_enabled(f"notifications.{platform}", group=group_name):
             return
 
         try:
@@ -209,12 +210,16 @@ class PollerNotifier:
             use_attachment_proxy = False
             if image_url:
                 try:
-                    res = curl_requests.get(image_url, timeout=10, impersonate="chrome")
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    res = await loop.run_in_executor(
+                        None, lambda: curl_requests.get(image_url, timeout=10, impersonate="chrome")
+                    )
                     if res.status_code == 200:
                         files.append(discord.File(io.BytesIO(res.content), filename="poster.png"))
                         use_attachment_proxy = True
                 except Exception as e:
-                    logger.warning(f"[AutoPoller] Hiatus poster fetch failed: {e}")
+                    logger.warning(f"[AutoPoller] Hiatus poster fetch failed (non-fatal): {e}")
 
             payload = build_hiatus_notification_payload(
                 platform=sub["platform"],

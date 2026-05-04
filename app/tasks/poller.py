@@ -222,9 +222,14 @@ class AutoDownloadPoller:
         try:
             sub_map = {sub["series_id"]: (gn, sub) for gn, sub in targets}
             provider = self.bot.task_queue.provider_manager.get_provider_for_url("https://mechacomic.jp")
-            alerts = await provider.get_alerts_list()
-            
-            if not alerts: return
+            if not alerts:
+                logger.warning("[AutoPoller] Mecha alerts empty/timeout — falling back to individual scrape")
+                for gn, sub in targets:
+                    try:
+                        await self._check_single_sub(gn, sub)
+                    except Exception as e:
+                        logger.error(f"[AutoPoller] Fallback failed for {sub.get('series_title')}: {e}")
+                return
             
             # Map of series_id -> alert_data
             alert_map = {a["series_id"]: a for a in alerts}
@@ -329,15 +334,18 @@ class AutoDownloadPoller:
                 files = []
                 use_attachment_proxy = False
                 if image_url:
-                    from curl_cffi import requests as curl_requests
                     import io
+                    from curl_cffi import requests as curl_requests
                     try:
-                        res = curl_requests.get(image_url, timeout=10, impersonate="chrome")
+                        loop = asyncio.get_event_loop()
+                        res = await loop.run_in_executor(
+                            None, lambda: curl_requests.get(image_url, timeout=10, impersonate="chrome")
+                        )
                         if res.status_code == 200:
                             files.append(discord.File(io.BytesIO(res.content), filename="poster.png"))
                             use_attachment_proxy = True
                     except Exception as e:
-                        logger.error(f"Failed to attach image: {e}")
+                        logger.warning(f"[AutoPoller] Poster fetch failed (non-fatal): {e}")
 
                 await self.notifier._notify_channel(
                     group_name=group_name,
