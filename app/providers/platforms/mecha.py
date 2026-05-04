@@ -65,7 +65,8 @@ class MechaProvider(BaseProvider):
         
         # 🟢 S-GRADE: Prune tracking/bloat cookies to prevent 400 errors
         # Only load essential auth cookies, skip tracking/analytics/per-book bloat
-        ESSENTIAL_COOKIE_PREFIXES = ('_session', 'mechacomic', 'remember', '_csrf', '__Host', '__Secure')
+        # _comic_session is the real session cookie for Mecha Comic
+        ESSENTIAL_COOKIE_PREFIXES = ('_session', '_comic', 'mechacomic', 'remember', '_csrf', '__Host', '__Secure', 'footmarks')
         
         pruned_count = 0
         for c in session_obj["cookies"]:
@@ -161,7 +162,6 @@ class MechaProvider(BaseProvider):
 
     async def get_series_info(self, url: str, fast: bool = False):
         auth_session = await self._get_authenticated_session()
-        self._last_session = auth_session # 🟢 S-GRADE: Persist session for alert toggling (avoids TLS mismatch)
         base_series_url = url.split('?')[0]
         logger.info(f"[Mecha] 🔍 Series Info Requested: {base_series_url} (mode={'fast' if fast else 'full'})")
         
@@ -274,6 +274,7 @@ class MechaProvider(BaseProvider):
             logger.debug(f"[Mecha] Failed to auto-favorite {title}: {e}")
 
         self._last_soup = soup
+        self._last_session = auth_session # 🟢 S-GRADE: Persist session for alert toggling (avoids TLS mismatch)
         return title, total_reported, all_chapters, image_url, str(series_id), release_day, release_time, status_label, genre_label
 
     async def fetch_more_chapters(self, url: str, total_pages: int, seen_ids: set, skip_pages: list = None):
@@ -644,7 +645,11 @@ class MechaProvider(BaseProvider):
 
             # Log active cookies for diagnosis
             cookie_names = [c.name for c in auth_session.cookies.jar] if hasattr(auth_session.cookies, 'jar') else list(auth_session.cookies.keys())
-            logger.info(f"[Mecha] toggle_alert cookies active: {cookie_names}")
+            logger.info(f"[Mecha] toggle_alert cookies active ({len(cookie_names)}): {cookie_names}")
+            
+            # 🟢 S-GRADE: Thin Session Detection
+            if len(cookie_names) < 5:
+                logger.warning(f"[Mecha] THIN SESSION ({len(cookie_names)} cookies) — likely cause of 403. Re-login recommended if failures persist.")
 
             # 🟢 S-GRADE: Only fetch page and warmup if no valid soup/session provided
             if soup is None or _session is None:
