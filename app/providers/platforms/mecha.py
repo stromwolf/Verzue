@@ -153,6 +153,7 @@ class MechaProvider(BaseProvider):
             async with PlatformRateLimiter.get("mecha").acquire():
                 res = await auth_session.get(p1_url, timeout=30)
             if res.status_code != 200: 
+                logger.error(f"[Mecha] ❌ HTTP {res.status_code} for URL: {p1_url} | Response preview: {res.text[:300]}")
                 raise ScraperError(f"Mecha error: {res.status_code}", code="SC_002")
         except RequestsError as e:
             logger.error(f"[Mecha] Request Error (Potential Proxy): {e}")
