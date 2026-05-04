@@ -65,15 +65,25 @@ class MechaProvider(BaseProvider):
         async_session = AsyncSession(impersonate="chrome120", proxy=Settings.get_proxy())
         async_session.headers.update(self.default_headers)
         
-        # 🟢 TEMP: Debug cookie bloat
-        logger.debug(f"[Mecha] Cookie jar ({len(session_obj['cookies'])} cookies): {[c.get('name') for c in session_obj['cookies']]}")
-
+        # 🟢 S-GRADE: Prune tracking/bloat cookies to prevent 400 errors
+        # Only load essential auth cookies, skip tracking/analytics/per-book bloat
+        ESSENTIAL_COOKIE_PREFIXES = ('_session', '_mechacomic', 'remember', '_csrf', '__Host', '__Secure')
+        
+        pruned_count = 0
         for c in session_obj["cookies"]:
             name, value = c.get('name'), c.get('value')
             if not name or not value: continue
+            
+            if not name.startswith(ESSENTIAL_COOKIE_PREFIXES):
+                pruned_count += 1
+                continue
+
             raw_domain = c.get('domain', 'mechacomic.jp').lstrip('.')
             async_session.cookies.set(name, value, domain=raw_domain)
             async_session.cookies.set(name, value, domain='.' + raw_domain)
+        
+        if pruned_count > 0:
+            logger.debug(f"[Mecha] Pruned {pruned_count} tracking/bloat cookies for session {self.active_account_id}")
         
         return async_session
 

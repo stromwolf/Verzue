@@ -1,0 +1,232 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+bind 127.0.0.1 ::1
+port 6379
+protected-mode yes
+tcp-backlog 511
+timeout 0
+tcp-keepalive 300
+
+
+
+
+
+daemonize no
+supervised systemd
+pidfile /var/run/redis/redis-server.pid
+loglevel notice
+logfile ""
+databases 16
+always-show-logo no
+
+
+
+
+
+
+
+
+
+
+
+save 900 1
+save 300 10
+save 60 1000
+
+
+
+
+stop-writes-on-bgsave-error yes
+
+rdbcompression yes
+rdbchecksum yes
+dbfilename dump.rdb
+rdb-del-sync-files no
+dir /var/lib/redis
+
+
+
+
+
+
+
+
+
+
+
+appendonly yes
+appendfilename "appendonly.aof"
+appenddirname "appendonlydir"
+
+
+
+
+
+appendfsync everysec
+
+
+
+
+
+no-appendfsync-on-rewrite no
+
+
+
+
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb
+
+
+
+
+aof-load-truncated yes
+
+
+
+aof-use-rdb-preamble yes
+
+
+
+aof-timestamp-enabled no
+
+
+
+
+
+
+
+
+
+maxmemory 1gb
+
+
+
+
+
+
+
+
+
+maxmemory-policy noeviction
+
+
+
+
+
+
+
+lazyfree-lazy-eviction yes
+lazyfree-lazy-expire yes
+lazyfree-lazy-server-del yes
+lazyfree-lazy-user-del yes
+lazyfree-lazy-user-flush yes
+
+
+
+
+
+
+
+
+maxclients 256
+
+
+
+
+client-output-buffer-limit normal 0 0 0
+client-output-buffer-limit replica 256mb 64mb 60
+client-output-buffer-limit pubsub 32mb 8mb 60
+
+
+
+
+
+
+
+slowlog-log-slower-than 10000
+slowlog-max-len 128
+
+
+
+
+
+
+
+
+latency-monitor-threshold 100
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+rename-command FLUSHALL ""
+rename-command FLUSHDB ""
+rename-command KEYS ""
+rename-command DEBUG ""
+
+
+
+
+
+hash-max-listpack-entries 128
+hash-max-listpack-value 64
+list-max-listpack-size -2
+list-compress-depth 0
+set-max-intset-entries 512
+set-max-listpack-entries 128
+zset-max-listpack-entries 128
+zset-max-listpack-value 64
+hll-sparse-max-bytes 3000
+stream-node-max-bytes 4096
+stream-node-max-entries 100
+activerehashing yes
+hz 10
+dynamic-hz yes
+aof-rewrite-incremental-fsync yes
+rdb-save-incremental-fsync yes
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

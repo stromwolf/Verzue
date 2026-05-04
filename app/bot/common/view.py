@@ -10,6 +10,20 @@ logger = logging.getLogger("Dashboard")
 ICONS = {"load": "<a:waiting:1482424619746201601>", "tick": "[DONE]", "wait": "[   ]"}
 COLORS = {"mecha": 0xe67e22, "smartoon": 0x2ecc71, "jumptoon": 0x9b59b6, "piccoma": 0xffd600, "kuaikan": 0xf1c40f}
 
+_MAIN_CHAPTER_RE = re.compile(
+    r'^\d+話'           # Mecha:    001話, 24話
+    r'|^第\s*\d+話'     # Piccoma/Jumptoon: 第1話, 第 24話
+    r'|^Episode\s*\d+'  # Jumptoon: Episode 1
+    r'|^Ch\.?\s*\d+',   # Generic:  Ch.1, Ch 1
+    re.IGNORECASE
+)
+
+def _is_main_chapter(notation: str) -> bool:
+    """Returns True if notation looks like a real numbered chapter."""
+    if not notation:
+        return False
+    return bool(_MAIN_CHAPTER_RE.match(notation.strip()))
+
 class UniversalDashboard:
     active_views: dict[str, UniversalDashboard] = {}  # Global router for raw V2 interactions
 
@@ -352,20 +366,20 @@ class UniversalDashboard:
             start_idx = (self.page - 1) * self.per_page
             display_chapters = self.all_chapters[start_idx : start_idx + self.per_page]
             
-            # 🟢 S-GRADE: Calculate semantic indices (handling hiatuses)
+            # 🟢 S-GRADE: Calculate semantic indices (handling hiatuses/extras)
             # We must calculate from the beginning of all_chapters to keep main_idx consistent
             main_idx = 0
             sub_idx = 0
-            for i, ch in enumerate(self.all_chapters):
-                is_hiatus = any(x in (ch.get('notation', '') + ch.get('title', '')) for x in ["休載", "Hiatus", "Break"])
-                if is_hiatus:
-                    sub_idx += 1
-                    ch['_display_idx'] = f"{main_idx}.{sub_idx}"
-                    ch['_main_idx'] = main_idx # Still belongs to the previous main chapter's range
-                else:
+            for ch in self.all_chapters:
+                notation = ch.get('notation', '')
+                if _is_main_chapter(notation):
                     main_idx += 1
                     sub_idx = 0
                     ch['_display_idx'] = str(main_idx)
+                    ch['_main_idx'] = main_idx
+                else:
+                    sub_idx += 1
+                    ch['_display_idx'] = f"{main_idx}.{sub_idx}"
                     ch['_main_idx'] = main_idx
 
             for i, ch in enumerate(display_chapters):
