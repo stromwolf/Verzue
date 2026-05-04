@@ -65,6 +65,9 @@ class MechaProvider(BaseProvider):
         async_session = AsyncSession(impersonate="chrome120", proxy=Settings.get_proxy())
         async_session.headers.update(self.default_headers)
         
+        # 🟢 TEMP: Debug cookie bloat
+        logger.debug(f"[Mecha] Cookie jar ({len(session_obj['cookies'])} cookies): {[c.get('name') for c in session_obj['cookies']]}")
+
         for c in session_obj["cookies"]:
             name, value = c.get('name'), c.get('value')
             if not name or not value: continue
