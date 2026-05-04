@@ -2468,8 +2468,12 @@ class DashboardCog(commands.Cog):
 
             # 🟢 S-GRADE: Auto-register alert on Mecha side
             if platform == "mecha":
-                # scraper._last_soup was stored during get_series_info earlier in this method
-                asyncio.create_task(scraper.toggle_alert(series_id, enable=True, soup=getattr(scraper, "_last_soup", None)))
+                # scraper._last_soup and _last_session were stored during get_series_info earlier in this method
+                asyncio.create_task(scraper.toggle_alert(
+                    series_id, enable=True, 
+                    soup=getattr(scraper, "_last_soup", None),
+                    _session=getattr(scraper, "_last_session", None)
+                ))
                 
                 # 🟢 S-GRADE: Backfill release_day from alerts if not found in metadata
                 if not release_day:

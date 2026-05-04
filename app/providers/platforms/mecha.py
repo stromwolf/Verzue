@@ -161,6 +161,7 @@ class MechaProvider(BaseProvider):
 
     async def get_series_info(self, url: str, fast: bool = False):
         auth_session = await self._get_authenticated_session()
+        self._last_session = auth_session # 🟢 S-GRADE: Persist session for alert toggling (avoids TLS mismatch)
         base_series_url = url.split('?')[0]
         logger.info(f"[Mecha] 🔍 Series Info Requested: {base_series_url} (mode={'fast' if fast else 'full'})")
         
@@ -268,7 +269,7 @@ class MechaProvider(BaseProvider):
             is_fav = soup.select_one("input.js-bt_favorite, button.js-bt_favorite")
             if is_fav and "登録済み" not in is_fav.get_text() and "解除" not in is_fav.get("value", ""):
                  logger.info(f"❤️ [Mecha] Automatically registering {title} for alerts...")
-                 await self.toggle_alert(series_id, enable=True, soup=soup)
+                 await self.toggle_alert(series_id, enable=True, soup=soup, _session=auth_session)
         except Exception as e:
             logger.debug(f"[Mecha] Failed to auto-favorite {title}: {e}")
 
@@ -636,25 +637,28 @@ class MechaProvider(BaseProvider):
             logger.error(f"❌ [Mecha] Alerts Fetch Error: {e}")
             return []
 
-    async def toggle_alert(self, series_id: str, enable: bool = True, soup: BeautifulSoup = None):
+    async def toggle_alert(self, series_id: str, enable: bool = True, soup: BeautifulSoup = None, _session=None):
         try:
-            auth_session = await self._get_authenticated_session()
+            # 🟢 S-GRADE: Use passed session if available — avoids new TLS handshake mismatch (Fixes 403)
+            auth_session = _session if _session is not None else await self._get_authenticated_session()
 
             # Log active cookies for diagnosis
             cookie_names = [c.name for c in auth_session.cookies.jar] if hasattr(auth_session.cookies, 'jar') else list(auth_session.cookies.keys())
             logger.info(f"[Mecha] toggle_alert cookies active: {cookie_names}")
 
-            # Warmup: establish session context before CSRF fetch
-            await auth_session.get(f"{self.BASE_URL}/", timeout=15)
+            # 🟢 S-GRADE: Only fetch page and warmup if no valid soup/session provided
+            if soup is None or _session is None:
+                # Warmup: establish session context before CSRF fetch
+                if _session is None:
+                    await auth_session.get(f"{self.BASE_URL}/", timeout=15)
 
-            # Fresh page fetch for CSRF
-            res = await auth_session.get(
-                f"{self.BASE_URL}/books/{series_id}", timeout=15
-            )
-            
-            logger.info(f"[Mecha] toggle_alert page fetch: HTTP {res.status_code}, URL={res.url}")
-
-            soup = BeautifulSoup(res.text, 'html.parser')
+                # Fresh page fetch for CSRF
+                res = await auth_session.get(
+                    f"{self.BASE_URL}/books/{series_id}", timeout=15
+                )
+                
+                logger.info(f"[Mecha] toggle_alert page fetch: HTTP {res.status_code}, URL={res.url}")
+                soup = BeautifulSoup(res.text, 'html.parser')
 
             token = None
             token_elem = soup.find("meta", {"name": "csrf-token"})
