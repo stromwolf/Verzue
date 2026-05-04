@@ -647,9 +647,21 @@ class MechaProvider(BaseProvider):
             cookie_names = [c.name for c in auth_session.cookies.jar] if hasattr(auth_session.cookies, 'jar') else list(auth_session.cookies.keys())
             logger.info(f"[Mecha] toggle_alert cookies active ({len(cookie_names)}): {cookie_names}")
             
-            # 🟢 S-GRADE: Thin Session Detection
-            if len(cookie_names) < 5:
-                logger.warning(f"[Mecha] THIN SESSION ({len(cookie_names)} cookies) — likely cause of 403. Re-login recommended if failures persist.")
+            # 🟢 S-GRADE: Thin Session Auto-Recovery
+            # If < 5 cookies and we didn't pass a live session, trigger a re-login
+            if len(cookie_names) < 5 and _session is None:
+                logger.warning(f"[Mecha] THIN SESSION ({len(cookie_names)} cookies) — triggering re-login before alert toggle.")
+                login_success = await self.login_service.auto_login("mecha")
+                if login_success:
+                    auth_session = await self._get_authenticated_session()
+                    cookie_names = [c.name for c in auth_session.cookies.jar] if hasattr(auth_session.cookies, 'jar') else list(auth_session.cookies.keys())
+                    logger.info(f"[Mecha] Post-login cookies ({len(cookie_names)}): {cookie_names}")
+                    soup = None # Force fresh page fetch with new session
+                else:
+                    logger.error(f"[Mecha] toggle_alert: Re-login failed. Cannot toggle alert for {series_id}.")
+                    return False
+            elif len(cookie_names) < 5:
+                logger.warning(f"[Mecha] THIN SESSION ({len(cookie_names)} cookies) detected from passed session. If this fails with 403, check pruner/login health.")
 
             # 🟢 S-GRADE: Only fetch page and warmup if no valid soup/session provided
             if soup is None or _session is None:
