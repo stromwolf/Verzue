@@ -481,7 +481,7 @@ class DashboardCog(commands.Cog):
         ]
 
         # ── Section 1: Download Complete ──
-        inner.append({"type": 10, "content": "### 📥 Download Complete\n-# Who gets pinged when your chapter download finishes.\n" + _build_targets_text(dn_targets, NOTIFY_LIMIT, "DN")})
+        inner.append({"type": 10, "content": "### <:Download:1500811097882759208> Download Complete\n-# Who gets pinged when your chapter download finishes.\n" + _build_targets_text(dn_targets, NOTIFY_LIMIT, "DN")})
 
         dn_at_limit = len(dn_targets) >= NOTIFY_LIMIT
         if not dn_at_limit:
@@ -495,7 +495,7 @@ class DashboardCog(commands.Cog):
         inner.append({"type": 14, "divider": True, "spacing": 1})
 
         # ── Section 2: New Chapter Release ──
-        inner.append({"type": 10, "content": "### 🔔 New Chapter Release\n-# Who gets pinged when a new chapter releases for your subscriptions.\n" + _build_targets_text(rel_targets, RELEASE_NOTIFY_LIMIT, "Release")})
+        inner.append({"type": 10, "content": "### <:notification_2:1500812540874326076> New Chapter Release\n-# Who gets pinged when a new chapter releases for your subscriptions.\n" + _build_targets_text(rel_targets, RELEASE_NOTIFY_LIMIT, "Release")})
 
         rel_at_limit = len(rel_targets) >= RELEASE_NOTIFY_LIMIT
         if not rel_at_limit:
