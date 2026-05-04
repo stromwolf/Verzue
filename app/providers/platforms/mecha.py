@@ -76,12 +76,19 @@ class MechaProvider(BaseProvider):
                 pruned_count += 1
                 continue
 
-            raw_domain = c.get('domain', 'mechacomic.jp').lstrip('.')
-            async_session.cookies.set(name, value, domain=raw_domain)
-            async_session.cookies.set(name, value, domain='.' + raw_domain)
+            # 🟢 S-GRADE: Single domain binding to prevent duplicate headers (Fixes 403 Forbidden)
+            raw_domain = c.get('domain', 'mechacomic.jp')
+            clean_domain = raw_domain.lstrip('.')
+            async_session.cookies.set(name, value, domain=clean_domain, path=c.get('path', '/'))
         
         if pruned_count > 0:
             logger.debug(f"[Mecha] Pruned {pruned_count} tracking/bloat cookies for session {self.active_account_id}")
+            
+        # 🟢 S-GRADE: Duplication Audit
+        cookie_names = [c.name for c in async_session.cookies.jar] if hasattr(async_session.cookies, 'jar') else list(async_session.cookies.keys())
+        dupe_check = len(cookie_names) != len(set(cookie_names))
+        if dupe_check:
+            logger.warning(f"[Mecha] Duplicate cookies detected in session jar: {[n for n in cookie_names if cookie_names.count(n) > 1]}")
         
         return async_session
 
