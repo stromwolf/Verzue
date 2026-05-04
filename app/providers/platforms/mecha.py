@@ -635,13 +635,22 @@ class MechaProvider(BaseProvider):
         try:
             auth_session = await self._get_authenticated_session()
 
-            # ALWAYS re-fetch fresh — stale soup = stale CSRF = 403
+            # Log active cookies for diagnosis
+            cookie_names = [c.name for c in auth_session.cookies.jar] if hasattr(auth_session.cookies, 'jar') else list(auth_session.cookies.keys())
+            logger.info(f"[Mecha] toggle_alert cookies active: {cookie_names}")
+
+            # Warmup: establish session context before CSRF fetch
+            await auth_session.get(f"{self.BASE_URL}/", timeout=15)
+
+            # Fresh page fetch for CSRF
             res = await auth_session.get(
                 f"{self.BASE_URL}/books/{series_id}", timeout=15
             )
+            
+            logger.info(f"[Mecha] toggle_alert page fetch: HTTP {res.status_code}, URL={res.url}")
+
             soup = BeautifulSoup(res.text, 'html.parser')
 
-            # CSRF from meta tag
             token = None
             token_elem = soup.find("meta", {"name": "csrf-token"})
             if token_elem:
@@ -650,6 +659,8 @@ class MechaProvider(BaseProvider):
                 token_elem = soup.find("input", {"name": "authenticity_token"})
                 if token_elem:
                     token = token_elem.get("value")
+
+            logger.info(f"[Mecha] toggle_alert CSRF token: {'present (' + token[:10] + '...)' if token else 'MISSING'}")
 
             if not token:
                 logger.error(f"[Mecha] toggle_alert: No CSRF token found for {series_id}")
@@ -663,19 +674,16 @@ class MechaProvider(BaseProvider):
                 "Origin": self.BASE_URL,
                 "X-Requested-With": "XMLHttpRequest",
                 "X-CSRF-Token": token,
-                # Rails UJS exact Accept header
                 "Accept": "text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01",
                 "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             }
 
             res = await auth_session.post(url, headers=headers, timeout=15)
             success = res.status_code in [200, 302]
-
             logger.info(
                 f"[Mecha] Alert toggle (enable={enable}) for {series_id}: "
                 f"HTTP {res.status_code} → {'✅' if success else '❌'}"
             )
-
             if not success:
                 logger.error(
                     f"[Mecha] toggle_alert FAILED DETAIL:\n"
@@ -686,7 +694,6 @@ class MechaProvider(BaseProvider):
                     f"  Res Headers: {dict(res.headers)}\n"
                     f"  Body     : {res.text[:500]}"
                 )
-                # Also dump HTML to file for deep inspection
                 try:
                     from config.settings import Settings
                     import time
@@ -696,7 +703,6 @@ class MechaProvider(BaseProvider):
                     logger.error(f"[Mecha] Full 403 response dumped → {dump_path}")
                 except Exception as dump_err:
                     logger.warning(f"[Mecha] Failed to dump 403 body: {dump_err}")
-
             return success
 
         except Exception as e:
