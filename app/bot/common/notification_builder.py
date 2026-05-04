@@ -43,8 +43,6 @@ def build_notification_payload(
     chapter_id: str | None = None,
     chapter_number: str | None = None, # 🟢 NEW: Actual notation (e.g. 第38話)
     use_attachment_proxy: bool = False, # 🟢 NEW: Use attachment:// instead of URL
-    extra_mentions: str | None = None,
-    extra_targets: list | None = None,
 ) -> dict:
     """
     Builds the full Discord message payload (flags + components) for a new chapter notification.
@@ -62,8 +60,6 @@ def build_notification_payload(
     
     # 🟢 New Layout: Corrected link format per user request
     header_text = f"New Chapter {role_mention} of **[ {platform_emoji} [{platform_display}]({series_url}) ]**"
-    if extra_mentions:
-        header_text += f"\n{extra_mentions}"
 
     # --- Poster Logic ---
     final_poster_url = poster_url
@@ -144,20 +140,8 @@ def build_notification_payload(
     }
 
     # Enable role pings
-    mentions = {"roles": [], "users": []}
     if role_id:
-        mentions["roles"].append(str(role_id))
-    
-    if extra_targets:
-        for t in extra_targets:
-            tid = str(getattr(t["id"], "id", t["id"]))
-            if t["type"] == "user":
-                mentions["users"].append(tid)
-            else:
-                mentions["roles"].append(tid)
-    
-    if mentions["roles"] or mentions["users"]:
-        payload["allowed_mentions"] = mentions
+        payload["allowed_mentions"] = {"roles": [str(role_id)]}
 
     return payload
 
@@ -315,8 +299,6 @@ def build_hiatus_notification_payload(
     series_id: str,
     notification_id: int,
     use_attachment_proxy: bool = False,
-    extra_mentions: str | None = None,
-    extra_targets: list | None = None,
 ) -> dict:
     """Builds the Discord V2 payload for a hiatus notification."""
     platform_key = platform.lower()
@@ -326,8 +308,6 @@ def build_hiatus_notification_payload(
 
     role_mention = f"<@&{role_id}>" if role_id else "@Updates"
     header_text = f"New Hiatus {role_mention} of **[ {platform_emoji} [{platform_display}]({series_url}) ]**"
-    if extra_mentions:
-        header_text += f"\n{extra_mentions}"
 
     final_poster_url = "attachment://poster.png" if use_attachment_proxy else poster_url
     title_text = f"## {custom_title or series_title}"
@@ -354,23 +334,7 @@ def build_hiatus_notification_payload(
     # 4. Footer
     inner.append({"type": 10, "content": footer_text})
 
-    components = [{"type": 17, "accent_color": accent_color, "components": inner}]
-    payload = {"flags": 32768, "components": components}
-    # Enable role pings
-    mentions = {"roles": [], "users": []}
     if role_id:
-        mentions["roles"].append(str(role_id))
-    
-    if extra_targets:
-        for t in extra_targets:
-            tid = str(getattr(t["id"], "id", t["id"]))
-            if t["type"] == "user":
-                mentions["users"].append(tid)
-            else:
-                mentions["roles"].append(tid)
-    
-    if mentions["roles"] or mentions["users"]:
-        payload["allowed_mentions"] = mentions
-
+        payload["allowed_mentions"] = {"roles": [str(role_id)]}
     return payload
 

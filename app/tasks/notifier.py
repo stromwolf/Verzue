@@ -63,19 +63,10 @@ class PollerNotifier:
             custom_title = get_title_override(group_name, sub["series_url"])
 
             # 🟢 S-GRADE: User-specific title override (Redis)
-            extra_mentions = None
-            extra_targets = None
             if sub.get("added_by"):
-                user_id = int(sub["added_by"])
-                s_settings = await self.settings.get_subscription_settings(user_id, sub["series_id"])
+                s_settings = await self.settings.get_subscription_settings(int(sub["added_by"]), sub["series_id"])
                 if s_settings.get("custom_title"):
                     custom_title = s_settings["custom_title"]
-                
-                # Release Notify Targets
-                rel_targets = await self.settings.get_release_notify_targets(user_id)
-                if rel_targets:
-                    extra_mentions = SettingsService.format_mentions(rel_targets)
-                    extra_targets = rel_targets
 
             # Get next N-ID
             notification_id = get_next_notification_id(group_name)
@@ -93,8 +84,6 @@ class PollerNotifier:
                 chapter_id=chapter_id,
                 chapter_number=chapter_number,
                 use_attachment_proxy=use_attachment_proxy,
-                extra_mentions=extra_mentions,
-                extra_targets=extra_targets,
             )
 
             try:
@@ -208,19 +197,10 @@ class PollerNotifier:
             custom_title = get_title_override(group_name, sub["series_url"])
 
             # 🟢 S-GRADE: User-specific title override (Redis)
-            extra_mentions = None
-            extra_targets = None
             if sub.get("added_by"):
-                user_id = int(sub["added_by"])
-                s_settings = await self.settings.get_subscription_settings(user_id, sub["series_id"])
+                s_settings = await self.settings.get_subscription_settings(int(sub["added_by"]), sub["series_id"])
                 if s_settings.get("custom_title"):
                     custom_title = s_settings["custom_title"]
-
-                # Release Notify Targets
-                rel_targets = await self.settings.get_release_notify_targets(user_id)
-                if rel_targets:
-                    extra_mentions = SettingsService.format_mentions(rel_targets)
-                    extra_targets = rel_targets
 
             notification_id = get_next_notification_id(group_name)
 
@@ -246,8 +226,6 @@ class PollerNotifier:
                 series_id=series_id,
                 notification_id=notification_id,
                 use_attachment_proxy=use_attachment_proxy,
-                extra_mentions=extra_mentions,
-                extra_targets=extra_targets,
             )
 
             route = discord.http.Route('POST', '/channels/{channel_id}/messages', channel_id=channel.id)
