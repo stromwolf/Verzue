@@ -196,11 +196,7 @@ class MechaBot(commands.Bot):
             )
             embed.set_footer(text=f"Series ID: {sub.get('series_id')}")
             
-            content = ""
-            if "mecha" in sub.get("platform", "").lower():
-                content = "<@&1488447662708625408>" # Ping role for Mecha series
-                
-            await channel.send(content=content, embed=embed)
+            await channel.send(embed=embed)
             self.logger.info(f"📢 Notification sent: New subscription for '{title}' in {group_name}")
             
         except Exception as e:
