@@ -579,9 +579,8 @@ class MechaProvider(BaseProvider):
                 
                 title = title_elem.get_text(strip=True)
                 href = title_elem.get('href', '')
-                sid = href.split('/')[-1]
-                # S-GRADE: Use data-id (book_id) which is the canonical numeric ID
-                book_id = title_elem.get('data-id') or sid
+                book_id = href.split('/')[-1]        # series/book ID
+                chapter_id = title_elem.get('data-id')  # actual chapter ID
                 
                 arrival_day_elem = item.select_one('.p-book_arrivalDay')
                 day_text = arrival_day_elem.get_text(strip=True) if arrival_day_elem else None  # e.g., "4/24"
@@ -605,6 +604,7 @@ class MechaProvider(BaseProvider):
                 
                 updated_series.append({
                     "series_id": book_id,
+                    "chapter_id": chapter_id,
                     "title": title,
                     "url": urljoin(self.BASE_URL, href),
                     "notation": notation,

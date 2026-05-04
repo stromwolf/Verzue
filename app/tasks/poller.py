@@ -225,18 +225,43 @@ class AutoDownloadPoller:
             alerts = await provider.get_alerts_list()
             
             if not alerts: return
-            updated_ids = {a["series_id"] for a in alerts}
+            
+            # Map of series_id -> alert_data
+            alert_map = {a["series_id"]: a for a in alerts}
             
             for sid, (gn, sub) in sub_map.items():
-                if sid in updated_ids:
-                    date_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-                    redis_key = f"verzue:poller:found:{sid}:{date_str}"
-                    if await self.bot.redis_brain.client.get(redis_key): continue
+                if sid in alert_map:
+                    alert = alert_map[sid]
+                    chapter_id = alert.get("chapter_id")
+                    last_known = str(sub.get("last_known_chapter_id", "0"))
+                    
+                    if chapter_id and str(chapter_id) != last_known:
+                        date_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+                        redis_key = f"verzue:poller:found:{sid}:{date_str}"
+                        if await self.bot.redis_brain.client.get(redis_key): continue
 
-                    if await self._check_single_sub(gn, sub):
+                        logger.info(f"🚨 [AutoPoller] Mecha NEW CHAPTER DETECTED via Alerts! {sub['series_title']} - {alert.get('notation')}")
+                        
+                        # Update database
+                        update_last_chapter(gn, sid, str(chapter_id))
+                        
+                        # Notify
+                        await self.notifier._notify_channel(
+                            group_name=gn,
+                            sub=sub,
+                            series_title=sub["series_title"],
+                            series_id=sid,
+                            image_url=sub.get("poster_url"), 
+                            chapter_id=str(chapter_id),
+                            chapter_number=alert.get('notation'),
+                            files=[], # We skip poster attachment for speed in batch
+                            use_attachment_proxy=False
+                        )
+                        
                         await self.bot.redis_brain.client.set(redis_key, "1", ex=86400)
         except Exception as e:
             logger.error(f"❌ [AutoPoller] Mecha Batch Error: {e}")
+            logger.error(traceback.format_exc())
 
     async def _check_single_sub(self, group_name: str, sub: dict) -> bool:
         """Logic for analyzing a single series for updates."""
