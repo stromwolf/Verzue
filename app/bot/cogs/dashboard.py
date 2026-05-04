@@ -1248,7 +1248,6 @@ class DashboardCog(commands.Cog):
                                             "type": 2, 
                                             "style": 3, # Success (Green)
                                             "label": "Back to Dashboard",
-                                            "emoji": {"id": "1480951111614730302", "name": "Success"},
                                             "custom_id": "v2Dash_Home"
                                         }
                                     }
