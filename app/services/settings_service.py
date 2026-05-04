@@ -3,6 +3,7 @@ import redis.asyncio as redis
 from typing import Literal, TypedDict
 
 NOTIFY_LIMIT = 5
+RELEASE_NOTIFY_LIMIT = 5
 SETTINGS_KEY = "verzue:settings:{user_id}"
 SUB_SETTINGS_KEY = "verzue:subscription:{user_id}:{series_id}"
 
@@ -56,6 +57,38 @@ class SettingsService:
         if len(new_targets) == len(targets):
             return False
         settings["notify_targets"] = new_targets
+        await self._redis.set(SETTINGS_KEY.format(user_id=user_id), json.dumps(settings))
+        return True
+
+    async def get_release_notify_targets(self, user_id: int) -> list[NotifyTarget]:
+        return (await self.get(user_id)).get("release_notify_targets", [])
+
+    async def add_release_notify_target(
+        self, user_id: int, target_type: Literal["user", "role"], target_id: int
+    ) -> tuple[bool, str]:
+        settings = await self.get(user_id)
+        targets: list[NotifyTarget] = settings.get("release_notify_targets", [])
+        target_id_str = str(getattr(target_id, "id", target_id))
+        if any(t["id"] == target_id_str and t["type"] == target_type for t in targets):
+            return False, "Already in list."
+        if len(targets) >= RELEASE_NOTIFY_LIMIT:
+            return False, f"Limit reached ({RELEASE_NOTIFY_LIMIT}). Remove one first."
+        targets.append({"type": target_type, "id": target_id_str})
+        settings["release_notify_targets"] = targets
+        await self._redis.set(SETTINGS_KEY.format(user_id=user_id), json.dumps(settings))
+        return True, "Added."
+
+    async def remove_release_notify_target(
+        self, user_id: int, target_type: str, target_id: str
+    ) -> bool:
+        settings = await self.get(user_id)
+        targets = settings.get("release_notify_targets", [])
+        new_targets = [
+            t for t in targets if not (t["id"] == target_id and t["type"] == target_type)
+        ]
+        if len(new_targets) == len(targets):
+            return False
+        settings["release_notify_targets"] = new_targets
         await self._redis.set(SETTINGS_KEY.format(user_id=user_id), json.dumps(settings))
         return True
 

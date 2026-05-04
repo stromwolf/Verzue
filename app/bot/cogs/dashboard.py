@@ -431,130 +431,88 @@ class DashboardCog(commands.Cog):
 
 
     async def get_settings_notify_payload(self, user_id: int, guild):
-        """V2 payload for Notification Recipients settings."""
-        from app.services.settings_service import SettingsService, NOTIFY_LIMIT
+        from app.services.settings_service import SettingsService, NOTIFY_LIMIT, RELEASE_NOTIFY_LIMIT
         settings = SettingsService()
-        targets = await settings.get_notify_targets(user_id)
 
-        # Pre-resolve all user members via fetch (bypasses cache miss)
-        resolved = {}  # str(id) -> display_name
+        dn_targets     = await settings.get_notify_targets(user_id)
+        rel_targets    = await settings.get_release_notify_targets(user_id)
+
+        # Resolve display names once
+        resolved = {}
         if guild:
-            # Fetch all roles once (no per-role API call needed)
             guild_roles = {str(r.id): r.name for r in guild.roles}
-            
-            for t in targets:
-                tid = str(getattr(t["id"], "id", t["id"]))  # normalize
+            for t in dn_targets + rel_targets:
+                tid = str(getattr(t["id"], "id", t["id"]))
                 if t["type"] == "user":
                     try:
                         mid = int(tid)
                         member = guild.get_member(mid) or await guild.fetch_member(mid)
-                        if member:
-                            resolved[tid] = member.display_name
-                    except Exception:
-                        pass
+                        if member: resolved[tid] = member.display_name
+                    except: pass
                 else:
-                    # roles already in guild.roles — no fetch needed
-                    if tid in guild_roles:
-                        resolved[tid] = guild_roles[tid]
+                    if tid in guild_roles: resolved[tid] = guild_roles[tid]
 
-        inner = [
-            {"type": 10, "content": "# <:notification:1498686398293872801> Notification Menu"},
-            {"type": 14, "divider": True, "spacing": 1},
-            {"type": 10, "content": "Who gets pinged when your chapters finish."},
-        ]
-
-        if not targets:
-            inner.append({"type": 10, "content": "*No targets set — only you will be pinged.*"})
-        else:
+        def _build_targets_text(targets, limit, label):
+            if not targets:
+                return f"*No targets set.*"
             user_lines = []
             role_lines = []
             for t in targets:
                 tid = str(getattr(t["id"], "id", t["id"]))
                 mention = f"<@{tid}>" if t["type"] == "user" else f"<@&{tid}>"
-                line = f"> {mention}"
-                if t["type"] == "user":
-                    user_lines.append(line)
-                else:
-                    role_lines.append(line)
+                (user_lines if t["type"] == "user" else role_lines).append(f"> {mention}")
+            content = f"**Targets ({len(targets)}/{limit})**"
+            if user_lines: content += "\n" + "\n".join(user_lines)
+            if role_lines: content += "\n" + "\n".join(role_lines)
+            return content
 
-            content = f"### Targets ({len(targets)}/{NOTIFY_LIMIT})"
-            if user_lines:
-                content += f"\n**Users** ({len(user_lines)})\n" + "\n".join(user_lines)
-            if role_lines:
-                content += f"\n**Roles** ({len(role_lines)})\n" + "\n".join(role_lines)
-            inner.append({"type": 10, "content": content})
-
-        at_limit = len(targets) >= NOTIFY_LIMIT
-
-        # Add User Select (V2 supports type 5 = User Select)
-        if not at_limit:
-            inner.append({
-                "type": 1,
-                "components": [{
-                    "type": 5,  # USER_SELECT
-                    "custom_id": f"v2_settings_notify_add_user_{user_id}",
-                    "placeholder": "➕ Add a user…",
-                    "min_values": 1,
-                    "max_values": 1
-                }]
-            })
-            inner.append({
-                "type": 1,
-                "components": [{
-                    "type": 6,  # ROLE_SELECT
-                    "custom_id": f"v2_settings_notify_add_role_{user_id}",
-                    "placeholder": "➕ Add a role…",
-                    "min_values": 1,
-                    "max_values": 1
-                }]
-            })
-
-        if targets:
-            remove_options = []
+        def _build_remove_options(targets):
+            options = []
             for t in targets:
-                tid = str(getattr(t["id"], "id", t["id"]))  # same normalization
-                if t["type"] == "user":
-                    dn = resolved.get(tid)
-                    label = dn if dn else tid
-                    emoji = {"name": "👤"}
-                else:
-                    rname = resolved.get(tid)
-                    label = rname if rname else tid
-                    emoji = {"name": "🎭"}
+                tid = str(getattr(t["id"], "id", t["id"]))
+                label = resolved.get(tid, tid)
+                emoji = {"name": "👤"} if t["type"] == "user" else {"name": "🎭"}
+                options.append({"label": label[:100], "value": f"{t['type']}:{tid}", "emoji": emoji})
+            return options
 
-                remove_options.append({
-                    "label": label[:100],
-                    "value": f"{t['type']}:{tid}",
-                    "emoji": emoji
-                })
+        inner = [
+            {"type": 10, "content": "# <:notification:1498686398293872801> Notification Settings"},
+            {"type": 14, "divider": True, "spacing": 1},
+        ]
 
-            if remove_options:
-                inner.append({
-                    "type": 1,
-                    "components": [{
-                        "type": 3,
-                        "custom_id": f"v2_settings_notify_remove_{user_id}",
-                        "placeholder": "➖ Remove a target…",
-                        "options": remove_options[:25]
-                    }]
-                })
+        # ── Section 1: Download Complete ──
+        inner.append({"type": 10, "content": "### 📥 Download Complete\n-# Who gets pinged when your chapter download finishes.\n" + _build_targets_text(dn_targets, NOTIFY_LIMIT, "DN")})
+
+        dn_at_limit = len(dn_targets) >= NOTIFY_LIMIT
+        if not dn_at_limit:
+            inner.append({"type": 1, "components": [{"type": 5, "custom_id": f"v2_settings_notify_dn_add_user_{user_id}", "placeholder": "➕ Add user…", "min_values": 1, "max_values": 1}]})
+            inner.append({"type": 1, "components": [{"type": 6, "custom_id": f"v2_settings_notify_dn_add_role_{user_id}", "placeholder": "➕ Add role…", "min_values": 1, "max_values": 1}]})
+
+        dn_remove_opts = _build_remove_options(dn_targets)
+        if dn_remove_opts:
+            inner.append({"type": 1, "components": [{"type": 3, "custom_id": f"v2_settings_notify_dn_remove_{user_id}", "placeholder": "➖ Remove target…", "options": dn_remove_opts[:25]}]})
 
         inner.append({"type": 14, "divider": True, "spacing": 1})
-        inner.append({
-            "type": 1,
-            "components": [
-                {"type": 2, "style": 2, "label": "Back", "custom_id": "v2_btn_settings"},
-                {"type": 2, "style": 2, "label": "Dashboard", "custom_id": "v2Dash_Home"}
-            ]
-        })
 
-        return {
-            "type": 7,
-            "data": {
-                "flags": 32768,
-                "components": [{"type": 17, "components": inner}]
-            }
-        }
+        # ── Section 2: New Chapter Release ──
+        inner.append({"type": 10, "content": "### 🔔 New Chapter Release\n-# Who gets pinged when a new chapter releases for your subscriptions.\n" + _build_targets_text(rel_targets, RELEASE_NOTIFY_LIMIT, "Release")})
+
+        rel_at_limit = len(rel_targets) >= RELEASE_NOTIFY_LIMIT
+        if not rel_at_limit:
+            inner.append({"type": 1, "components": [{"type": 5, "custom_id": f"v2_settings_notify_rel_add_user_{user_id}", "placeholder": "➕ Add user…", "min_values": 1, "max_values": 1}]})
+            inner.append({"type": 1, "components": [{"type": 6, "custom_id": f"v2_settings_notify_rel_add_role_{user_id}", "placeholder": "➕ Add role…", "min_values": 1, "max_values": 1}]})
+
+        rel_remove_opts = _build_remove_options(rel_targets)
+        if rel_remove_opts:
+            inner.append({"type": 1, "components": [{"type": 3, "custom_id": f"v2_settings_notify_rel_remove_{user_id}", "placeholder": "➖ Remove target…", "options": rel_remove_opts[:25]}]})
+
+        inner.append({"type": 14, "divider": True, "spacing": 1})
+        inner.append({"type": 1, "components": [
+            {"type": 2, "style": 2, "label": "Back", "custom_id": "v2_btn_settings"},
+            {"type": 2, "style": 2, "label": "Dashboard", "custom_id": "v2Dash_Home"}
+        ]})
+
+        return {"type": 7, "data": {"flags": 32768, "components": [{"type": 17, "components": inner}]}}
 
     async def get_sub_info_payload(self, group_name: str, series_id: str):
         """Generates the metadata-rich 'Subscription Info' panel for a series."""
@@ -1068,28 +1026,56 @@ class DashboardCog(commands.Cog):
                 await self.bot.http.request(discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'), json=payload)
 
 
-            # --- Settings: Add notify user/role ---
-            elif custom_id.startswith("v2_settings_notify_add_user_") or custom_id.startswith("v2_settings_notify_add_role_"):
+            # --- Settings: Add notify user/role (Download) ---
+            elif custom_id.startswith("v2_settings_notify_dn_add_user_") or custom_id.startswith("v2_settings_notify_dn_add_role_"):
                 from app.services.settings_service import SettingsService
                 settings = SettingsService()
                 ttype = "user" if "_add_user_" in custom_id else "role"
                 target_id = interaction.data.get("values", [None])[0]
                 if not target_id: return
-                ok, _ = await settings.add_notify_target(interaction.user.id, ttype, int(target_id))
+                await settings.add_notify_target(interaction.user.id, ttype, int(target_id))
                 payload = await self.get_settings_notify_payload(interaction.user.id, interaction.guild)
                 await self.bot.http.request(
                     discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
                     json=payload
                 )
 
-            # --- Settings: Remove notify target ---
-            elif custom_id.startswith("v2_settings_notify_remove_"):
+            # --- Settings: Remove notify target (Download) ---
+            elif custom_id.startswith("v2_settings_notify_dn_remove_"):
                 from app.services.settings_service import SettingsService
                 settings = SettingsService()
                 val = interaction.data.get("values", [None])[0]
                 if not val: return
                 ttype, tid = val.split(":", 1)
                 await settings.remove_notify_target(interaction.user.id, ttype, tid)
+                payload = await self.get_settings_notify_payload(interaction.user.id, interaction.guild)
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=payload
+                )
+
+            # --- Settings: Add notify user/role (Release) ---
+            elif custom_id.startswith("v2_settings_notify_rel_add_user_") or custom_id.startswith("v2_settings_notify_rel_add_role_"):
+                from app.services.settings_service import SettingsService
+                settings = SettingsService()
+                ttype = "user" if "_add_user_" in custom_id else "role"
+                target_id = interaction.data.get("values", [None])[0]
+                if not target_id: return
+                await settings.add_release_notify_target(interaction.user.id, ttype, int(target_id))
+                payload = await self.get_settings_notify_payload(interaction.user.id, interaction.guild)
+                await self.bot.http.request(
+                    discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
+                    json=payload
+                )
+
+            # --- Settings: Remove notify target (Release) ---
+            elif custom_id.startswith("v2_settings_notify_rel_remove_"):
+                from app.services.settings_service import SettingsService
+                settings = SettingsService()
+                val = interaction.data.get("values", [None])[0]
+                if not val: return
+                ttype, tid = val.split(":", 1)
+                await settings.remove_release_notify_target(interaction.user.id, ttype, tid)
                 payload = await self.get_settings_notify_payload(interaction.user.id, interaction.guild)
                 await self.bot.http.request(
                     discord.http.Route('POST', f'/interactions/{interaction.id}/{interaction.token}/callback'),
