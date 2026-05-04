@@ -670,12 +670,33 @@ class MechaProvider(BaseProvider):
 
             res = await auth_session.post(url, headers=headers, timeout=15)
             success = res.status_code in [200, 302]
+
             logger.info(
                 f"[Mecha] Alert toggle (enable={enable}) for {series_id}: "
                 f"HTTP {res.status_code} → {'✅' if success else '❌'}"
             )
+
             if not success:
-                logger.debug(f"[Mecha] toggle_alert 403 body: {res.text[:300]}")
+                logger.error(
+                    f"[Mecha] toggle_alert FAILED DETAIL:\n"
+                    f"  URL      : {url}\n"
+                    f"  Status   : {res.status_code}\n"
+                    f"  CSRF     : {'present' if token else 'MISSING'}\n"
+                    f"  Session  : {self.active_account_id}\n"
+                    f"  Res Headers: {dict(res.headers)}\n"
+                    f"  Body     : {res.text[:500]}"
+                )
+                # Also dump HTML to file for deep inspection
+                try:
+                    from config.settings import Settings
+                    import time
+                    dump_path = Settings.LOG_DIR / f"mecha_toggle_fail_{series_id}_{int(time.time())}.html"
+                    with open(dump_path, "w", encoding="utf-8") as f:
+                        f.write(res.text)
+                    logger.error(f"[Mecha] Full 403 response dumped → {dump_path}")
+                except Exception as dump_err:
+                    logger.warning(f"[Mecha] Failed to dump 403 body: {dump_err}")
+
             return success
 
         except Exception as e:
