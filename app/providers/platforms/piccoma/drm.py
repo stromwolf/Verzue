@@ -3,6 +3,7 @@ import json
 import logging
 import asyncio
 import os
+import shutil
 import threading
 import urllib.parse
 import urllib.request
@@ -146,9 +147,15 @@ class PiccomaDRM:
                 temp_bridge = tf.name
 
             try:
+                # Locate Node.js binary
+                node_path = shutil.which("node")
+                if not node_path:
+                    self.logger.error("Node.js not found in PATH. Cannot transform seed.")
+                    return seed
+                
                 # Run the bridge asynchronously
                 proc = await asyncio.create_subprocess_exec(
-                    "node", temp_bridge, seed, drm_dir,
+                    node_path, temp_bridge, seed, drm_dir,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
