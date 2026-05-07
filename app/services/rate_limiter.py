@@ -26,7 +26,7 @@ class PlatformLimits:
 # ── Defaults per platform ────────────────────────────────────────────────────
 PLATFORM_DEFAULTS: dict[str, PlatformLimits] = {
     "jumptoon": PlatformLimits(rate=10, capacity=12, concurrency=10, download_reserved=4),
-    "piccoma":  PlatformLimits(rate=10, capacity=10, concurrency=10, download_reserved=4),
+    "piccoma":  PlatformLimits(rate=3, capacity=50, concurrency=10, download_reserved=7),
     "mecha":    PlatformLimits(rate=10, capacity=10, concurrency=10, download_reserved=3),
 }
 
@@ -124,10 +124,16 @@ class PlatformRateLimiter:
                 if allowed:
                     return
                 sleep_for = min(float(wait_time or 0.1), 2.0)
-                logger.debug(
-                    f"[RateLimiter] ⏳ {self.platform} global bucket full "
-                    f"— waiting {sleep_for:.3f}s"
-                )
+                # Only log once per 2 seconds per platform to avoid log flood
+                now = time.monotonic()
+                last_log_key = f"_last_ratelimit_log_{self.platform}"
+                last_logged = getattr(self, last_log_key, 0.0)
+                if now - last_logged >= 2.0:
+                    logger.debug(
+                        f"[RateLimiter] ⏳ {self.platform} global bucket full "
+                        f"— throttling downloads"
+                    )
+                    setattr(self, last_log_key, now)
                 await asyncio.sleep(sleep_for)
 
         except Exception as e:
